@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f2226">
+<title>Cierre de Mes</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<section id="vista-login" class="pantalla activa">
+  <div class="login-caja">
+    <div class="marca">
+      <img src="icon-192.png" alt="" width="44" height="44">
+      <div>
+        <h1>Cierre de Mes</h1>
+        <p>Lecturas de energía, agua y gas</p>
+      </div>
+    </div>
+    <form id="form-login">
+      <label>Correo
+        <input type="email" id="login-correo" autocomplete="username" required>
+      </label>
+      <label>Contraseña
+        <input type="password" id="login-clave" autocomplete="current-password" required>
+      </label>
+      <button class="btn primario grande" type="submit">Entrar</button>
+      <p class="error" id="login-error" hidden></p>
+    </form>
+  </div>
+</section>
+
+<!-- ===================== APP ===================== -->
+<div id="app" hidden>
+  <header class="barra">
+    <button class="icono" id="btn-menu" aria-label="Menú">☰</button>
+    <div class="titulo">
+      <strong id="titulo-vista">Terreno</strong>
+      <span id="subtitulo-vista"></span>
+    </div>
+    <div class="estado">
+      <span id="chip-conexion" class="chip">···</span>
+      <button class="icono" id="btn-sync" title="Sincronizar" aria-label="Sincronizar">⟳</button>
+    </div>
+  </header>
+
+  <nav id="menu" class="menu">
+    <button data-vista="terreno">Terreno · tomar lecturas</button>
+    <button data-vista="tablero"   data-rol="supervisor">Tablero del mes</button>
+    <button data-vista="validacion" data-rol="supervisor">Validación</button>
+    <button data-vista="consumos"  data-rol="supervisor">Consumos e informes</button>
+    <button data-vista="avisos">Avisos</button>
+    <div class="menu-titulo" data-rol="casa_fuerza">Casa de Fuerza</div>
+    <button data-vista="generadores" data-rol="casa_fuerza">Generadores</button>
+    <button data-vista="recargas"    data-rol="casa_fuerza">Recargas de combustible</button>
+    <button data-vista="dispositivo">Este dispositivo</button>
+    <button data-vista="auditoria" data-rol="supervisor">Auditoría</button>
+    <button data-vista="respaldo"  data-rol="supervisor">Respaldo</button>
+    <div class="menu-titulo" data-rol="supervisor">Configuración</div>
+    <button data-vista="equipos"  data-rol="supervisor">Equipos</button>
+    <button data-vista="puntos"   data-rol="supervisor">Puntos de medición</button>
+    <button data-vista="grupos"   data-rol="supervisor">Grupos</button>
+    <button data-vista="etiquetas" data-rol="supervisor">Etiquetas QR</button>
+    <button data-vista="usuarios" data-rol="admin">Usuarios</button>
+    <hr>
+    <div class="menu-pie">
+      <span id="menu-usuario"></span>
+      <button id="btn-salir" class="link">Cerrar sesión</button>
+    </div>
+  </nav>
+  <div id="velo" class="velo" hidden></div>
+
+  <div id="banner-cola" class="banner-cola fila" hidden></div>
+  <main id="contenido"></main>
+</div>
+
+<!-- ===================== MODAL ===================== -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-caja" role="dialog" aria-modal="true">
+    <header><strong id="modal-titulo"></strong>
+      <button class="icono" id="modal-cerrar" aria-label="Cerrar">✕</button></header>
+    <div id="modal-cuerpo"></div>
+  </div>
+</div>
+
+<div id="impresion" class="impresion"></div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="supabase.js"></script>
+<script src="config.js"></script>
+<script src="db.js"></script>
+<script src="respaldo.js"></script>
+<script src="qr.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

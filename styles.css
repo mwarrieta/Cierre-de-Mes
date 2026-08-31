@@ -1,0 +1,391 @@
+/* ===================================================================
+   Cierre de Mes · hoja de estilos
+   Pensada para leerse a pleno sol y operarse con guantes:
+   contraste alto, objetivos táctiles de 48px, sin adornos.
+   =================================================================== */
+:root{
+  --ground:#f2f4f3; --surface:#fff; --surface-2:#e8edea;
+  --ink:#0f2226; --ink-2:#3d5559; --ink-3:#6d8386;
+  --line:#d2dbd8; --line-2:#b3c1bd;
+  --acento:#0e6f68; --acento-ink:#0a4f4a; --acento-suave:#dcecea;
+  --ok:#2e7150; --ok-bg:#e2efe7;
+  --warn:#a2711a; --warn-bg:#f7ecd6;
+  --bad:#a53728; --bad-bg:#f7e3df;
+  --radio:8px;
+  --sombra:0 1px 2px rgba(15,34,38,.06), 0 8px 24px -18px rgba(15,34,38,.4);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --ground:#0b1517; --surface:#122124; --surface-2:#1a2f33;
+    --ink:#e7edeb; --ink-2:#b0c2bf; --ink-3:#7f9591;
+    --line:#24383b; --line-2:#345054;
+    --acento:#4fbdaf; --acento-ink:#8fd8cd; --acento-suave:#14332f;
+    --ok:#63bc8f; --ok-bg:#153021;
+    --warn:#d8a94e; --warn-bg:#332714;
+    --bad:#e08272; --bad-bg:#35201c;
+    --sombra:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+h1,h2,h3{margin:0;line-height:1.2}
+a{color:var(--acento-ink)}
+.oculto,[hidden]{display:none!important}
+
+/* ---------- botones ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  min-height:44px;padding:0 16px;border:1px solid var(--line-2);
+  border-radius:var(--radio);background:var(--surface);cursor:pointer;
+  font-weight:600;white-space:nowrap;
+}
+.btn:hover{border-color:var(--acento)}
+.btn:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.btn.primario{background:var(--acento);border-color:var(--acento);color:#fff}
+.btn.primario:hover{filter:brightness(1.08)}
+.btn.grande{min-height:56px;width:100%;font-size:17px}
+.btn.chico{min-height:34px;padding:0 10px;font-size:14px;font-weight:500}
+.btn.peligro{color:var(--bad);border-color:var(--bad)}
+.btn.ok{color:var(--ok);border-color:var(--ok)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.link{background:none;border:none;color:var(--acento-ink);cursor:pointer;text-decoration:underline;padding:4px}
+.icono{
+  width:44px;height:44px;display:grid;place-items:center;border:none;
+  background:none;cursor:pointer;border-radius:var(--radio);font-size:20px;color:inherit;
+}
+.icono:hover{background:var(--surface-2)}
+
+/* ---------- login ---------- */
+/* El selector por ID ganaba en especificidad y dejaba el login ocupando
+   pantalla completa incluso después de entrar. Todo va por clase. */
+.pantalla{display:none}
+.pantalla.activa{display:grid;min-height:100dvh;place-items:center;padding:24px}
+.login-caja{
+  width:100%;max-width:380px;background:var(--surface);border:1px solid var(--line);
+  border-radius:12px;padding:28px;box-shadow:var(--sombra);
+}
+.marca{display:flex;gap:14px;align-items:center;margin-bottom:24px}
+.marca img{border-radius:10px}
+.marca h1{font-size:22px;letter-spacing:-.02em}
+.marca p{margin:2px 0 0;font-size:13px;color:var(--ink-3)}
+/* Ojo: estos estilos NO pueden ir scopeados a "form", porque los formularios
+   de los modales se construyen sin etiqueta <form>. */
+label{display:block;margin-bottom:14px;font-size:13px;font-weight:600;color:var(--ink-2)}
+label.fila{display:flex;align-items:center;gap:10px;font-weight:500;color:var(--ink)}
+input:not([type=checkbox]):not([type=radio]),select,textarea{
+  display:block;width:100%;margin-top:5px;min-height:46px;padding:0 12px;
+  border:1px solid var(--line-2);border-radius:var(--radio);
+  background:var(--surface);font-weight:400;color:var(--ink);
+}
+label.fila input:not([type=checkbox]),label.fila select{margin-top:0}
+input[type=checkbox]{width:22px;height:22px;min-height:22px;margin:0;flex:none;accent-color:var(--acento)}
+textarea{padding:10px 12px;min-height:76px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--acento);outline-offset:-1px;border-color:var(--acento)}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield}
+.error{color:var(--bad);background:var(--bad-bg);padding:10px 12px;border-radius:var(--radio);font-size:14px;margin:12px 0 0}
+
+/* ---------- barra superior ---------- */
+.barra{
+  position:sticky;top:0;z-index:45;display:flex;align-items:center;gap:8px;
+  padding:6px 8px;background:var(--surface);border-bottom:1px solid var(--line);
+  padding-top:calc(6px + env(safe-area-inset-top));
+}
+.barra .titulo{flex:1;min-width:0;line-height:1.25}
+.barra .titulo strong{display:block;font-size:16px}
+.barra .titulo span{display:block;font-size:12px;color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.barra .estado{display:flex;align-items:center;gap:4px}
+.chip{
+  font-size:11px;font-weight:700;letter-spacing:.03em;padding:4px 8px;border-radius:999px;
+  background:var(--surface-2);color:var(--ink-2);white-space:nowrap;
+}
+.chip.on{background:var(--ok-bg);color:var(--ok)}
+.chip.off{background:var(--warn-bg);color:var(--warn)}
+.chip.cola{background:var(--acento-suave);color:var(--acento-ink)}
+
+.banner-cola{position:sticky;top:57px;z-index:19;background:var(--bad-bg);color:var(--bad);
+  border-bottom:1px solid var(--bad);padding:10px 14px;font-size:14px;gap:12px}
+.banner-cola .btn{background:var(--surface);border-color:var(--bad);color:var(--bad)}
+
+/* ---------- menú ---------- */
+.menu{
+  display:none;
+  position:fixed;top:0;left:0;bottom:0;width:270px;z-index:40;
+  background:var(--surface);border-right:1px solid var(--line);
+  padding:calc(68px + env(safe-area-inset-top)) 12px 12px;
+  flex-direction:column;gap:2px;overflow:auto;box-shadow:var(--sombra);
+}
+.menu.abierto{display:flex}
+.menu button{
+  text-align:left;min-height:46px;padding:0 12px;border:none;background:none;
+  border-radius:var(--radio);cursor:pointer;font-size:15px;
+}
+.menu button:hover{background:var(--surface-2)}
+.menu button.sel{background:var(--acento-suave);color:var(--acento-ink);font-weight:600}
+.menu hr{border:none;border-top:1px solid var(--line);margin:10px 0}
+.menu-titulo{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-3);padding:16px 12px 6px;border-top:1px solid var(--line);margin-top:8px}
+.menu-pie{margin-top:auto;font-size:13px;color:var(--ink-3);padding:0 12px}
+.menu-pie span{display:block;margin-bottom:6px}
+.velo{position:fixed;inset:0;background:rgba(15,34,38,.45);z-index:30}
+
+/* ---------- contenido ---------- */
+/* min-width:0 · sin esto una tabla ancha estira la columna del grid y
+   empuja toda la página hacia la derecha en vez de desplazarse sola. */
+/* width:100% + min-width:0 · con márgenes automáticos y sin ancho definido,
+   main se dimensiona por su contenido: una tabla ancha lo hacía desbordar la
+   columna del grid y corría toda la página. Ahora la tabla se desplaza sola. */
+main{padding:14px;max-width:1280px;margin:0 auto;padding-bottom:48px;
+     width:100%;min-width:0;box-sizing:border-box}
+.seccion{margin-bottom:22px}
+.seccion > h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-3);margin-bottom:10px}
+.fila{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.fila > label{max-width:260px;margin-bottom:0}
+.fila > label.crece{flex:1 1 180px}
+.fila.entre{justify-content:space-between}
+.crece{flex:1;min-width:0}
+
+/* ---------- tarjetas ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radio);
+  padding:18px 20px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.card h4{margin:0;font-size:15px}
+.card p{margin:0}
+.card .btn{margin-top:auto}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:18px 0}
+
+/* ---------- tarjetas de KPI ---------- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radio);padding:14px}
+.kpi .v{font-size:clamp(20px,2.1vw,30px);font-weight:700;line-height:1.05;
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kpi .k{font-size:12.5px;color:var(--ink-3);margin-top:5px}
+.kpi.alerta .v{color:var(--bad)}
+.kpi.aviso .v{color:var(--warn)}
+
+/* ---------- lista de puntos (terreno) ---------- */
+.buscador{position:sticky;top:57px;z-index:10;background:var(--ground);padding:8px 0 10px}
+.buscador input{width:100%;min-height:48px;margin-top:0;padding:0 14px;border:1px solid var(--line-2);
+  border-radius:var(--radio);background:var(--surface)}
+.grupo-sitio{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-3);margin:18px 0 8px}
+.item{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+  background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--line-2);
+  border-radius:var(--radio);padding:12px 14px;margin-bottom:8px;cursor:pointer;min-height:64px;
+}
+.item:hover{border-color:var(--acento)}
+.item.lista{border-left-color:var(--ok)}
+.item.pendiente{border-left-color:var(--line-2)}
+.item.cola{border-left-color:var(--acento)}
+.item .txt{flex:1;min-width:0}
+.item .n{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .d{font-size:12.5px;color:var(--ink-3);display:block;margin-top:2px}
+.item .val{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.item .val small{display:block;font-weight:400;font-size:11px;color:var(--ink-3)}
+
+/* ---------- captura ---------- */
+.captura .dato-grande{
+  width:100%;min-height:76px;font-size:34px;font-weight:700;text-align:right;
+  font-variant-numeric:tabular-nums;letter-spacing:.01em;padding:0 16px;
+}
+.ayuda{font-size:13px;color:var(--ink-3);margin:6px 0 0}
+.anterior{
+  background:var(--surface-2);border-radius:var(--radio);padding:12px 14px;margin-bottom:16px;
+  font-size:14px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+}
+.anterior b{font-variant-numeric:tabular-nums}
+.banda{padding:10px 14px;border-radius:var(--radio);font-size:14px;margin:12px 0}
+.banda.ok{background:var(--ok-bg);color:var(--ok)}
+.banda.warn{background:var(--warn-bg);color:var(--warn)}
+.banda.bad{background:var(--bad-bg);color:var(--bad)}
+.foto-caja{display:grid;gap:10px;margin:14px 0}
+.foto-previa{width:100%;max-height:280px;object-fit:contain;background:var(--surface-2);
+  border-radius:var(--radio);border:1px solid var(--line)}
+.acciones-fijas{position:sticky;bottom:0;background:var(--ground);padding:12px 0;
+  padding-bottom:calc(12px + env(safe-area-inset-bottom));display:grid;gap:8px}
+
+/* ---------- tablas ---------- */
+.tabla-caja{overflow:auto;max-height:72vh;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radio)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--ink-3);padding:10px 12px;background:var(--surface-2);
+  border-bottom:1px solid var(--line-2);white-space:nowrap;position:sticky;top:0;z-index:2}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr:hover{background:var(--surface-2)}
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:4px;white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.neutro{background:var(--surface-2);color:var(--ink-2)}
+.pill.acento{background:var(--acento-suave);color:var(--acento-ink)}
+
+/* Tablas en pantalla angosta: cada fila pasa a ser una tarjeta con
+   el nombre de la columna al lado de cada dato. */
+@media (max-width:820px){
+  .tabla-caja{max-height:none;border:none;background:none;overflow:visible}
+  .tabla-caja table,.tabla-caja tbody,.tabla-caja tr,.tabla-caja td{display:block;width:100%}
+  .tabla-caja thead{display:none}
+  .tabla-caja tr{background:var(--surface);border:1px solid var(--line);
+    border-radius:var(--radio);margin-bottom:10px;padding:6px 4px}
+  .tabla-caja tr:hover{background:var(--surface)}
+  .tabla-caja td{border:none;display:flex;gap:12px;align-items:baseline;
+    padding:6px 12px;text-align:left}
+  .tabla-caja td::before{content:attr(data-col);flex:0 0 38%;font-size:11px;
+    text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);font-weight:600}
+  .tabla-caja td.num{justify-content:flex-start}
+  .tabla-caja td:empty,.tabla-caja td[data-col=""]{padding-top:10px}
+  .tabla-caja td[data-col=""]::before{content:none}
+}
+
+/* ---------- modal ---------- */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(15,34,38,.5);
+  display:grid;place-items:center;padding:16px}
+.modal-caja{background:var(--surface);border-radius:12px;width:100%;max-width:640px;
+  max-height:90dvh;display:flex;flex-direction:column;box-shadow:var(--sombra)}
+.modal-caja header{display:flex;align-items:center;gap:10px;padding:12px 8px 12px 18px;
+  border-bottom:1px solid var(--line)}
+.modal-caja header strong{flex:1;font-size:16px}
+#modal-cuerpo{padding:18px;overflow:auto}
+#modal-cuerpo img{max-width:100%;border-radius:var(--radio)}
+
+.progreso{background:var(--acento-suave);color:var(--acento-ink);border-radius:var(--radio);
+  padding:12px 16px;margin:16px 0;font-size:14px;font-weight:600}
+
+/* ---------- toast ---------- */
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:60;
+  background:var(--ink);color:var(--ground);padding:12px 18px;border-radius:999px;
+  font-size:14px;font-weight:600;box-shadow:var(--sombra);max-width:90vw;text-align:center}
+.toast.bad{background:var(--bad);color:#fff}
+
+.vacio{text-align:center;color:var(--ink-3);padding:40px 20px;font-size:15px}
+.cargando{text-align:center;color:var(--ink-3);padding:30px}
+
+@media (min-width:900px){
+  .menu{display:flex;position:static;box-shadow:none;height:auto;padding-top:12px}
+  #btn-menu{display:none}
+  /* minmax(0,1fr): con 1fr a secas, una tabla ancha define el mínimo de la
+     columna y la página entera se corre hacia la derecha. */
+  #app{display:grid;grid-template-columns:270px minmax(0,1fr);grid-template-rows:auto 1fr;
+       min-height:100dvh}
+  .barra{grid-column:1/-1}
+  .menu{grid-row:2;position:sticky;top:57px;height:calc(100dvh - 57px)}
+  #velo{display:none!important}
+  main{grid-row:2}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+
+/* ===================================================================
+   GRÁFICO  ·  una serie, un eje, sin leyenda (el título nombra la serie)
+   Colores validados con el script de la guía de visualización:
+   #0C8C7F sobre blanco y #35A99B sobre la superficie oscura.
+   =================================================================== */
+:root{ --marca:#0C8C7F; --marca-suave:#0C8C7F22; }
+@media (prefers-color-scheme:dark){ :root{ --marca:#35A99B; --marca-suave:#35A99B22; } }
+
+.figura{margin:22px 0;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radio);padding:16px 14px 8px;max-width:900px}
+.figura figcaption{font-size:13px;font-weight:600;color:var(--ink-2);margin-bottom:10px}
+.grafico{width:100%;height:auto;display:block}
+.grafico .grid{stroke:var(--line);stroke-width:1}
+.grafico .base{stroke:var(--line-2);stroke-width:1}
+.grafico .marca{fill:var(--marca)}
+.grafico .zona{fill:transparent}
+.grafico .barra:hover .marca{filter:brightness(1.12)}
+.grafico .barra:hover .zona{fill:var(--marca-suave)}
+.grafico .ejeY{font-size:10px;fill:var(--ink-3);text-anchor:end;
+  font-variant-numeric:tabular-nums}
+.grafico .ejeX{font-size:10.5px;fill:var(--ink-3);text-anchor:middle}
+.grafico .valorMax{font-size:11px;font-weight:700;fill:var(--ink-2);text-anchor:middle;
+  font-variant-numeric:tabular-nums}
+
+.calidad{background:var(--surface-2);border-radius:var(--radio);padding:14px 16px;margin:20px 0}
+.calidad h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+.calidad p{margin:0;font-size:14px;line-height:1.6}
+
+/* ===================================================================
+   IMPRESIÓN  ·  el PDF lo genera el navegador con "Guardar como PDF".
+   Sale mejor que dibujarlo con una librería: el texto queda seleccionable
+   y los saltos de página los decide el navegador.
+   =================================================================== */
+.impresion{display:none}
+.hoja-cab{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
+  border-bottom:2px solid var(--ink);padding-bottom:12px;margin-bottom:20px}
+.hoja-cab h1{font-size:22px;margin:0}
+.hoja-sub{margin:4px 0 0;color:var(--ink-2);font-size:14px}
+.hoja-meta{font-size:11.5px;color:var(--ink-3);text-align:right;line-height:1.5}
+.hoja-pie{margin-top:24px;padding-top:10px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--ink-3)}
+
+@media print{
+  @page{ size:A4; margin:14mm 12mm; }
+  body{background:#fff;color:#000;font-size:11px}
+  body.imprimiendo > #app,
+  body.imprimiendo > #vista-login,
+  body.imprimiendo > #modal,
+  body.imprimiendo > #toast{display:none!important}
+  body.imprimiendo .impresion{display:block}
+  .impresion .kpis{grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px}
+  .impresion .kpi{border:1px solid #bbb;padding:8px 10px;break-inside:avoid}
+  .impresion .kpi .v{font-size:18px}
+  .impresion .figura{border:1px solid #bbb;break-inside:avoid;padding:8px}
+  .impresion .grafico .marca{fill:#0C8C7F}
+  .impresion .tabla-caja{max-height:none;overflow:visible;border:1px solid #bbb}
+  .impresion table{font-size:9.5px}
+  .impresion th{background:#eee;color:#333;position:static}
+  .impresion tr{break-inside:avoid}
+  .impresion .pill{border:1px solid #999;background:none!important;color:#000!important}
+  .impresion .calidad{background:#f4f4f4;border:1px solid #ddd;break-inside:avoid}
+  /* las tarjetas de pantalla angosta no aplican al papel */
+  .impresion .tabla-caja table,.impresion .tabla-caja tbody,
+  .impresion .tabla-caja tr,.impresion .tabla-caja td{display:revert}
+  .impresion .tabla-caja thead{display:table-header-group}
+  .impresion .tabla-caja td::before{content:none}
+}
+
+
+/* ===================================================================
+   QR · escáner y etiquetas
+   =================================================================== */
+.escaner{position:relative;background:#000;border-radius:12px;overflow:hidden;
+  aspect-ratio:4/3;max-height:52vh;margin-bottom:10px}
+.escaner video{width:100%;height:100%;object-fit:cover;display:block}
+.escaner .mira{position:absolute;inset:18% 22%;border:3px solid #fff;border-radius:12px;
+  box-shadow:0 0 0 2000px rgba(0,0,0,.35);pointer-events:none}
+
+.etiquetas{display:grid;grid-template-columns:repeat(3,1fr);gap:6mm}
+.etiqueta{display:flex;gap:8px;align-items:center;border:1px dashed var(--line);
+  border-radius:8px;padding:8px;background:var(--surface);break-inside:avoid}
+.etiqueta .qr{flex:0 0 26mm;line-height:0}
+.etiqueta .qr svg{width:100%;height:auto;display:block}
+.etiqueta .txt{min-width:0;display:flex;flex-direction:column;gap:2px}
+.etiqueta .txt strong{font-size:12px;line-height:1.15;overflow-wrap:anywhere}
+.etiqueta .cod{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--ink-2)}
+.etiqueta .que{font-size:9px;letter-spacing:.09em;font-weight:700;color:var(--ink-3)}
+.etiqueta.equipo{border-style:solid}
+.etiqueta .pie{font-size:10px;color:var(--ink-3);overflow-wrap:anywhere}
+.vista-previa{max-width:900px}
+@media (max-width:820px){ .etiquetas{grid-template-columns:1fr} }
+
+@media print{
+  .impresion .etiquetas{grid-template-columns:repeat(3,1fr);gap:4mm}
+  .impresion .etiqueta{border:1px dashed #999;background:none;padding:4mm 2mm;
+    height:33mm;box-sizing:border-box}
+  .impresion .etiqueta .qr svg{shape-rendering:crispEdges}
+  .impresion .etiqueta .cod{color:#000}
+  .impresion .etiqueta.equipo{border-style:solid}
+  .impresion .etiqueta .que{color:#000}
+  .impresion .etiqueta .pie{color:#333}
+}

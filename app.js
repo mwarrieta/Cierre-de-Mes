@@ -10,7 +10,7 @@ const C = window.CONFIG;
 const S = {
   usuario: null,           // fila de cierre_mes.usuarios
   catalogo: null,
-  periodo: primerDiaDelMes(new Date()),
+  periodo: campanaSugerida(),          // campaña de toma; ver nombreCampana()
   periodoConsumo: primerDiaDelMes(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1)),
   periodoCF: primerDiaDelMes(new Date()),   // Casa de Fuerza: generadores y recargas
   lecturas: [],            // lecturas del periodo
@@ -46,6 +46,31 @@ const MESES = ['enero','febrero','marzo','abril','mayo','junio',
 function nombrePeriodo(p) {
   const [a, m] = p.split('-');
   return `${MESES[+m - 1]} ${a}`;
+}
+
+/* ------------------------------------------------------------------
+   CAMPAÑA vs MES DE CONSUMO
+   La lectura del 1 de septiembre menos la del 1 de agosto es el consumo
+   de AGOSTO. Por eso la toma de un mes cierra el mes anterior, y en las
+   pantallas de terreno se dice así: "septiembre 2026 · cierra agosto".
+   En Consumos e informes el periodo ya es el mes consumido, no la toma.
+   ------------------------------------------------------------------ */
+function mesAnterior(p) {
+  const [a, m] = p.split('-').map(Number);
+  const d = new Date(Date.UTC(a, m - 2, 1));
+  return d.toISOString().slice(0, 10);
+}
+function nombreCampana(p) {
+  return `${nombrePeriodo(p)} · cierra ${nombrePeriodo(mesAnterior(p)).split(' ')[0]}`;
+}
+// Cerca de fin de mes lo normal es adelantar la toma: son muchos puntos y no
+// alcanzan a hacerse todos el día 1. Desde el día 25 la app propone la campaña
+// del mes siguiente, que es la que en verdad se está tomando.
+function campanaSugerida(hoy = new Date()) {
+  const d = hoy.getDate() >= 25
+    ? new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1)
+    : hoy;
+  return primerDiaDelMes(d);
 }
 function num(v, dec = 0) {
   if (v === null || v === undefined || v === '') return '—';
@@ -314,6 +339,7 @@ function render() {
   $('#subtitulo-vista').textContent =
     ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
+      : ['terreno','tablero','validacion'].includes(S.vista) ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
   // Cada vista escribe en SU propio contenedor. Si una consulta lenta termina
   // después de que el usuario cambió de sección, escribe en un nodo ya desechado
@@ -334,8 +360,10 @@ function render() {
 // ------------------------------------------------------------------ selector de periodo
 function selectorPeriodo(campo = 'periodo', alCambiar = null) {
   const hoy = new Date();
+  const campana = campo === 'periodo';
   const opciones = [];
-  for (let i = 0; i < 24; i++) {
+  // el mes siguiente va primero: es el que se adelanta a fin de mes
+  for (let i = -1; i < 24; i++) {
     opciones.push(primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1)));
   }
   const sel = el('select', {
@@ -347,9 +375,10 @@ function selectorPeriodo(campo = 'periodo', alCambiar = null) {
     }
   });
   for (const p of opciones) {
-    sel.append(el('option', { value: p, selected: p === S[campo] || null, text: nombrePeriodo(p) }));
+    sel.append(el('option', { value: p, selected: p === S[campo] || null,
+      text: campana ? nombreCampana(p) : nombrePeriodo(p) }));
   }
-  return el('label', { class: 'crece', text: 'Periodo' }, [sel]);
+  return el('label', { class: 'crece', text: campana ? 'Toma de' : 'Periodo' }, [sel]);
 }
 
 /* ===================================================================
@@ -367,8 +396,13 @@ function vistaTerreno(c) {
     el('button', { class: 'btn primario grande', text: 'Escanear código',
       onclick: () => escanearYAbrir() })
   ]);
+  // La confusión clásica: creer que la toma del 1 de septiembre "es" septiembre.
+  const explicacion = el('p', { class: 'ayuda', text:
+    `Estás tomando la lectura de ${nombrePeriodo(S.periodo)}, que cierra el consumo de ` +
+    `${nombrePeriodo(mesAnterior(S.periodo))}: el totalizador de hoy menos el del mes pasado. ` +
+    'Puedes adelantarla los últimos días del mes; la app guarda la fecha real en que la tomaste.' });
   const lista = el('div', { id: 'lista-puntos' });
-  c.append(cabecera, buscador, lista);
+  c.append(cabecera, explicacion, buscador, lista);
   pintarLista();
 }
 

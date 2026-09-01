@@ -3099,21 +3099,30 @@ async function vistaEtiquetas(c) {
     const lista = [...puntos.values()].sort((a, b) => a.nombre.localeCompare(b.nombre));
     const etiquetas = [];
     for (const p of lista) {
+      // La etiqueta del PUNTO no menciona al medidor: el medidor se cambia y la
+      // etiqueta quedaría mintiendo pegada en la estructura durante años.
       if (cuales.value !== 'equipo')
         etiquetas.push({ codigo: codigoPunto(p.id), titulo: p.nombre,
-                         pie: `${p.sitio.nombre}${p.equipo?.tag ? ' · ' + p.equipo.tag : ''}`, clase: 'punto' });
+                         pie: p.sitio.nombre, clase: 'punto' });
+      // Y la del EQUIPO no menciona al punto, por lo mismo al revés: el equipo
+      // se traslada y se lleva su etiqueta puesta.
       if (cuales.value !== 'punto' && p.equipo?.equipo_id)
         etiquetas.push({ codigo: codigoEquipo(p.equipo.equipo_id),
                          titulo: p.equipo.tag || ('Medidor ' + p.equipo.equipo_id),
-                         pie: `${p.nombre}${p.equipo.n_serie ? ' · serie ' + p.equipo.n_serie : ''}`, clase: 'equipo' });
+                         pie: [p.equipo.marca, p.equipo.modelo,
+                               p.equipo.n_serie ? 'serie ' + p.equipo.n_serie : null]
+                              .filter(Boolean).join(' · ') || 'Medidor', clase: 'equipo' });
     }
     poner(zona,
       el('p', { class: 'ayuda', text:
         `${etiquetas.length} etiquetas · ${lista.length} puntos. Entran unas 21 por hoja A4 (3 por fila): ${Math.ceil(etiquetas.length / 21)} hojas aprox.` }),
       el('div', { class: 'fila' }, [
         el('button', { class: 'btn primario', disabled: !etiquetas.length || null,
-          text: 'Imprimir las etiquetas', onclick: () => imprimirEtiquetas(etiquetas) })
+          text: 'Imprimir las etiquetas', onclick: () => imprimirEtiquetas(etiquetas) }),
+        el('button', { class: 'btn', disabled: !etiquetas.length || null,
+          text: 'Descargar los QR como imágenes', onclick: e => descargarQR(etiquetas, e.target) })
       ]),
+      el('p', { class: 'ayuda', id: 'qr-paso' }),
       el('div', { class: 'etiquetas vista-previa' }, etiquetas.slice(0, 12).map(dibujarEtiqueta)),
       etiquetas.length > 12 ? el('p', { class: 'ayuda', text:
         `Vista previa de 12 de ${etiquetas.length}; se imprimen todas, 24 por hoja.` }) : null
@@ -3133,6 +3142,57 @@ async function vistaEtiquetas(c) {
     ]),
     zona);
   refrescar();
+}
+
+// Un PNG por código, para pegarlos en la plantilla de autoadhesivos que ya se
+// usa en faena. El QR se dibuja en un canvas a mano: convertir el SVG a PNG en
+// el navegador es más frágil (tamaños distintos según el motor).
+async function descargarQR(etiquetas, boton) {
+  const paso = t => { const n = $('#qr-paso'); if (n) n.textContent = t; };
+  boton.disabled = true;
+  try {
+    if (typeof JSZip === 'undefined') {
+      paso('Cargando el compresor…');
+      await new Promise((ok, mal) => {
+        const s = document.createElement('script');
+        s.src = 'jszip.js'; s.onload = ok; s.onerror = mal;
+        document.head.append(s);
+      });
+    }
+    const zip = new JSZip();
+    const L = window.RESPALDO.limpio;
+    for (let i = 0; i < etiquetas.length; i++) {
+      const e = etiquetas[i];
+      paso(`Dibujando ${i + 1} de ${etiquetas.length}…`);
+      const q = qrcode(0, 'M'); q.addData(e.codigo); q.make();
+      const n = q.getModuleCount();
+      const escala = Math.max(2, Math.floor(560 / (n + 8)));   // margen de 4 módulos
+      const lado = (n + 8) * escala;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = lado;
+      const cx = cv.getContext('2d');
+      cx.fillStyle = '#fff'; cx.fillRect(0, 0, lado, lado);
+      cx.fillStyle = '#000';
+      for (let f = 0; f < n; f++)
+        for (let c = 0; c < n; c++)
+          if (q.isDark(f, c))
+            cx.fillRect((c + 4) * escala, (f + 4) * escala, escala, escala);
+      const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+      zip.file(`${e.clase === 'punto' ? 'puntos' : 'medidores'}/${e.codigo}_${L(e.titulo.replace(/³/g, '3'))}.png`, blob);
+      if (i % 10 === 0) await new Promise(r => setTimeout(r));   // no congelar la pantalla
+    }
+    zip.file('leeme.txt',
+      'Un PNG por código. El nombre del archivo es el código y el nombre del punto o del medidor.\n' +
+      'Para pegarlos en la plantilla de etiquetas: Insertar → Imagen → Este dispositivo.\n' +
+      'Imprímelos a 2,5 cm de lado o más; por debajo de eso la cámara del celular sufre.\n');
+    paso('Comprimiendo…');
+    descargar(await zip.generateAsync({ type: 'blob' }), `QR_Cierre_de_Mes_${new Date().toISOString().slice(0,10)}.zip`);
+    paso('');
+    toast(`${etiquetas.length} imágenes listas`);
+  } catch (err) {
+    paso('');
+    toast('No se pudieron generar las imágenes: ' + (err.message || err), true);
+  } finally { boton.disabled = false; }
 }
 
 function dibujarEtiqueta(e) {

@@ -90,6 +90,18 @@ function modal(titulo, nodo) {
 }
 function cerrarModal() { $('#modal').hidden = true; $('#modal-cuerpo').replaceChildren(); }
 
+// El orden de los grupos es parte del formato del informe: viene de la columna
+// `orden` de la tabla grupos, editable en Configuración → Grupos. Los grupos
+// sin orden y los puntos sin grupo van al final.
+function ordenGrupo(nombre) {
+  if (!nombre) return 9999;
+  const g = (S.catalogo?.grupos || []).find(x => x.nombre === nombre);
+  return g && g.orden != null ? g.orden : 999;
+}
+function compararGrupos(a, b) {
+  return ordenGrupo(a) - ordenGrupo(b) || String(a || '').localeCompare(String(b || ''));
+}
+
 const esSupervisor = () => ['admin', 'supervisor'].includes(S.usuario?.rol);
 const esAdmin = () => S.usuario?.rol === 'admin';
 
@@ -1047,7 +1059,8 @@ async function vistaConsumos(c) {
   const gruposVisibles = new Set(S.catalogo.variables.map(v => v.grupo_id));
   const selGrupo = el('select', { onchange: e => { R.grupo = e.target.value; cargar(); } });
   selGrupo.append(el('option', { value: '', text: 'Todos los grupos' }));
-  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.id)))
+  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.id))
+                                   .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
   const sitiosVisibles = [...new Set(S.catalogo.variables.map(v => v.punto.sitio.nombre))].sort();
@@ -1200,7 +1213,8 @@ function armarInforme(data, desde, hasta) {
     const cab = ['Sitio', 'Punto', 'TAG', 'Variable', 'Un.',
                  ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total'];
     const filas = [...claves.values()]
-      .sort((a, b) => `${a.f.sitio}${a.f.punto}`.localeCompare(`${b.f.sitio}${b.f.punto}`))
+      .sort((a, b) => compararGrupos(a.f.grupo, b.f.grupo) ||
+                      `${a.f.sitio}${a.f.punto}`.localeCompare(`${b.f.sitio}${b.f.punto}`))
       .map(({ f, meses: mm }) => {
         const vals = meses.map(m => mm[m]);
         const total = vals.reduce((a, v) => a + (v || 0), 0);
@@ -1373,7 +1387,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
   }
   const filasVar = [...porVar.values()].sort((a, b) =>
-    (a.grupo + a.sitio + a.punto).localeCompare(b.grupo + b.sitio + b.punto));
+    compararGrupos(a.grupo, b.grupo) ||
+    (a.sitio + a.punto).localeCompare(b.sitio + b.punto));
 
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
 
@@ -1435,7 +1450,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     { nombre: nombreHoja('Resumen anual', usados), filas: resumen },
     { nombre: nombreHoja('Detalle mensual', usados), filas: detalle }
   ];
-  const grupos = [...new Set(filasVar.map(v => v.grupo))].sort();
+  const grupos = [...new Set(filasVar.map(v => v.grupo))].sort(compararGrupos);
   for (const g of grupos) {
     const suyas = filasVar.filter(v => v.grupo === g);
     const f = [[`GRUPO: ${g}`], [], ['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
@@ -1910,21 +1925,49 @@ async function vistaGrupos(c) {
   c.append(zona);
 
   const [{ data: grupos, error }, { data: gp }] = await Promise.all([
-    sb.from('grupos').select('*').order('nombre'),
+    sb.from('grupos').select('*').order('orden').order('nombre'),
     sb.from('grupo_puntos').select('grupo_id, punto_id')
   ]);
   if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
   const cuenta = {};
   for (const x of (gp || [])) cuenta[x.grupo_id] = (cuenta[x.grupo_id] || 0) + 1;
 
-  zona.replaceChildren(tabla(
-    ['Grupo', 'Qué incluye', 'Destinatario', 'Correos', 'Puntos', 'Frecuencia', ''],
-    grupos.map(g => [
+  // Mover un grupo cambia el orden en que sale en TODOS lados: informes, Excel
+  // y las pestañas por grupo. Por eso se edita acá y no en cada pantalla.
+  async function mover(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= grupos.length) return;
+    const a = grupos[i], b = grupos[j];
+    const { error } = await sb.from('grupos').upsert([
+      { id: a.id, nombre: a.nombre, orden: j + 1 },
+      { id: b.id, nombre: b.nombre, orden: i + 1 }
+    ]);
+    if (error) return toast(error.message, true);
+    await DB.descargarCatalogo().catch(() => {});
+    S.catalogo = await DB.catalogo();
+    toast('Orden actualizado');
+    render();
+  }
+
+  zona.replaceChildren(
+    el('p', { class: 'ayuda', text:
+      'El orden de esta lista es el orden en que salen los grupos en los informes, ' +
+      'en el Excel y en las pestañas por grupo.' }),
+    tabla(
+    ['#', 'Grupo', 'Qué incluye', 'Destinatario', 'Correos', 'Puntos', 'Frecuencia', ''],
+    grupos.map((g, i) => [
+      String(i + 1),
       g.nombre, g.descripcion || '—', g.destinatario || el('span', { class: 'pill warn', text: 'falta' }),
       (g.correos && g.correos.length) ? g.correos.join(', ') : el('span', { class: 'pill warn', text: 'faltan' }),
       cuenta[g.id] || 0, g.frecuencia,
-      el('button', { class: 'btn chico', text: 'Editar', onclick: () => editarGrupo(g) })
-    ]), { num: [4], etiquetas: true }));
+      el('div', { class: 'fila' }, [
+        el('button', { class: 'btn chico', text: '▲', title: 'Subir',
+          disabled: i === 0 || null, onclick: () => mover(i, -1) }),
+        el('button', { class: 'btn chico', text: '▼', title: 'Bajar',
+          disabled: i === grupos.length - 1 || null, onclick: () => mover(i, 1) }),
+        el('button', { class: 'btn chico', text: 'Editar', onclick: () => editarGrupo(g) })
+      ])
+    ]), { num: [0, 5], etiquetas: true }));
 }
 
 async function editarGrupo(g) {
@@ -2148,6 +2191,8 @@ async function vistaRespaldo(c) {
       // ---- fotos, en Año / Mes / Grupo / TAG_Punto ----
       const conFoto = filas.filter(f => f.storage_path);
       const idsFoto = [];
+      const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Sitio', 'Punto', 'TAG',
+                       'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por']];
       for (let i = 0; i < conFoto.length; i++) {
         const f = conFoto[i];
         paso(`Descargando fotos… ${i + 1} de ${conFoto.length}`);
@@ -2164,6 +2209,17 @@ async function vistaRespaldo(c) {
         const nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.tag || 'sin-TAG')}_${f.valor ?? 'sd'}.jpg`;
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
+        indice.push([`${carpeta}/${nombre}`, d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()],
+          f.grupo || 'Sin grupo', f.sitio, f.punto, f.tag || '', f.variable, f.unidad,
+          String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
+          f.valor === null ? '' : Number(f.valor), f.estado,
+          S.catalogo.gente?.[f.tomada_por] || '']);
+      }
+
+      // Buscar una foto abriendo carpeta por carpeta es lento. El índice permite
+      // filtrar por punto, mes o persona y saltar directo a la ruta.
+      if (indice.length > 1) {
+        zip.file('indice_fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
       }
 
       // ---- manifiesto ----
@@ -2175,6 +2231,10 @@ async function vistaRespaldo(c) {
         lecturas: idsLectura.length, fotos: idsFoto.length,
         excel: nombreXlsx,
         estructura: 'Año / Mes / Grupo / TAG_Punto / fecha_TAG_lectura.jpg',
+        indice: 'indice_fotos.xlsx · una fila por foto, con su ruta, el punto y quién la tomó',
+        aviso_grupos: 'Las carpetas usan el grupo que el punto tiene HOY. Si un punto cambia de ' +
+                      'grupo, los respaldos nuevos lo guardan en la carpeta nueva; los ya ' +
+                      'descargados quedan donde estaban.',
         nota: 'Los consumos se calculan repartiendo lo medido entre dos lecturas sobre los días de calendario que cubren.'
       }, null, 2));
 
@@ -2950,7 +3010,8 @@ async function vistaEtiquetas(c) {
   const selSitio = el('select', {}, [el('option', { value: '', text: 'Todos los sitios' }),
     ...sitios.map(s => el('option', { value: s.id, text: s.nombre }))]);
   const selGrupo = el('select', {}, [el('option', { value: '', text: 'Todos los grupos' }),
-    ...S.catalogo.grupos.map(g => el('option', { value: g.id, text: g.nombre }))]);
+    ...[...S.catalogo.grupos].sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))
+        .map(g => el('option', { value: g.id, text: g.nombre }))]);
   const cuales = el('select', {}, [
     el('option', { value: 'ambos', text: 'Punto y medidor (dos etiquetas)' }),
     el('option', { value: 'punto', text: 'Solo los puntos' }),

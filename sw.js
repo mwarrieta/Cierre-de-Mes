@@ -1,6 +1,12 @@
 /* Service worker · sirve la app sin señal.
-   Los datos NO pasan por aquí: viven en IndexedDB (ver db.js). */
-const CACHE = 'cierre-mes-v2';
+   Los datos NO pasan por aquí: viven en IndexedDB (ver db.js).
+
+   Estrategia: responde desde el caché al instante (la tablet abre aunque no
+   haya señal) y en paralelo, si hay red, se trae la versión nueva y la guarda
+   para el próximo arranque. Así una versión publicada llega sola a los
+   dispositivos sin depender de que alguien se acuerde de subir el número de
+   CACHE en cada despliegue. */
+const CACHE = 'cierre-mes-v3';
 const ARCHIVOS = [
   './', './index.html', './styles.css', './config.js', './db.js', './app.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png', './supabase.js', './respaldo.js',
@@ -23,14 +29,20 @@ self.addEventListener('fetch', e => {
   // para que la app use su cola local.
   if (url.hostname.endsWith('.supabase.co')) return;
   if (e.request.method !== 'GET') return;
+  if (url.origin !== location.origin) return;
 
-  e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
-      if (res.ok && url.origin === location.origin) {
-        const copia = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, copia));
-      }
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const guardado = await cache.match(e.request);
+
+    // Se pide la versión fresca aunque ya haya una guardada: si llega, queda
+    // lista para el próximo arranque. Si no hay red, no pasa nada.
+    const red = fetch(e.request).then(res => {
+      if (res && res.ok) cache.put(e.request, res.clone());
       return res;
-    }).catch(() => caches.match('./index.html')))
-  );
+    }).catch(() => null);
+
+    if (guardado) { e.waitUntil(red); return guardado; }
+    return (await red) || (await cache.match('./index.html')) || Response.error();
+  })());
 });

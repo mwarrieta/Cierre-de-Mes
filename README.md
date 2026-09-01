@@ -21,8 +21,10 @@ desactivar el registro público (*Enable Sign Ups*). La llave que viaja en `conf
 publicable — está pensada para vivir en el navegador y las políticas RLS son las que protegen
 los datos — pero con el registro abierto cualquiera podría crearse una cuenta en el proyecto.
 
-Al subir una versión nueva hay que cambiar el número de caché en `sw.js`
-(`const CACHE = 'cierre-mes-v2'` → `v3`), o los dispositivos seguirán abriendo la versión vieja.
+Al subir una versión nueva no hay que hacer nada más: el service worker responde desde el caché
+para que la app abra al instante, y en paralelo se trae la versión nueva y la deja lista para el
+próximo arranque. En la práctica, el dispositivo queda actualizado la segunda vez que se abre la
+app con señal. (Si algún día hace falta forzarlo, se sube el número de `CACHE` en `sw.js`.)
 
 ## Probarla en el PC
 

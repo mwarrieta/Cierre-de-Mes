@@ -3144,9 +3144,78 @@ async function vistaEtiquetas(c) {
   refrescar();
 }
 
-// Un PNG por código, para pegarlos en la plantilla de autoadhesivos que ya se
-// usa en faena. El QR se dibuja en un canvas a mano: convertir el SVG a PNG en
-// el navegador es más frágil (tamaños distintos según el motor).
+// Dos PNG por código: la etiqueta lista para pegar (QR + nombre + código) y el
+// QR solo, para quien ya tiene su propia plantilla con el texto puesto.
+// El QR se dibuja módulo a módulo en un canvas: convertir el SVG a PNG en el
+// navegador da tamaños distintos según el motor.
+function lienzoQR(codigo, lado) {
+  const q = qrcode(0, 'M'); q.addData(codigo); q.make();
+  const n = q.getModuleCount();
+  const escala = Math.max(2, Math.floor(lado / (n + 8)));
+  const px = (n + 8) * escala;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = px;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, px, px);
+  cx.fillStyle = '#000';
+  for (let f = 0; f < n; f++)
+    for (let c = 0; c < n; c++)
+      if (q.isDark(f, c)) cx.fillRect((c + 4) * escala, (f + 4) * escala, escala, escala);
+  return cv;
+}
+
+// Parte el nombre en líneas que quepan, y baja el tamaño si aun así no cabe.
+function acomodarTexto(cx, texto, ancho, maxLineas, desde, hasta) {
+  for (let tam = desde; tam >= hasta; tam -= 2) {
+    cx.font = `700 ${tam}px system-ui, "Segoe UI", Arial, sans-serif`;
+    const lineas = [];
+    let actual = '';
+    for (const palabra of texto.split(' ')) {
+      const prueba = actual ? actual + ' ' + palabra : palabra;
+      if (cx.measureText(prueba).width <= ancho) { actual = prueba; }
+      else { if (actual) lineas.push(actual); actual = palabra; }
+    }
+    if (actual) lineas.push(actual);
+    if (lineas.length <= maxLineas && lineas.every(l => cx.measureText(l).width <= ancho))
+      return { tam, lineas };
+  }
+  return { tam: hasta, lineas: [texto] };
+}
+
+function lienzoEtiqueta(e) {
+  const A = 1080, AL = 420, M = 30;
+  const qr = lienzoQR(e.codigo, 360);
+  const cv = document.createElement('canvas');
+  cv.width = A; cv.height = AL;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, A, AL);
+
+  const ladoQR = AL - M * 2;
+  cx.imageSmoothingEnabled = false;
+  cx.drawImage(qr, M, M, ladoQR, ladoQR);
+
+  const x = M + ladoQR + 34;
+  const ancho = A - x - M;
+  cx.fillStyle = '#000';
+  cx.textBaseline = 'top';
+
+  const { tam, lineas } = acomodarTexto(cx, e.titulo, ancho, 3, 62, 30);
+  const altoNombre = lineas.length * (tam + 8);
+  const altoCodigo = 46;
+  let y = Math.max(M, (AL - altoNombre - 18 - altoCodigo) / 2);
+
+  cx.font = `700 ${tam}px system-ui, "Segoe UI", Arial, sans-serif`;
+  for (const l of lineas) { cx.fillText(l, x, y); y += tam + 8; }
+
+  y += 18;
+  cx.font = '600 42px ui-monospace, Consolas, "Courier New", monospace';
+  cx.fillStyle = '#333';
+  cx.fillText(e.codigo, x, y);
+  return cv;
+}
+
+const aBlob = cv => new Promise(r => cv.toBlob(r, 'image/png'));
+
 async function descargarQR(etiquetas, boton) {
   const paso = t => { const n = $('#qr-paso'); if (n) n.textContent = t; };
   boton.disabled = true;
@@ -3164,31 +3233,22 @@ async function descargarQR(etiquetas, boton) {
     for (let i = 0; i < etiquetas.length; i++) {
       const e = etiquetas[i];
       paso(`Dibujando ${i + 1} de ${etiquetas.length}…`);
-      const q = qrcode(0, 'M'); q.addData(e.codigo); q.make();
-      const n = q.getModuleCount();
-      const escala = Math.max(2, Math.floor(560 / (n + 8)));   // margen de 4 módulos
-      const lado = (n + 8) * escala;
-      const cv = document.createElement('canvas');
-      cv.width = cv.height = lado;
-      const cx = cv.getContext('2d');
-      cx.fillStyle = '#fff'; cx.fillRect(0, 0, lado, lado);
-      cx.fillStyle = '#000';
-      for (let f = 0; f < n; f++)
-        for (let c = 0; c < n; c++)
-          if (q.isDark(f, c))
-            cx.fillRect((c + 4) * escala, (f + 4) * escala, escala, escala);
-      const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
-      zip.file(`${e.clase === 'punto' ? 'puntos' : 'medidores'}/${e.codigo}_${L(e.titulo.replace(/³/g, '3'))}.png`, blob);
-      if (i % 10 === 0) await new Promise(r => setTimeout(r));   // no congelar la pantalla
+      const carpeta = e.clase === 'punto' ? 'puntos' : 'medidores';
+      const nombre = `${e.codigo}_${L(e.titulo.replace(/³/g, '3'))}.png`;
+      zip.file(`etiquetas/${carpeta}/${nombre}`, await aBlob(lienzoEtiqueta(e)));
+      zip.file(`solo-qr/${carpeta}/${nombre}`, await aBlob(lienzoQR(e.codigo, 560)));
+      if (i % 8 === 0) await new Promise(r => setTimeout(r));   // no congelar la pantalla
     }
     zip.file('leeme.txt',
-      'Un PNG por código. El nombre del archivo es el código y el nombre del punto o del medidor.\n' +
-      'Para pegarlos en la plantilla de etiquetas: Insertar → Imagen → Este dispositivo.\n' +
-      'Imprímelos a 2,5 cm de lado o más; por debajo de eso la cámara del celular sufre.\n');
+      'etiquetas/  · la etiqueta lista para pegar: QR + nombre + código (1080 x 420 px)\n' +
+      'solo-qr/    · el QR solo, para plantillas que ya traen el texto\n\n' +
+      'Imprime el QR a 2,5 cm de lado o más; por debajo de eso la cámara del celular sufre.\n' +
+      'La etiqueta del punto no nombra al medidor y la del medidor no nombra al punto:\n' +
+      'los equipos se cambian y la etiqueta quedaría mintiendo.\n');
     paso('Comprimiendo…');
     descargar(await zip.generateAsync({ type: 'blob' }), `QR_Cierre_de_Mes_${new Date().toISOString().slice(0,10)}.zip`);
     paso('');
-    toast(`${etiquetas.length} imágenes listas`);
+    toast(`${etiquetas.length * 2} imágenes listas`);
   } catch (err) {
     paso('');
     toast('No se pudieron generar las imágenes: ' + (err.message || err), true);

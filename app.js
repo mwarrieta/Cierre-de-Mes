@@ -1052,6 +1052,25 @@ async function vistaDispositivo(c) {
     ]),
 
     el('div', { class: 'card seccion' }, [
+      el('h4', { style: 'margin-top:0', text: 'Catálogo del dispositivo' }),
+      el('p', { class: 'ayuda', text:
+        `Puntos, grupos y equipos se bajaron ${S.catalogo?.bajadoEn
+          ? 'el ' + fechaHora(new Date(S.catalogo.bajadoEn).toISOString())
+          : 'en algún momento'}. Se refrescan solos cada 6 horas: si alguien cambió un grupo o ` +
+        'agregó un punto hace un rato, puede que este dispositivo todavía no lo vea.' }),
+      el('button', { class: 'btn', text: 'Actualizar el catálogo ahora', onclick: async e => {
+        e.target.disabled = true;
+        try {
+          S.catalogo = await DB.descargarCatalogo();
+          await DB.descargarBandas();
+          toast('Catálogo actualizado');
+        } catch (err) { toast('No se pudo: ' + (err.message || err), true); }
+        e.target.disabled = false;
+        render();
+      } })
+    ]),
+
+    el('div', { class: 'card seccion' }, [
       el('h4', { style: 'margin-top:0', text: 'Cola de envío' }),
       cola.length
         ? el('div', {}, [
@@ -1274,8 +1293,26 @@ async function vistaConsumos(c) {
     if (R.sitio) q = q.eq('sitio', R.sitio);
     const { data, error } = await q;
     if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
-    S.repDatos = { filas: data, desde, hasta };
-    poner(zona, ...armarInforme(data, desde, hasta));
+
+    // Un punto que no se midió es información, no un hueco: se lista aparte.
+    const enAlcance = S.catalogo.variables.filter(v =>
+      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
+      (!R.sitio || v.punto.sitio.nombre === R.sitio));
+    const conDato = new Set(data.map(f => f.variable_id));
+    const faltantes = enAlcance.filter(v => !conDato.has(v.id));
+
+    let avisos = [];
+    try {
+      const ids = [...new Set(enAlcance.map(v => v.punto.id))];
+      const r = await sb.from('avisos')
+        .select('punto_id, descripcion, severidad, abierto_en, categoria:catalogo_avisos(categoria)')
+        .neq('estado', 'resuelto').in('punto_id', ids.slice(0, 300));
+      avisos = r.data || [];
+    } catch { /* sin avisos, el informe igual sirve */ }
+
+    const bandas = await DB.bandasCache().catch(() => ({}));
+    S.repDatos = { filas: data, desde, hasta, faltantes, avisos, bandas };
+    poner(zona, ...armarInforme(data, desde, hasta, { faltantes, avisos, bandas }));
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
       ? `${new Set(data.map(f => f.punto_id)).size} puntos · ${data.length} valores calculados`
@@ -1287,7 +1324,21 @@ async function vistaConsumos(c) {
 }
 
 /* ---------- armado del informe (se reutiliza en pantalla y al imprimir) ---------- */
-function armarInforme(data, desde, hasta) {
+// Fuera de rango: se compara contra la banda EWMA que ya está en el dispositivo.
+// Devuelve null si no hay banda (menos de 4 meses de historia) o si está dentro.
+function juzgarConsumo(f, bandas) {
+  const v = Number(f.consumo);
+  if (v < 0) return { nivel: 'bad', texto: 'negativo' };
+  if (v === 0) return { nivel: 'warn', texto: 'en cero' };
+  const b = bandas[f.variable_id];
+  if (!b || !b.sigma) return null;
+  const z = (v - b.media) / b.sigma;
+  if (Math.abs(z) > 3) return { nivel: 'bad', texto: (z > 0 ? 'muy alto' : 'muy bajo') };
+  if (Math.abs(z) > 1.5) return { nivel: 'warn', texto: (z > 0 ? 'alto' : 'bajo') };
+  return null;
+}
+
+function armarInforme(data, desde, hasta, extra = {}) {
   if (!data.length) {
     return [el('p', { class: 'vacio', html:
       `No hay consumos calculados en ese periodo.<br>` +
@@ -1298,16 +1349,26 @@ function armarInforme(data, desde, hasta) {
   const unidades = [...new Set(data.map(f => f.unidad_reporte))];
   const partes = [];
 
-  // ---- KPIs por unidad + calidad del dato ----
+  const { faltantes = [], avisos = [], bandas = {} } = extra;
+  const conAviso = new Set(avisos.map(a => a.punto_id));
+  const juicios = new Map();
+  for (const f of data) { const j = juzgarConsumo(f, bandas); if (j) juicios.set(f.variable_id + '|' + f.mes, j); }
+  const fueraDeRango = [...juicios.values()].filter(j => j.nivel === 'bad').length;
+  const atencion = [...juicios.values()].filter(j => j.nivel === 'warn').length;
+
+  // ---- KPIs ----
+  // Sin total general a propósito: los puntos tienen naturalezas distintas (unos
+  // en serie, otros en paralelo del mismo circuito). Sumarlos daría un número que
+  // nadie puede defender. Las sumas por grupo van al pie de su tabla, marcadas.
   const kpis = [];
-  for (const u of unidades) {
-    const total = data.filter(f => f.unidad_reporte === u).reduce((a, f) => a + Number(f.consumo), 0);
-    kpis.push(kpi(num(total), `total ${UNIDAD[u] || u}`));
-  }
   const metodos = { directo: 0, prorrateado: 0, estimado: 0 };
   for (const f of data) metodos[f.metodo] = (metodos[f.metodo] || 0) + 1;
   const provisionales = data.filter(f => !f.completo).length;
-  kpis.push(kpi(new Set(data.map(f => f.punto_id)).size, 'puntos'));
+  kpis.push(kpi(new Set(data.map(f => f.punto_id)).size, 'puntos con dato'));
+  if (faltantes.length) kpis.push(kpi(faltantes.length, 'sin lectura', 'alerta'));
+  if (fueraDeRango) kpis.push(kpi(fueraDeRango, 'fuera de rango', 'alerta'));
+  if (atencion) kpis.push(kpi(atencion, 'para revisar', 'aviso'));
+  if (conAviso.size) kpis.push(kpi(conAviso.size, 'puntos con aviso abierto', 'aviso'));
   if (provisionales) kpis.push(kpi(provisionales, 'valores provisionales', 'aviso'));
   partes.push(el('div', { class: 'kpis seccion' }, kpis));
 
@@ -1320,20 +1381,26 @@ function armarInforme(data, desde, hasta) {
     })).filter(d => d.valor > 0);
     if (serie.length > 1) {
       partes.push(graficoBarras(serie,
-        { titulo: 'Consumo mensual del conjunto', unidad: UNIDAD[u] || u }));
+        { titulo: 'Suma mensual de los puntos mostrados (referencial)', unidad: UNIDAD[u] || u }));
     }
   }
 
   // ---- tabla ----
   if (meses.length === 1) {
     partes.push(tabla(
-      ['Sitio', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Método', 'Estado'],
-      data.map(f => [
-        f.sitio, f.punto, f.tag || '—', f.variable,
-        num(f.consumo), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
-        el('span', { class: 'pill ' + ({ directo: 'ok', prorrateado: 'acento', estimado: 'warn' }[f.metodo] || 'neutro'), text: f.metodo }),
-        el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })
-      ]), { num: [4, 6] }));
+      ['Sitio', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'],
+      data.map(f => {
+        const j = juicios.get(f.variable_id + '|' + f.mes);
+        const marcas = [];
+        if (j) marcas.push(el('span', { class: 'pill ' + j.nivel, text: j.texto }));
+        if (conAviso.has(f.punto_id)) marcas.push(el('span', { class: 'pill warn', text: 'aviso' }));
+        return [
+          f.sitio, f.punto, f.tag || '—', f.variable,
+          num(f.consumo), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
+          marcas.length ? el('div', { class: 'fila' }, marcas) : el('span', { class: 'pill ok', text: 'ok' }),
+          el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })
+        ];
+      }), { num: [4, 6] }));
   } else {
     // pivote: una fila por punto·variable, una columna por mes
     const claves = new Map();
@@ -1343,18 +1410,40 @@ function armarInforme(data, desde, hasta) {
       claves.get(k).meses[f.mes] = Number(f.consumo);
     }
     const cab = ['Sitio', 'Punto', 'TAG', 'Variable', 'Un.',
-                 ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total'];
+                 ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total', 'Revisar'];
     const filas = [...claves.values()]
       .sort((a, b) => compararGrupos(a.f.grupo, b.f.grupo) ||
                       `${a.f.sitio}${a.f.punto}`.localeCompare(`${b.f.sitio}${b.f.punto}`))
       .map(({ f, meses: mm }) => {
         const vals = meses.map(m => mm[m]);
         const total = vals.reduce((a, v) => a + (v || 0), 0);
+        const malos = meses.filter(m => juicios.get(f.variable_id + '|' + m)?.nivel === 'bad').length;
+        const tibios = meses.filter(m => juicios.get(f.variable_id + '|' + m)?.nivel === 'warn').length;
+        const marca = malos ? el('span', { class: 'pill bad', text: `${malos} fuera de rango` })
+                    : tibios ? el('span', { class: 'pill warn', text: `${tibios} para revisar` })
+                    : conAviso.has(f.punto_id) ? el('span', { class: 'pill warn', text: 'aviso' })
+                    : el('span', { class: 'pill ok', text: 'ok' });
         return [f.sitio, f.punto, f.tag || '—', f.variable,
                 UNIDAD[f.unidad_reporte] || f.unidad_reporte,
-                ...vals.map(v => v === undefined ? '—' : num(v)), num(total)];
+                ...vals.map(v => v === undefined ? '—' : num(v)), num(total), marca];
       });
-    partes.push(tabla(cab, filas, { num: cab.map((_, i) => i).filter(i => i >= 5) }));
+    partes.push(tabla(cab, filas, { num: cab.map((_, i) => i).filter(i => i >= 5 && i < cab.length - 1) }));
+  }
+
+  // ---- puntos sin lectura ----
+  if (faltantes.length) {
+    partes.push(el('div', { class: 'seccion' }, [
+      el('h4', { text: `Puntos sin lectura en el periodo (${faltantes.length})` }),
+      el('p', { class: 'ayuda', text:
+        'Un punto que no se midió no desaparece del informe: se declara. Puede ser que no se ' +
+        'haya tomado, que el equipo esté fuera de servicio o que falte la lectura del mes ' +
+        'siguiente para poder calcular su consumo.' }),
+      tabla(['Sitio', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+        faltantes.slice(0, 300).map(v => [
+          v.punto.sitio.nombre, v.punto.nombre, v.nombre,
+          UNIDAD[v.unidad_reporte] || v.unidad_reporte,
+          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
+    ]));
   }
 
   // ---- declaración de calidad ----
@@ -1373,45 +1462,136 @@ function armarInforme(data, desde, hasta) {
   return partes;
 }
 
-/* ---------- informe imprimible ---------- */
+/* ---------- informe imprimible ----------
+   Blanco y negro, formato de planilla: los puntos en las filas y los meses en
+   las columnas. Nada de tarjetas ni botones: esto se manda por correo y se
+   archiva, y tiene que leerse como una tabla, no como una foto de la pantalla. */
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
-  const { filas, desde, hasta } = S.repDatos;
+  const { filas, desde, hasta, faltantes = [], avisos = [], bandas = {} } = S.repDatos;
   const R = S.rep;
-  const puntos = [...new Set(filas.map(f => f.punto_id))];
 
-  // avisos abiertos y lecturas faltantes del alcance
-  let avisos = [];
-  try {
-    const { data } = await sb.from('avisos')
-      .select('descripcion, severidad, abierto_en, punto:puntos(nombre), categoria:catalogo_avisos(categoria)')
-      .neq('estado', 'resuelto').in('punto_id', puntos.slice(0, 200));
-    avisos = data || [];
-  } catch { /* sin avisos */ }
+  const meses = [...new Set(filas.map(f => f.mes))].sort();
+  const nMes = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const cabMes = m => variosAnios ? `${nMes(m)}-${m.slice(2, 4)}` : nMes(m);
 
   const titulo = R.grupo || R.sitio || 'Todos los puntos';
   const periodo = desde === hasta ? nombrePeriodo(desde)
                                   : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
 
-  const hoja = el('div', { class: 'hoja' }, [
-    el('header', { class: 'hoja-cab' }, [
-      el('div', {}, [
-        el('h1', { text: 'Informe de consumos' }),
-        el('p', { class: 'hoja-sub', text: `${titulo} · ${periodo}` })
+  // una fila por variable, ordenada por grupo y punto
+  const porVar = new Map();
+  for (const f of filas) {
+    if (!porVar.has(f.variable_id)) porVar.set(f.variable_id, { f, m: {} });
+    porVar.get(f.variable_id).m[f.mes] = Number(f.consumo);
+  }
+  const orden = [...porVar.values()].sort((a, b) =>
+    compararGrupos(a.f.grupo, b.f.grupo) ||
+    `${a.f.sitio}${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.sitio}${b.f.punto}${b.f.variable}`));
+
+  // tabla, con separadores de grupo y suma referencial por unidad
+  const cuerpo = [];
+  let grupoActual = null, acum = {};
+  const cerrar = () => {
+    if (grupoActual === null) return;
+    for (const [u, a] of Object.entries(acum)) {
+      cuerpo.push(el('tr', { class: 'suma' }, [
+        el('td', { colspan: 3, text: `Suma de ${grupoActual} · ${UNIDAD[u] || u} (referencial)` }),
+        ...meses.map(m => el('td', { class: 'num', text: num(a[m] || 0) })),
+        el('td', { class: 'num', text: num(meses.reduce((s2, m) => s2 + (a[m] || 0), 0)) })
+      ]));
+    }
+  };
+  for (const { f, m } of orden) {
+    if (f.grupo !== grupoActual) {
+      cerrar();
+      grupoActual = f.grupo; acum = {};
+      cuerpo.push(el('tr', { class: 'grupo' }, [
+        el('td', { colspan: meses.length + 4, text: (grupoActual || 'Sin grupo').toUpperCase() })
+      ]));
+    }
+    (acum[f.unidad_reporte] ||= {});
+    meses.forEach(x => { acum[f.unidad_reporte][x] = (acum[f.unidad_reporte][x] || 0) + (m[x] || 0); });
+    const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
+    const j = meses.map(x => juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas))
+                   .some(x => x && x.nivel === 'bad');
+    cuerpo.push(el('tr', {}, [
+      el('td', { text: f.punto }),
+      el('td', { text: f.variable }),
+      el('td', { text: UNIDAD[f.unidad_reporte] || f.unidad_reporte }),
+      ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? '—' : num(m[x]) })),
+      el('td', { class: 'num total', text: num(total) + (j ? ' *' : '') })
+    ]));
+  }
+  cerrar();
+
+  const tablaPrincipal = el('table', { class: 'planilla' }, [
+    el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'Punto' }), el('th', { text: 'Variable' }), el('th', { text: 'Un.' }),
+      ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
+      el('th', { class: 'num', text: 'Total' })
+    ])]),
+    el('tbody', {}, cuerpo)
+  ]);
+
+  const marcados = orden.filter(({ f, m }) =>
+    meses.some(x => juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas)?.nivel === 'bad')).length;
+
+  const hoja = el('div', { class: 'hoja hoja-informe' }, [
+    el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
+      el('td', {}, [
+        el('h1', { text: 'Consumos · ' + titulo }),
+        el('p', { text: periodo })
       ]),
-      el('div', { class: 'hoja-meta', html:
-        `Algorta Norte<br>Generado por ${esc(S.usuario.nombre)}<br>${fechaHora(new Date().toISOString())}` })
-    ]),
-    ...armarInforme(filas, desde, hasta),
-    avisos.length ? el('div', { class: 'seccion' }, [
-      el('h4', { text: 'Avisos abiertos en estos puntos' }),
-      tabla(['Punto', 'Categoría', 'Severidad', 'Abierto', 'Descripción'], avisos.map(a => [
-        a.punto?.nombre || '—', a.categoria?.categoria || '—', a.severidad,
-        fechaCorta(a.abierto_en), a.descripcion || '—']))
+      el('td', { class: 'num', html:
+        `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
+    ])])]),
+
+    tablaPrincipal,
+
+    faltantes.length ? el('div', {}, [
+      el('h2', { text: `Puntos sin lectura en el periodo (${faltantes.length})` }),
+      el('table', { class: 'planilla' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: 'Sitio' }), el('th', { text: 'Punto' }),
+          el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
+        el('tbody', {}, faltantes.slice(0, 200).map(v => el('tr', {}, [
+          el('td', { text: v.punto.sitio.nombre }), el('td', { text: v.punto.nombre }),
+          el('td', { text: v.nombre }),
+          el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
+      ])
     ]) : null,
-    el('p', { class: 'hoja-pie', text:
-      'Los consumos se calculan repartiendo lo medido entre dos lecturas sobre los días de calendario que cubren. ' +
-      'Un mes queda cerrado cuando existe la lectura del mes siguiente.' })
+
+    avisos.length ? el('div', {}, [
+      el('h2', { text: `Avisos abiertos (${avisos.length})` }),
+      el('table', { class: 'planilla' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: 'Punto' }), el('th', { text: 'Categoría' }),
+          el('th', { text: 'Severidad' }), el('th', { text: 'Abierto' }),
+          el('th', { text: 'Descripción' })])]),
+        el('tbody', {}, avisos.slice(0, 100).map(a => {
+          const p = S.catalogo.variables.find(v => v.punto.id === a.punto_id);
+          return el('tr', {}, [
+            el('td', { text: p ? p.punto.nombre : '—' }),
+            el('td', { text: a.categoria?.categoria || '—' }),
+            el('td', { text: a.severidad }),
+            el('td', { text: fechaCorta(a.abierto_en) }),
+            el('td', { text: a.descripcion || '—' })]);
+        }))
+      ])
+    ]) : null,
+
+    el('div', { class: 'pie-informe' }, [
+      el('p', { text:
+        'El consumo de cada mes se calcula repartiendo lo medido entre dos lecturas sobre los días ' +
+        'de calendario que cubren. Un mes queda cerrado cuando existe la lectura del mes siguiente.' }),
+      el('p', { text:
+        'Las sumas por grupo son referenciales: los puntos tienen naturalezas distintas y algunos ' +
+        'miden tramos en serie del mismo circuito, así que no constituyen un total de energía.' }),
+      marcados ? el('p', { text:
+        `(*) ${marcados} punto(s) con al menos un mes fuera del rango habitual. Revisar antes de usar el dato.` }) : null
+    ])
   ]);
 
   const cont = document.getElementById('impresion');
@@ -1424,236 +1604,6 @@ async function imprimirInforme() {
   };
   window.addEventListener('afterprint', limpiar);
   setTimeout(() => window.print(), 120);
-}
-
-/* ===================================================================
-   PLANILLA ANUAL EN EXCEL
-   Dos miradas del mismo dato, porque sirven para cosas distintas:
-   · Resumen anual  → una fila por punto, para leer y mandar.
-   · Detalle mensual → totalizador, consumo y variación, para revisar.
-   Más una pestaña por grupo, para mandarle a cada sector solo lo suyo.
-   =================================================================== */
-
-// PostgREST devuelve 1.000 filas como máximo. Con dos años de lecturas eso
-// truncaría la planilla en silencio, que es la peor forma de fallar.
-async function traerTodo(armar, paso = 1000) {
-  const salida = [];
-  for (let desde = 0; ; desde += paso) {
-    const { data, error } = await armar().range(desde, desde + paso - 1);
-    if (error) throw error;
-    salida.push(...data);
-    if (data.length < paso) return salida;
-  }
-}
-
-const MES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-function etiquetaMes(m, variosAnios) {
-  const [a, mm] = m.split('-');
-  return variosAnios ? `${MES_CORTO[+mm - 1]}-${a}` : MES_CORTO[+mm - 1];
-}
-const mesSiguiente = m => {
-  const d = new Date(m + 'T00:00:00Z');
-  d.setUTCMonth(d.getUTCMonth() + 1);
-  return d.toISOString().slice(0, 10);
-};
-// Excel no acepta : \ / ? * [ ] en el nombre de una hoja, ni más de 31 caracteres.
-const nombreHoja = (s, usados) => {
-  let base = String(s).replace(/[:\\\/\?\*\[\]]/g, '-').slice(0, 31) || 'Hoja';
-  let n = base, i = 2;
-  while (usados.has(n)) { n = base.slice(0, 28) + '~' + i++; }
-  usados.add(n);
-  return n;
-};
-
-async function descargarPlanilla(desde, hasta, filtros = {}) {
-  const paso = t => { const p = $('#planilla-paso'); if (p) p.textContent = t; };
-  if (typeof JSZip === 'undefined') {
-    paso('Cargando el compresor…');
-    await new Promise((ok, mal) => {
-      const s = document.createElement('script');
-      s.src = 'jszip.js'; s.onload = ok; s.onerror = mal;
-      document.head.append(s);
-    });
-  }
-  paso('Consultando consumos…');
-  const cons = await traerTodo(() => {
-    let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
-              .order('mes').order('sitio').order('punto');
-    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
-    return q;
-  });
-  if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
-
-  paso('Consultando lecturas…');
-  // El totalizador de un mes es la lectura del mes siguiente, así que hay que
-  // pedir un mes más para que la última columna no quede vacía.
-  const lect = await traerTodo(() => {
-    let q = sb.from('v_respaldo').select('*')
-             .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
-             .order('periodo');
-    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
-    return q;
-  });
-
-  paso('Armando el libro…');
-  const meses = [...new Set(cons.map(c => c.mes))].sort();
-  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
-  const cabMeses = meses.map(m => etiquetaMes(m, variosAnios));
-
-  // ---- datos por variable ----
-  const porVar = new Map();
-  for (const c of cons) {
-    if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
-      tag: c.tag || '', sitio: c.sitio, grupo: c.grupo || 'Sin grupo', punto: c.punto,
-      variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
-      cons: {}, estado: {}, metodo: {}, lect: {}
-    });
-    const v = porVar.get(c.variable_id);
-    v.cons[c.mes] = Number(c.consumo);
-    v.estado[c.mes] = c.completo ? 'cerrado' : 'provisional';
-    v.metodo[c.mes] = c.metodo;
-  }
-  for (const f of lect) {
-    const v = porVar.get(f.variable_id);
-    if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
-  }
-  const filasVar = [...porVar.values()].sort((a, b) =>
-    compararGrupos(a.grupo, b.grupo) ||
-    (a.sitio + a.punto).localeCompare(b.sitio + b.punto));
-
-  const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
-
-  // ---- 1 · Resumen anual: bloques por grupo y unidad, con subtotal ----
-  const resumen = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
-  // Sumar kWh con m3 no significa nada: cada grupo cierra con una suma POR UNIDAD.
-  // Y no hay TOTAL GENERAL a propósito: los puntos tienen naturalezas distintas
-  // (unos en serie, otros en paralelo del mismo circuito), así que un gran total
-  // sería un número que nadie puede defender. Los grupos son vistas de reporte.
-  let grupoActual = null, acumGrupo = {};
-  const cerrarGrupo = () => {
-    if (grupoActual === null) return;
-    for (const [u, acum] of Object.entries(acumGrupo)) {
-      resumen.push(['', '', `Suma del grupo (referencial)`, '', u, '',
-        ...meses.map(m => redondear(acum[m])),
-        redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
-    }
-    resumen.push([]);
-  };
-  for (const v of filasVar) {
-    if (v.grupo !== grupoActual) {
-      cerrarGrupo();
-      grupoActual = v.grupo; acumGrupo = {};
-      resumen.push([`GRUPO: ${grupoActual}`]);
-    }
-    (acumGrupo[v.unidad] ||= {});
-    meses.forEach(m => { acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0); });
-    resumen.push([v.tag, v.sitio, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
-      ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
-  }
-  cerrarGrupo();
-
-  // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
-  const detalle = [['TAG', 'Sitio', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
-  for (const v of filasVar) {
-    detalle.push([v.tag, v.sitio, v.grupo, v.punto, v.variable, v.unidad, 'Totalizador',
-      ...meses.map(m => redondear(v.lect[mesSiguiente(m)]))]);
-    detalle.push(['', '', '', '', '', '', 'Consumo del mes',
-      ...meses.map(m => redondear(v.cons[m]))]);
-    detalle.push(['', '', '', '', '', '', 'Var. % vs mes anterior', ...meses.map((m, i) => {
-      if (i === 0) return '';
-      const a = v.cons[meses[i - 1]], b = v.cons[m];
-      // en puntos porcentuales: -62,8 se lee solo; -0,628 obliga a formatear la celda
-      return (a && b) ? Number((100 * (b - a) / a).toFixed(1)) : '';
-    })]);
-    detalle.push(['', '', '', '', '', '', 'Estado', ...meses.map(m => v.estado[m] || '')]);
-  }
-
-  // ---- 3 · una hoja por grupo ----
-  const usados = new Set();
-  const hojas = [
-    { nombre: nombreHoja('Resumen anual', usados), filas: resumen },
-    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle }
-  ];
-  const grupos = [...new Set(filasVar.flatMap(v => v.grupos.length ? v.grupos : ['Sin grupo']))]
-                   .sort(compararGrupos);
-  for (const g of grupos) {
-    const suyas = filasVar.filter(v => (v.grupos.length ? v.grupos : ['Sin grupo']).includes(g));
-    const f = [[`GRUPO: ${g}`], [], ['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
-    for (const v of suyas)
-      f.push([v.tag, v.sitio, v.punto, v.variable, v.unidad,
-        ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
-    const porUnidad = {};
-    for (const v of suyas) { (porUnidad[v.unidad] ||= {}); meses.forEach(m => porUnidad[v.unidad][m] = (porUnidad[v.unidad][m] || 0) + (v.cons[m] || 0)); }
-    f.push([]);
-    for (const [u, acum] of Object.entries(porUnidad))
-      f.push(['', '', `Suma del grupo (referencial) · ${u}`, '', u,
-        ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
-    hojas.push({ nombre: nombreHoja(g, usados), filas: f });
-  }
-
-  // ---- 4 · lecturas y 5 · consumos en formato largo ----
-  hojas.push({ nombre: nombreHoja('Lecturas', usados), filas: [
-    ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable',
-     'Unidad', 'Valor', 'Sin dato', 'Reinicio', 'Consumo declarado', 'Estado', 'Origen',
-     'Observación', 'Obs. validación', 'Foto'],
-    ...lect.map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
-      f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable,
-      f.unidad, f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
-      f.es_reset ? (f.tipo_reset || 'sí') : 'no',
-      f.consumo_manual === null || f.consumo_manual === undefined ? '' : Number(f.consumo_manual),
-      f.estado, f.origen, f.observacion || '', f.obs_validacion || '', f.storage_path ? 'sí' : 'no'])
-  ]});
-  hojas.push({ nombre: nombreHoja('Consumos', usados), filas: [
-    ['Mes', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
-    ...cons.map(c => [c.mes, c.sitio, c.grupo || '', c.punto, c.tag || '', c.variable,
-      c.unidad_reporte, Number(c.consumo), c.dias_asignados, c.metodo,
-      c.completo ? 'cerrado' : 'provisional'])
-  ]});
-
-  // ---- 6 · calidad del dato ----
-  const cuenta = (arr, f) => arr.reduce((a, x) => { const k = f(x); a[k] = (a[k] || 0) + 1; return a; }, {});
-  const porMetodo = cuenta(cons, c => c.metodo);
-  const prov = cons.filter(c => !c.completo);
-  hojas.push({ nombre: nombreHoja('Calidad del dato', usados), filas: [
-    ['Concepto', 'Valor'],
-    ['Periodo', `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`],
-    ['Generado', new Date().toLocaleString('es-CL')],
-    ['Generado por', S.usuario.nombre],
-    ['Filtro de grupo', filtros.grupo || 'todos'],
-    ['Filtro de sitio', filtros.sitio || 'todos'],
-    ['Puntos', new Set(cons.map(c => c.punto_id)).size],
-    ['Valores de consumo', cons.length],
-    ['Lecturas incluidas', lect.length],
-    [],
-    ['Cómo se calculó cada consumo', ''],
-    ['directo (lectura del día 1)', porMetodo.directo || 0],
-    ['prorrateado (fecha corrida)', porMetodo.prorrateado || 0],
-    ['estimado (carga histórica)', porMetodo.estimado || 0],
-    [],
-    ['Valores provisionales', prov.length],
-    ['', 'Un mes queda cerrado cuando existe la lectura del mes siguiente.'],
-    [],
-    ['Cómo leer la planilla', ''],
-    ['', 'El consumo de un mes se reparte entre las lecturas que lo cubren, por días de calendario.'],
-    ['', 'En "Detalle mensual", el totalizador de un mes es la lectura tomada al comienzo del mes siguiente.'],
-    ...prov.slice(0, 200).map(c => ['provisional', `${c.mes} · ${c.punto} · ${c.variable}`])
-  ]});
-
-  paso('Escribiendo el archivo…');
-  const blob = await window.RESPALDO.construirExcel(hojas);
-  const alcance = filtros.grupo ? '_' + window.RESPALDO.limpio(filtros.grupo)
-                : filtros.sitio ? '_' + window.RESPALDO.limpio(filtros.sitio) : '';
-  descargar(blob, `Consumos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}${alcance}.xlsx`);
-  paso('');
-  toast(`Planilla lista: ${filasVar.length} puntos, ${meses.length} meses`);
-}
-
-// Excel guarda lo que le den: conviene no arrastrar 12 decimales de un prorrateo.
-function redondear(v) {
-  if (v === null || v === undefined || Number.isNaN(v)) return '';
-  return Math.round(Number(v) * 100) / 100;
 }
 
 /* ===================================================================

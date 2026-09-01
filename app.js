@@ -239,6 +239,7 @@ async function arrancar() {
 
   await refrescarDatos();
   await actualizarConexion();
+  revisarVersion();
   ir(esSupervisor() ? 'tablero' : 'terreno');
   if (navigator.onLine) sincronizar(true);
 }
@@ -429,9 +430,15 @@ async function pintarLista() {
     const eq = v.punto.equipo?.tag || '';
     return `${v.punto.nombre} ${v.punto.sitio.nombre} ${v.nombre} ${eq}`.toLowerCase().includes(f);
   });
+  const sinDato = v => {
+    const l = S.lecturas.find(x => x.variable_id === v.id);
+    return !!(l && l.sin_dato);
+  };
   const total = items.length;
   const pend = items.filter(v => !tomada(v)).length;
-  if (S.soloPendientes) items = items.filter(v => !tomada(v));
+  const nSinDato = items.filter(sinDato).length;
+  if (S.soloPendientes === 'pendientes') items = items.filter(v => !tomada(v));
+  if (S.soloPendientes === 'sindato') items = items.filter(sinDato);
 
   cont.replaceChildren();
 
@@ -440,27 +447,36 @@ async function pintarLista() {
   const chip = (texto, activo, alTocar) => el('button', {
     class: 'chip-filtro' + (activo ? ' sel' : ''), text: texto, onclick: alTocar });
   cont.append(el('div', { class: 'fila filtros-terreno' }, [
-    chip(`Todos · ${total}`, !S.soloPendientes, () => { S.soloPendientes = false; pintarLista(); }),
-    chip(`Pendientes · ${pend}`, S.soloPendientes, () => { S.soloPendientes = true; pintarLista(); }),
+    chip(`Todos · ${total}`, !S.soloPendientes,
+      () => { S.soloPendientes = false; pintarLista(); }),
+    chip(`Pendientes · ${pend}`, S.soloPendientes === 'pendientes',
+      () => { S.soloPendientes = 'pendientes'; pintarLista(); }),
+    // "No se pudo leer" no es pendiente ni es dato: es su propia cola de trabajo,
+    // la de los puntos a los que hay que volver.
+    nSinDato ? chip(`No se pudo leer · ${nSinDato}`, S.soloPendientes === 'sindato',
+      () => { S.soloPendientes = 'sindato'; pintarLista(); }) : null,
     el('span', { class: 'crece' }),
     chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
     chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
-  ]));
+  ].filter(Boolean)));
 
   if (!items.length) {
     cont.append(el('p', { class: 'vacio', text: S.soloPendientes && total
-      ? 'No queda nada pendiente con este filtro. Buen trabajo.'
+      ? 'No queda nada con este filtro. Buen trabajo.'
       : 'Nada coincide con la búsqueda.' }));
     return;
   }
 
-  // Un punto puede estar en varios grupos: aparece en cada uno de ellos.
+  // Un punto puede estar en varios grupos, pero en terreno se toma UNA vez: se
+  // lista en su primer grupo y los demás se nombran en el detalle. Repetirlo en
+  // cada sección haría creer que hay puntos duplicados, que es justo el problema
+  // que veníamos de arreglar.
   const secciones = {};
   for (const v of items) {
-    const claves = S.agrupar === 'sitio'
-      ? [v.punto.sitio.nombre]
-      : (v.punto.grupos && v.punto.grupos.length ? v.punto.grupos : ['Sin grupo']);
-    for (const k of claves) (secciones[k] ||= []).push(v);
+    const gs = v.punto.grupos && v.punto.grupos.length ? v.punto.grupos : ['Sin grupo'];
+    const clave = S.agrupar === 'sitio' ? v.punto.sitio.nombre
+                : [...gs].sort(compararGrupos)[0];
+    (secciones[clave] ||= []).push(v);
   }
   const orden = Object.keys(secciones).sort(
     S.agrupar === 'sitio' ? (a, b) => a.localeCompare(b) : compararGrupos);
@@ -468,9 +484,11 @@ async function pintarLista() {
   for (const seccion of orden) {
     const lista = secciones[seccion];
     const faltan = lista.filter(v => !tomada(v)).length;
+    const sd = lista.filter(sinDato).length;
     cont.append(el('div', { class: 'grupo-sitio' }, [
       el('span', { text: seccion }),
-      el('span', { class: 'cuenta-seccion', text: faltan ? `faltan ${faltan}` : 'completo' })
+      el('span', { class: 'cuenta-seccion', text:
+        faltan ? `faltan ${faltan}` : sd ? `${sd} sin poder leer` : 'completo' })
     ]));
     for (const v of lista.sort((a, b) => a.punto.nombre.localeCompare(b.punto.nombre))) {
       const { clase, l } = estadoDeVariable(v);
@@ -481,11 +499,16 @@ async function pintarLista() {
       cont.append(el('button', { class: 'item ' + cl, onclick: () => abrirCaptura(v) }, [
         el('span', { class: 'txt' }, [
           el('span', { class: 'n', text: v.punto.nombre }),
-          el('span', { class: 'd', text: `${tag ? tag + ' · ' : ''}${v.nombre} · ${u}` })
+          el('span', { class: 'd', text: `${tag ? tag + ' · ' : ''}${v.nombre} · ${u}` +
+            ((v.punto.grupos || []).length > 1 && S.agrupar === 'grupo'
+              ? ' · también en ' + [...v.punto.grupos].sort(compararGrupos).slice(1).join(', ')
+              : '') })
         ]),
         el('span', { class: 'val', html: cl === 'cola'
           ? '<span class="pill acento">por enviar</span>'
-          : l ? `${l.sin_dato ? 'sin dato' : num(l.valor)}<small>${esc(quien(l))}</small>`
+          : l ? (l.sin_dato
+                  ? `<span class="pill warn">no se pudo leer</span><small>${esc(quien(l))}</small>`
+                  : `${num(l.valor)}<small>${esc(quien(l))}</small>`)
               : '<span class="pill neutro">pendiente</span>' })
       ]));
     }
@@ -519,20 +542,39 @@ async function abrirCaptura(v) {
 
   let blobFoto = null;
 
+  // Dos caminos para la foto: la cámara en el momento, o una que ya está en el
+  // teléfono. El segundo es el que permite subir el archivo fotográfico viejo.
   const cajaFoto = el('div', { class: 'foto-caja' });
-  const inputFoto = el('input', { type: 'file', accept: 'image/*', capture: 'environment',
-    onchange: async e => {
-      const f = e.target.files[0]; if (!f) return;
-      blobFoto = await DB.comprimirFoto(f, v.punto.foto_calidad || 'normal');
-      previa.src = URL.createObjectURL(blobFoto);
-      previa.hidden = false;
-      pesoFoto.textContent = `Foto lista · ${Math.round(blobFoto.size / 1024)} KB`;
-    } });
+  const tomarFoto = async f => {
+    if (!f) return;
+    blobFoto = await DB.comprimirFoto(f, v.punto.foto_calidad || 'normal');
+    previa.src = URL.createObjectURL(blobFoto);
+    previa.hidden = false;
+    pesoFoto.textContent = `Foto lista · ${Math.round(blobFoto.size / 1024)} KB`;
+    quitarFoto.hidden = false;
+  };
+  const inputCamara = el('input', { type: 'file', accept: 'image/*', capture: 'environment',
+    hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
+  const inputGaleria = el('input', { type: 'file', accept: 'image/*',
+    hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
   const previa = el('img', { class: 'foto-previa', hidden: true, alt: 'Foto del medidor' });
-  const pesoFoto = el('p', { class: 'ayuda', text:
+  const quitarFoto = el('button', { class: 'btn chico', text: 'Quitar la foto', hidden: true,
+    onclick: () => {
+      blobFoto = null; previa.hidden = true; quitarFoto.hidden = true;
+      inputCamara.value = ''; inputGaleria.value = '';
+      pesoFoto.textContent = textoFoto;
+    } });
+  const textoFoto =
     (v.punto.foto_obligatoria ? 'La foto es obligatoria en este punto.' : 'La foto es opcional en este punto.') +
-    (v.punto.foto_calidad === 'alta' ? ' Se guarda en calidad alta.' : '') });
-  cajaFoto.append(inputFoto, previa, pesoFoto);
+    (v.punto.foto_calidad === 'alta' ? ' Se guarda en calidad alta.' : '');
+  const pesoFoto = el('p', { class: 'ayuda', text: textoFoto });
+  cajaFoto.append(
+    el('div', { class: 'fila' }, [
+      el('button', { class: 'btn', text: '📷 Tomar foto', onclick: () => inputCamara.click() }),
+      el('button', { class: 'btn', text: '🖼 Elegir del dispositivo', onclick: () => inputGaleria.click() }),
+      quitarFoto
+    ]),
+    inputCamara, inputGaleria, previa, pesoFoto);
 
   const campoValor = doble ? null : el('input', {
     type: 'number', inputmode: 'decimal', class: 'dato-grande',
@@ -617,7 +659,42 @@ async function abrirCaptura(v) {
     onclick: () => verificarMedidor(v, zonaMedidor) });
   poner(zonaMedidor, btnMedidor);
 
+  // Si el punto ya tiene lectura en este periodo, la captura sirve para
+  // corregirla o para completarle la foto: no obliga a empezar de cero.
+  const zonaExistente = el('div');
+  if (yaHay) {
+    const mia = yaHay.tomada_por === S.usuario.id;
+    if (!doble && yaHay.valor_display != null) campoValor.value = yaHay.valor_display;
+    if (doble) { campoMwh.value = yaHay.valor_mwh ?? ''; campoKwh.value = yaHay.valor_kwh ?? ''; }
+    if (yaHay.observacion) obs.value = yaHay.observacion;
+
+    const fotos = el('div', { class: 'fila', style: 'flex-wrap:wrap' });
+    zonaExistente.append(
+      el('p', { class: 'banda ' + (mia ? 'warn' : 'bad'), text:
+        `Ya hay una lectura de este punto en ${nombrePeriodo(S.periodo)}: ` +
+        `${yaHay.sin_dato ? 'sin dato' : num(yaHay.valor)} ${u} · ${quien(yaHay)}. ` +
+        (mia ? 'Al guardar, la corriges: no se crea otra lectura. También puedes solo agregarle una foto.'
+             : 'La tomó otra persona. Si cambias el valor te va a pedir el motivo y queda en la auditoría. ' +
+               'También puedes solo agregarle una foto, sin tocar el número.') }),
+      fotos);
+    // miniaturas de lo que ya está guardado
+    if (yaHay.fotos && yaHay.fotos.length && navigator.onLine) {
+      (async () => {
+        for (const f of yaHay.fotos) {
+          const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
+          if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl, class: 'miniatura',
+            alt: 'Foto guardada de esta lectura' }));
+        }
+      })();
+    } else if (yaHay.fotos && yaHay.fotos.length) {
+      fotos.append(el('span', { class: 'ayuda', text: `${yaHay.fotos.length} foto(s) guardadas.` }));
+    } else {
+      fotos.append(el('span', { class: 'ayuda', text: 'Esta lectura no tiene foto. Puedes agregarle una.' }));
+    }
+  }
+
   const cuerpo = el('div', { class: 'captura' }, [
+    zonaExistente,
     v.punto.instruccion_lectura
       ? el('p', { class: 'banda acento', text: v.punto.instruccion_lectura })
       : null,
@@ -639,20 +716,12 @@ async function abrirCaptura(v) {
     el('label', { class: 'fila' },
       [chkSinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })]),
     el('div', { class: 'acciones-fijas' }, [
-      el('button', { class: 'btn primario grande', text: 'Guardar lectura', onclick: guardar }),
+      el('button', { class: 'btn primario grande',
+        text: yaHay ? 'Guardar los cambios' : 'Guardar lectura', onclick: guardar }),
       el('button', { class: 'btn', text: 'Registrar un aviso de este punto',
         onclick: () => { cerrarModal(); abrirAviso(v.punto); } })
     ])
   ]);
-
-  if (yaHay) {
-    const mio = yaHay.tomada_por === S.usuario.id;
-    const nombre = S.catalogo.gente?.[yaHay.tomada_por] || 'otra persona';
-    cuerpo.prepend(el('div', { class: 'banda ' + (mio ? 'warn' : 'bad'), text: mio
-      ? `Ya tomaste este punto en ${nombrePeriodo(S.periodo)}: ${num(yaHay.valor)} ${u}. Si guardas de nuevo hoy, reemplazas tu lectura.`
-      : `${nombre} ya lo tomó el ${fechaCorta(yaHay.fecha_lectura)} con ${num(yaHay.valor)} ${u}. ` +
-        'Si guardas igual, quedan dos lecturas y el supervisor elige cuál vale. Ninguna se pierde.' }));
-  }
 
   async function guardar() {
     const sinDato = chkSinDato.checked;
@@ -676,6 +745,48 @@ async function abrirCaptura(v) {
       observacion: obs.value.trim() || null,
       dispositivo: navigator.userAgent.slice(0, 120)
     };
+
+    // La lectura ya existe: corregirla o completarle la foto, sin duplicarla.
+    if (yaHay) {
+      const mia = yaHay.tomada_por === S.usuario.id;
+      const cambio = !sinDato && val !== null && Number(yaHay.valor) !== Number(val);
+      if (!cambio && !blobFoto) return toast('No cambiaste nada', true);
+
+      if (cambio) {
+        if (!navigator.onLine) return toast('Corregir una lectura ya guardada necesita señal.', true);
+        let motivo = mia ? 'corrección del propio autor' : '';
+        if (!mia) {
+          motivo = (prompt('¿Por qué cambia esta lectura? (queda en la auditoría)') || '').trim();
+          if (!motivo) return toast('Sin motivo no se corrige', true);
+        }
+        const { error } = await sb.rpc('corregir_lectura', {
+          p_id: yaHay.id,
+          p_valor_display: doble ? null : Number(campoValor.value),
+          p_motivo: motivo,
+          p_valor_mwh: doble ? Number(campoMwh.value || 0) : null,
+          p_valor_kwh: doble ? Number(campoKwh.value || 0) : null
+        });
+        if (error) return toast(error.message, true);
+      }
+
+      if (blobFoto) {
+        const datos = { lectura_id: yaHay.id, periodo: S.periodo, variable_id: v.id };
+        if (navigator.onLine) {
+          try { await DB.subirFotoALectura({ ...datos, blob: blobFoto }); }
+          catch (e) { return toast('No se pudo subir la foto: ' + e.message, true); }
+        } else {
+          await DB.encolar({ tipo: 'foto', ...datos }, blobFoto);
+        }
+      }
+
+      cerrarModal();
+      toast(cambio && blobFoto ? 'Lectura corregida y foto agregada'
+            : cambio ? 'Lectura corregida' : 'Foto agregada');
+      await refrescarDatos();
+      await actualizarConexion();
+      await pintarLista();
+      return;
+    }
 
     if (selAviso.value) {
       if (!obs.value.trim() && selAviso.value === 'otra')
@@ -1299,7 +1410,16 @@ async function vistaConsumos(c) {
       (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
       (!R.sitio || v.punto.sitio.nombre === R.sitio));
     const conDato = new Set(data.map(f => f.variable_id));
-    const faltantes = enAlcance.filter(v => !conDato.has(v.id));
+    // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
+    // fue: el primero tiene una explicación y el segundo es una tarea sin hacer.
+    let sinPoderLeer = new Set();
+    try {
+      const r = await sb.from('lecturas').select('variable_id')
+        .eq('sin_dato', true).gte('periodo', desde).lte('periodo', hasta);
+      sinPoderLeer = new Set((r.data || []).map(x => x.variable_id));
+    } catch { /* si falla, se listan todos juntos */ }
+    const faltantes = enAlcance.filter(v => !conDato.has(v.id) && !sinPoderLeer.has(v.id));
+    const noLeidos = enAlcance.filter(v => !conDato.has(v.id) && sinPoderLeer.has(v.id));
 
     let avisos = [];
     try {
@@ -1311,8 +1431,8 @@ async function vistaConsumos(c) {
     } catch { /* sin avisos, el informe igual sirve */ }
 
     const bandas = await DB.bandasCache().catch(() => ({}));
-    S.repDatos = { filas: data, desde, hasta, faltantes, avisos, bandas };
-    poner(zona, ...armarInforme(data, desde, hasta, { faltantes, avisos, bandas }));
+    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas };
+    poner(zona, ...armarInforme(data, desde, hasta, { faltantes, noLeidos, avisos, bandas }));
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
       ? `${new Set(data.map(f => f.punto_id)).size} puntos · ${data.length} valores calculados`
@@ -1349,7 +1469,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const unidades = [...new Set(data.map(f => f.unidad_reporte))];
   const partes = [];
 
-  const { faltantes = [], avisos = [], bandas = {} } = extra;
+  const { faltantes = [], noLeidos = [], avisos = [], bandas = {} } = extra;
   const conAviso = new Set(avisos.map(a => a.punto_id));
   const juicios = new Map();
   for (const f of data) { const j = juzgarConsumo(f, bandas); if (j) juicios.set(f.variable_id + '|' + f.mes, j); }
@@ -1365,7 +1485,8 @@ function armarInforme(data, desde, hasta, extra = {}) {
   for (const f of data) metodos[f.metodo] = (metodos[f.metodo] || 0) + 1;
   const provisionales = data.filter(f => !f.completo).length;
   kpis.push(kpi(new Set(data.map(f => f.punto_id)).size, 'puntos con dato'));
-  if (faltantes.length) kpis.push(kpi(faltantes.length, 'sin lectura', 'alerta'));
+  if (faltantes.length) kpis.push(kpi(faltantes.length, 'sin visitar', 'alerta'));
+  if (noLeidos.length) kpis.push(kpi(noLeidos.length, 'no se pudo leer', 'aviso'));
   if (fueraDeRango) kpis.push(kpi(fueraDeRango, 'fuera de rango', 'alerta'));
   if (atencion) kpis.push(kpi(atencion, 'para revisar', 'aviso'));
   if (conAviso.size) kpis.push(kpi(conAviso.size, 'puntos con aviso abierto', 'aviso'));
@@ -1430,14 +1551,28 @@ function armarInforme(data, desde, hasta, extra = {}) {
     partes.push(tabla(cab, filas, { num: cab.map((_, i) => i).filter(i => i >= 5 && i < cab.length - 1) }));
   }
 
-  // ---- puntos sin lectura ----
+  // ---- puntos que se visitaron y no se pudieron leer ----
+  if (noLeidos.length) {
+    partes.push(el('div', { class: 'seccion' }, [
+      el('h4', { text: `No se pudo leer (${noLeidos.length})` }),
+      el('p', { class: 'ayuda', text:
+        'Alguien fue al punto y dejó constancia de que no se pudo tomar la lectura: display ' +
+        'apagado, tablero cerrado, equipo retirado. No es lo mismo que un punto sin visitar.' }),
+      tabla(['Sitio', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+        noLeidos.slice(0, 300).map(v => [
+          v.punto.sitio.nombre, v.punto.nombre, v.nombre,
+          UNIDAD[v.unidad_reporte] || v.unidad_reporte,
+          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
+    ]));
+  }
+
+  // ---- puntos donde no fue nadie ----
   if (faltantes.length) {
     partes.push(el('div', { class: 'seccion' }, [
-      el('h4', { text: `Puntos sin lectura en el periodo (${faltantes.length})` }),
+      el('h4', { text: `Puntos sin visitar en el periodo (${faltantes.length})` }),
       el('p', { class: 'ayuda', text:
-        'Un punto que no se midió no desaparece del informe: se declara. Puede ser que no se ' +
-        'haya tomado, que el equipo esté fuera de servicio o que falte la lectura del mes ' +
-        'siguiente para poder calcular su consumo.' }),
+        'No hay ninguna lectura de estos puntos en el periodo. Puede ser que no se hayan tomado ' +
+        'o que falte la lectura del mes siguiente para poder calcular su consumo.' }),
       tabla(['Sitio', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
         faltantes.slice(0, 300).map(v => [
           v.punto.sitio.nombre, v.punto.nombre, v.nombre,
@@ -1468,7 +1603,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
    archiva, y tiene que leerse como una tabla, no como una foto de la pantalla. */
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
-  const { filas, desde, hasta, faltantes = [], avisos = [], bandas = {} } = S.repDatos;
+  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {} } = S.repDatos;
   const R = S.rep;
 
   const meses = [...new Set(filas.map(f => f.mes))].sort();
@@ -1550,8 +1685,21 @@ async function imprimirInforme() {
 
     tablaPrincipal,
 
+    noLeidos.length ? el('div', {}, [
+      el('h2', { text: `No se pudo leer (${noLeidos.length})` }),
+      el('table', { class: 'planilla' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: 'Sitio' }), el('th', { text: 'Punto' }),
+          el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
+        el('tbody', {}, noLeidos.slice(0, 200).map(v => el('tr', {}, [
+          el('td', { text: v.punto.sitio.nombre }), el('td', { text: v.punto.nombre }),
+          el('td', { text: v.nombre }),
+          el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
+      ])
+    ]) : null,
+
     faltantes.length ? el('div', {}, [
-      el('h2', { text: `Puntos sin lectura en el periodo (${faltantes.length})` }),
+      el('h2', { text: `Puntos sin visitar en el periodo (${faltantes.length})` }),
       el('table', { class: 'planilla' }, [
         el('thead', {}, [el('tr', {}, [
           el('th', { text: 'Sitio' }), el('th', { text: 'Punto' }),
@@ -3348,6 +3496,40 @@ function imprimirEtiquetas(etiquetas) {
    =================================================================== */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+/* En iPhone, una app agregada a la pantalla de inicio puede quedarse semanas
+   con la versión vieja: el navegador revalida el service worker cuando quiere.
+   Por eso la app pregunta ella misma, con una URL que ningún caché puede
+   responder, y si hay algo nuevo lo dice y lo aplica a pedido del usuario. */
+async function revisarVersion() {
+  if (!navigator.onLine) return;
+  try {
+    const r = await fetch('./version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (!version || version === C.VERSION) return;
+
+    const barra = el('div', { class: 'banner-version fila' }, [
+      el('span', { class: 'crece', text: `Hay una versión nueva de la app (${version}).` }),
+      el('button', { class: 'btn chico', text: 'Actualizar ahora', onclick: async e => {
+        e.target.disabled = true;
+        const pend = await DB.pendientes();
+        if (pend.length && !confirm(
+          `Tienes ${pend.length} registro(s) sin enviar. Se conservan en el dispositivo, ` +
+          'pero conviene sincronizar antes. ¿Actualizar igual?')) { e.target.disabled = false; return; }
+        try {
+          const reg = await navigator.serviceWorker?.getRegistration();
+          await reg?.update();
+          // Se borra solo el caché de archivos; IndexedDB (las lecturas) no se toca.
+          if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+          await reg?.unregister();
+        } catch { /* si algo falla, la recarga igual trae lo nuevo */ }
+        location.reload();
+      } })
+    ]);
+    document.getElementById('app').prepend(barra);
+  } catch { /* sin conexión o sin archivo: no pasa nada */ }
 }
 sb.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') location.reload(); });
 arrancar();

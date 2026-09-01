@@ -197,6 +197,21 @@
 
   async function pendientes() { return idb.todos('cola'); }
 
+  // Adjuntar una foto a una lectura que YA existe: sirve para completar meses
+  // viejos con el archivo fotográfico que estaba en el teléfono.
+  async function subirFotoALectura({ lectura_id, periodo, variable_id, blob, tomada_en }) {
+    const ruta = `${periodo}/${variable_id}/${crypto.randomUUID()}.jpg`;
+    const up = await sb.storage.from(C.BUCKET)
+      .upload(ruta, blob, { contentType: 'image/jpeg', upsert: false });
+    if (up.error) throw up.error;
+    const ins = await sb.from('fotos').insert({
+      lectura_id, storage_path: ruta, bytes: blob.size,
+      tomada_en: tomada_en || new Date().toISOString()
+    });
+    if (ins.error) throw ins.error;
+    return ruta;
+  }
+
   async function sincronizar(alAvanzar) {
     if (!navigator.onLine) return { enviados: 0, fallidos: 0, sinRed: true };
     const cola = await idb.todos('cola');
@@ -208,6 +223,21 @@
 
         // La cola lleva dos clases de registro: lecturas del cierre de mes y
         // recargas de combustible de Casa de Fuerza. Las recargas no llevan foto.
+        if (tipo === 'foto') {
+          const f = await idb.leer('fotos', fotoId);
+          if (f && f.blob) {
+            await subirFotoALectura({
+              lectura_id: fila.lectura_id, periodo: fila.periodo,
+              variable_id: fila.variable_id, blob: f.blob,
+              tomada_en: new Date(f.creado).toISOString() });
+            await idb.borrar('fotos', fotoId);
+          }
+          await idb.borrar('cola', idLocal);
+          enviados++;
+          alAvanzar && alAvanzar(enviados, fallidos, cola.length);
+          continue;
+        }
+
         if (tipo === 'recarga') {
           const { error: e2 } = await sb.rpc('registrar_recarga', {
             p_generador_id: fila.generador_id,
@@ -331,7 +361,7 @@
   window.DB = {
     sb, idb, comprimirFoto, catalogo, descargarCatalogo,
     lecturasDelPeriodo, lecturasCache, ultimasLecturas, ultimasCache,
-    encolar, pendientes, sincronizar, exportarPendientes,
+    encolar, pendientes, sincronizar, exportarPendientes, subirFotoALectura,
     descargarBandas, bandasCache, refrescarBandas,
     estadoAlmacenamiento, pedirPersistencia
   };

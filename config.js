@@ -3,6 +3,7 @@
 // Si algún día cambias de proyecto Supabase, este es el único archivo a tocar.
 // ---------------------------------------------------------------------------
 window.CONFIG = {
+  VERSION: '2026-09-01.6',   // debe coincidir con version.json
   SUPABASE_URL: 'https://ofqnxkibomxibuhdxzvj.supabase.co',
   SUPABASE_KEY: 'sb_publishable_pmRoAg80tAuGNTfCrqvkjg_CHvmB60w',
   SCHEMA: 'cierre_mes',

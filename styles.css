@@ -444,3 +444,8 @@ table.planilla td.total{font-weight:700}
 .chip-filtro:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
 .grupo-sitio{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .cuenta-seccion{font-size:12px;font-weight:400;color:var(--ink-3);text-transform:none;letter-spacing:0}
+
+.miniatura{width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+
+.banner-version{background:var(--acento-suave);color:var(--acento-ink);
+  border-bottom:1px solid var(--acento);padding:10px 14px;font-size:14px;gap:10px}

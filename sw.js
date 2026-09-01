@@ -6,7 +6,7 @@
    para el próximo arranque. Así una versión publicada llega sola a los
    dispositivos sin depender de que alguien se acuerde de subir el número de
    CACHE en cada despliegue. */
-const CACHE = 'cierre-mes-v3';
+const CACHE = 'cierre-mes-v4';
 const ARCHIVOS = [
   './', './index.html', './styles.css', './config.js', './db.js', './app.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png', './supabase.js', './respaldo.js',
@@ -28,6 +28,7 @@ self.addEventListener('fetch', e => {
   // Nunca cachear las llamadas a Supabase: siempre red, y si no hay red que falle
   // para que la app use su cola local.
   if (url.hostname.endsWith('.supabase.co')) return;
+  if (url.pathname.endsWith('/version.json')) return;   // siempre a la red
   if (e.request.method !== 'GET') return;
   if (url.origin !== location.origin) return;
 

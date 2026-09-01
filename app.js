@@ -1310,7 +1310,7 @@ async function vistaConsumos(c) {
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
-    grupo: '', sitio: ''
+    grupo: '', sitio: '', secundarias: false
   };
   const R = S.rep;
 
@@ -1331,12 +1331,17 @@ async function vistaConsumos(c) {
   for (const s of sitiosVisibles)
     selSitio.append(el('option', { value: s, selected: R.sitio === s || null, text: s }));
 
+  // Un punto puede tener importada y exportada: si las dos entraran al informe,
+  // el mismo medidor aparecería dos veces y la suma del grupo lo contaría doble.
+  const chkSec = el('input', { type: 'checkbox', checked: R.secundarias || null,
+    onchange: e => { R.secundarias = e.target.checked; cargar(); } });
   const zonaFiltros = el('div', { class: 'fila crece' });
   const barra = el('div', { class: 'fila seccion' }, [
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
     el('label', { text: 'Grupo' }, [selGrupo]),
-    el('label', { text: 'Sitio' }, [selSitio])
+    el('label', { text: 'Sitio' }, [selSitio]),
+    el('label', { class: 'fila' }, [chkSec, el('span', { text: 'Incluir lecturas secundarias' })])
   ]);
   const acciones = el('div', { class: 'fila entre seccion' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
@@ -1344,7 +1349,7 @@ async function vistaConsumos(c) {
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo, sitio: R.sitio }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo, sitio: R.sitio, secundarias: R.secundarias }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1353,7 +1358,8 @@ async function vistaConsumos(c) {
       try {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
-        await descargarPlanilla(primero, primerDiaDelMes(new Date()), { grupo: R.grupo, sitio: R.sitio });
+        await descargarPlanilla(primero, primerDiaDelMes(new Date()),
+          { grupo: R.grupo, sitio: R.sitio, secundarias: R.secundarias });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1407,6 +1413,7 @@ async function vistaConsumos(c) {
 
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
+      (R.secundarias || v.principal !== false) &&
       (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
       (!R.sitio || v.punto.sitio.nombre === R.sitio));
     const conDato = new Set(data.map(f => f.variable_id));
@@ -2101,6 +2108,42 @@ async function editarPunto(punto) {
       } })
     );
 
+    // Las lecturas del punto: acá se define en qué unidad viene el display y en
+    // cuál se informa (un medidor que muestra MWh se informa en kWh), y cuál es
+    // la principal cuando el equipo entrega importada y exportada.
+    const zonaVars = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
+    cuerpo.append(
+      el('h3', { text: 'Lecturas de este punto', style: 'margin-top:26px' }),
+      el('p', { class: 'ayuda', text:
+        'La principal es la que va al consumo del informe. La secundaria se toma y se guarda ' +
+        'igual — sirve, por ejemplo, para saber en qué sentido circuló la energía — pero no suma.' }),
+      zonaVars);
+    pintarVariables();
+
+    async function pintarVariables() {
+      const { data, error } = await sb.from('variables')
+        .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo')
+        .eq('punto_id', punto.id).order('id');
+      if (error) { poner(zonaVars, el('p', { class: 'error', text: error.message })); return; }
+      poner(zonaVars,
+        tabla(['Lectura', 'En el display', 'En el informe', 'Decimales', 'Rol', ''],
+          (data || []).map(x => [
+            x.nombre,
+            UNIDAD[x.unidad_display] || x.unidad_display,
+            UNIDAD[x.unidad_reporte] || x.unidad_reporte,
+            String(x.decimales_display ?? 0),
+            el('span', { class: 'pill ' + (x.principal ? 'ok' : 'neutro'),
+                         text: x.principal ? 'principal' : 'secundaria' }),
+            el('div', { class: 'fila' }, [
+              el('button', { class: 'btn chico', text: 'Editar',
+                onclick: () => editarVariable(x, punto, pintarVariables) }),
+              x.activo ? null : el('span', { class: 'pill warn', text: 'inactiva' })
+            ].filter(Boolean))
+          ])),
+        el('button', { class: 'btn', style: 'margin-top:10px', text: '+ Agregar una lectura',
+          onclick: () => editarVariable(null, punto, pintarVariables) }));
+    }
+
     const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
     cuerpo.append(el('h3', { text: 'Equipo instalado', style: 'margin-top:26px' }), zona);
 
@@ -2179,6 +2222,67 @@ async function editarPunto(punto) {
   }
 
   modal(nuevo ? 'Punto nuevo' : punto.nombre, cuerpo);
+}
+
+// Un medidor puede mostrar MWh y el informe necesita kWh: eso se declara acá,
+// una vez, y el cálculo convierte solo.
+const UNIDADES = ['kWh', 'MWh', 'm3', 'L', 'Hrs'];
+function editarVariable(x, punto, alGuardar) {
+  const nuevo = !x;
+  const f = {
+    nombre: el('input', { value: x?.nombre || '', placeholder: 'Energía activa exportada' }),
+    display: el('select'), reporte: el('select'),
+    dec: el('input', { type: 'number', min: '0', max: '3', value: String(x?.decimales_display ?? 0) }),
+    formato: el('select'),
+    principal: el('input', { type: 'checkbox', checked: (x ? x.principal : true) || null }),
+    activo: el('input', { type: 'checkbox', checked: (x ? x.activo : true) || null })
+  };
+  for (const u of UNIDADES) {
+    f.display.append(el('option', { value: u, selected: (x?.unidad_display || 'kWh') === u || null,
+      text: UNIDAD[u] || u }));
+    f.reporte.append(el('option', { value: u, selected: (x?.unidad_reporte || 'kWh') === u || null,
+      text: UNIDAD[u] || u }));
+  }
+  for (const [v_, t] of [['simple', 'Un solo número'], ['doble_mwh_kwh', 'Dos campos: MWh y kWh']])
+    f.formato.append(el('option', { value: v_, selected: (x?.formato_lectura || 'simple') === v_ || null, text: t }));
+
+  modal(nuevo ? 'Nueva lectura del punto' : x.nombre, el('div', {}, [
+    el('p', { class: 'ayuda', text: punto.nombre }),
+    el('label', { text: 'Nombre de la lectura' }, [f.nombre]),
+    el('label', { text: 'Unidad que muestra el display' }, [f.display]),
+    el('label', { text: 'Unidad en la que se informa' }, [f.reporte]),
+    el('p', { class: 'ayuda', text:
+      'Si el display muestra MWh y el informe va en kWh, la app convierte sola: en terreno se ' +
+      'escribe tal cual se lee en el equipo.' }),
+    el('label', { text: 'Decimales del display' }, [f.dec]),
+    el('label', { text: 'Formato de la lectura' }, [f.formato]),
+    el('label', { class: 'fila' }, [f.principal,
+      el('span', { text: 'Es la lectura principal (la que va al consumo del informe)' })]),
+    el('label', { class: 'fila' }, [f.activo,
+      el('span', { text: 'Activa (se pide en terreno)' })]),
+    el('button', { class: 'btn primario grande', style: 'margin-top:14px',
+      text: nuevo ? 'Crear la lectura' : 'Guardar', onclick: async e => {
+        if (!f.nombre.value.trim()) return toast('Ponle un nombre', true);
+        e.target.disabled = true;
+        const { error } = await sb.rpc('guardar_variable', {
+          p_id: x?.id ?? null, p_punto_id: punto.id, p_nombre: f.nombre.value.trim(),
+          p_unidad_display: f.display.value, p_unidad_reporte: f.reporte.value,
+          p_decimales: Number(f.dec.value || 0), p_formato: f.formato.value,
+          p_principal: f.principal.checked, p_activo: f.activo.checked
+        });
+        e.target.disabled = false;
+        if (error) {
+          return toast(/variables_una_principal_por_unidad/.test(error.message)
+            ? 'Ya hay otra lectura principal en esa unidad para este punto. Marca esta como secundaria, o cambia la otra.'
+            : error.message, true);
+        }
+        cerrarModal();
+        await DB.descargarCatalogo().catch(() => {});
+        S.catalogo = await DB.catalogo();
+        toast('Lectura guardada');
+        alGuardar && alGuardar();
+      } })
+  ]));
 }
 
 /* ===================================================================

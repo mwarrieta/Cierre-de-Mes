@@ -83,7 +83,7 @@
     const [puntos, sitios, grupos, avisos, generadores, instalados, gente, gruposPunto] = await Promise.all([
       sb.from('variables').select(`
           id, nombre, unidad_display, unidad_reporte, decimales_display,
-          formato_lectura, activo,
+          formato_lectura, activo, principal,
           punto:puntos!inner ( id, nombre, area, foto_obligatoria, foto_calidad, activo,
             instruccion_lectura,
             sitio:sitios!inner ( id, nombre ),

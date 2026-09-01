@@ -135,6 +135,7 @@ input[type=number]{-moz-appearance:textfield}
   color:var(--ink-3);padding:16px 12px 6px;border-top:1px solid var(--line);margin-top:8px}
 .menu-pie{margin-top:auto;font-size:13px;color:var(--ink-3);padding:0 12px}
 .menu-pie span{display:block;margin-bottom:6px}
+.menu-pie .link{display:block;margin-bottom:4px}
 .velo{position:fixed;inset:0;background:rgba(15,34,38,.45);z-index:30}
 
 /* ---------- contenido ---------- */

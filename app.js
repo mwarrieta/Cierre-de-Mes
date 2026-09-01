@@ -125,6 +125,42 @@ $('#form-login').addEventListener('submit', async e => {
   await arrancar();
 });
 
+// Cada persona cambia su propia contraseña sin depender del panel de Supabase
+// ni de que alguien se la reasigne: si eso cuesta, nadie cambia la que le dieron.
+$('#btn-clave').addEventListener('click', () => {
+  const nueva = el('input', { type: 'password', autocomplete: 'new-password' });
+  const otra  = el('input', { type: 'password', autocomplete: 'new-password' });
+  const aviso = el('p', { class: 'banda warn', hidden: true });
+  const boton = el('button', { class: 'btn primario grande', text: 'Cambiar la contraseña',
+    onclick: async () => {
+      const a = nueva.value, b = otra.value;
+      const problema =
+        a.length < 8 ? 'La contraseña debe tener al menos 8 caracteres.' :
+        a !== b ? 'Las dos contraseñas no coinciden.' :
+        /^(?:\d+|[a-zA-Z]+)$/.test(a) ? 'Mezcla letras y números: solo letras o solo números se adivina rápido.' :
+        null;
+      if (problema) { aviso.textContent = problema; aviso.hidden = false; return; }
+      if (!navigator.onLine) { aviso.textContent = 'Necesitas señal para cambiar la contraseña.'; aviso.hidden = false; return; }
+      boton.disabled = true;
+      const { error } = await sb.auth.updateUser({ password: a });
+      boton.disabled = false;
+      if (error) { aviso.textContent = error.message; aviso.hidden = false; return; }
+      cerrarModal();
+      toast('Contraseña cambiada. Se usa la nueva la próxima vez que entres.');
+    } });
+
+  modal('Cambiar mi contraseña', el('div', {}, [
+    el('p', { class: 'ayuda', text: `Cuenta: ${S.usuario.correo}` }),
+    el('label', { text: 'Contraseña nueva' }, [nueva]),
+    el('label', { text: 'Repítela' }, [otra]),
+    aviso,
+    boton,
+    el('p', { class: 'ayuda', text:
+      'Al menos 8 caracteres, con letras y números. La sesión abierta sigue funcionando; ' +
+      'la contraseña nueva se usa la próxima vez que entres.' })
+  ]));
+});
+
 $('#btn-salir').addEventListener('click', async () => {
   const p = await DB.pendientes();
   if (p.length && !confirm(`Tienes ${p.length} registro(s) sin sincronizar. Si cierras sesión se quedan guardados en este dispositivo. ¿Salir igual?`)) return;

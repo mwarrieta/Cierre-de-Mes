@@ -17,7 +17,9 @@ const S = {
   ultimas: [],             // última lectura conocida por variable
   pendientes: 0,
   vista: 'terreno',
-  filtro: ''
+  filtro: '',
+  soloPendientes: false,   // en terreno, ver solo lo que falta
+  agrupar: 'grupo'         // 'grupo' | 'sitio'
 };
 
 // ------------------------------------------------------------------ utilidades
@@ -232,6 +234,8 @@ async function arrancar() {
   // En iOS, Safari borra el almacenamiento tras unos días sin usar el sitio.
   // Pedir persistencia lo evita, y solo se concede si la app está instalada.
   DB.pedirPersistencia();
+  // Las bandas esperadas se refrescan solas, sin que nadie las espere.
+  DB.refrescarBandas();
 
   await refrescarDatos();
   await actualizarConexion();
@@ -417,26 +421,58 @@ async function pintarLista() {
   if (!cont) return;
   const cola = await DB.pendientes();
   const enCola = new Set(cola.map(x => x.variable_id));
+  const tomada = v => S.lecturas.some(l => l.variable_id === v.id) || enCola.has(v.id);
 
   const f = S.filtro;
-  const items = S.catalogo.variables.filter(v => {
+  let items = S.catalogo.variables.filter(v => {
     if (!f) return true;
     const eq = v.punto.equipo?.tag || '';
     return `${v.punto.nombre} ${v.punto.sitio.nombre} ${v.nombre} ${eq}`.toLowerCase().includes(f);
   });
+  const total = items.length;
+  const pend = items.filter(v => !tomada(v)).length;
+  if (S.soloPendientes) items = items.filter(v => !tomada(v));
 
   cont.replaceChildren();
-  if (!items.length) { cont.append(el('p', { class: 'vacio', text: 'Nada coincide con la búsqueda.' })); return; }
 
-  const porSitio = {};
-  for (const v of items) (porSitio[v.punto.sitio.nombre] ||= []).push(v);
+  // Con 120 puntos, lo que se necesita en terreno es "qué me falta" y recorrer
+  // el sector completo, no una lista alfabética entera.
+  const chip = (texto, activo, alTocar) => el('button', {
+    class: 'chip-filtro' + (activo ? ' sel' : ''), text: texto, onclick: alTocar });
+  cont.append(el('div', { class: 'fila filtros-terreno' }, [
+    chip(`Todos · ${total}`, !S.soloPendientes, () => { S.soloPendientes = false; pintarLista(); }),
+    chip(`Pendientes · ${pend}`, S.soloPendientes, () => { S.soloPendientes = true; pintarLista(); }),
+    el('span', { class: 'crece' }),
+    chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
+    chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
+  ]));
 
-  const pend = items.filter(v => !S.lecturas.some(l => l.variable_id === v.id) && !enCola.has(v.id)).length;
-  cont.append(el('p', { class: 'ayuda', text: `${items.length} lecturas del mes · ${pend} pendientes` }));
+  if (!items.length) {
+    cont.append(el('p', { class: 'vacio', text: S.soloPendientes && total
+      ? 'No queda nada pendiente con este filtro. Buen trabajo.'
+      : 'Nada coincide con la búsqueda.' }));
+    return;
+  }
 
-  for (const sitio of Object.keys(porSitio).sort()) {
-    cont.append(el('div', { class: 'grupo-sitio', text: sitio }));
-    for (const v of porSitio[sitio].sort((a, b) => a.punto.nombre.localeCompare(b.punto.nombre))) {
+  // Un punto puede estar en varios grupos: aparece en cada uno de ellos.
+  const secciones = {};
+  for (const v of items) {
+    const claves = S.agrupar === 'sitio'
+      ? [v.punto.sitio.nombre]
+      : (v.punto.grupos && v.punto.grupos.length ? v.punto.grupos : ['Sin grupo']);
+    for (const k of claves) (secciones[k] ||= []).push(v);
+  }
+  const orden = Object.keys(secciones).sort(
+    S.agrupar === 'sitio' ? (a, b) => a.localeCompare(b) : compararGrupos);
+
+  for (const seccion of orden) {
+    const lista = secciones[seccion];
+    const faltan = lista.filter(v => !tomada(v)).length;
+    cont.append(el('div', { class: 'grupo-sitio' }, [
+      el('span', { text: seccion }),
+      el('span', { class: 'cuenta-seccion', text: faltan ? `faltan ${faltan}` : 'completo' })
+    ]));
+    for (const v of lista.sort((a, b) => a.punto.nombre.localeCompare(b.punto.nombre))) {
       const { clase, l } = estadoDeVariable(v);
       const cl = enCola.has(v.id) ? 'cola' : clase;
       const tag = v.punto.equipo?.tag;
@@ -476,13 +512,10 @@ async function abrirCaptura(v) {
   const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
   const doble = v.formato_lectura === 'doble_mwh_kwh';
 
+  // La banda sale del catálogo guardado en el dispositivo. Antes se consultaba
+  // al servidor al abrir cada punto: con mala señal, esa espera era la demora.
   let banda = null;
-  if (navigator.onLine) {
-    try {
-      const { data } = await sb.rpc('banda_esperada', { p_variable_id: v.id });
-      banda = data && data.length ? data[0] : null;
-    } catch { /* sin banda, no pasa nada */ }
-  }
+  try { banda = (await DB.bandasCache())[v.id] || null; } catch { /* sin banda */ }
 
   let blobFoto = null;
 
@@ -512,7 +545,22 @@ async function abrirCaptura(v) {
     class: 'dato-grande', placeholder: 'kWh', oninput: evaluar }) : null;
 
   const avisoBanda = el('div', { class: 'banda ok', hidden: true });
-  const obs = el('textarea', { placeholder: 'Algo que el supervisor deba saber: una detención, un cambio de equipo, un consumo raro…' });
+
+  // Novedades: la lectura y el aviso son el mismo gesto en terreno. Antes había
+  // que guardar la lectura, salir, volver a entrar y recién ahí abrir el aviso.
+  const selAviso = el('select');
+  selAviso.append(el('option', { value: '', text: '— sin novedad —' }));
+  for (const a of S.catalogo.catalogoAvisos)
+    selAviso.append(el('option', { value: a.id, text: a.categoria }));
+  selAviso.append(el('option', { value: 'otra', text: 'Otra · la describo abajo' }));
+  const obs = el('textarea', { placeholder: 'Qué viste. Si marcaste una novedad, esto queda como su descripción.' });
+  const pistaAviso = el('p', { class: 'ayuda', text:
+    'Sin novedad, este texto queda como observación de la lectura.' });
+  selAviso.addEventListener('change', () => {
+    pistaAviso.textContent = selAviso.value
+      ? 'Se va a abrir un aviso en este punto junto con la lectura, en un solo guardado.'
+      : 'Sin novedad, este texto queda como observación de la lectura.';
+  });
   const chkSinDato = el('input', { type: 'checkbox', onchange: e => {
     const off = e.target.checked;
     [campoValor, campoMwh, campoKwh].forEach(x => { if (x) { x.disabled = off; x.value = ''; } });
@@ -570,6 +618,9 @@ async function abrirCaptura(v) {
   poner(zonaMedidor, btnMedidor);
 
   const cuerpo = el('div', { class: 'captura' }, [
+    v.punto.instruccion_lectura
+      ? el('p', { class: 'banda acento', text: v.punto.instruccion_lectura })
+      : null,
     el('div', { class: 'anterior' }, [
       el('span', { html: `<b>${esc(v.punto.nombre)}</b><br><small>${esc(v.punto.sitio.nombre)}${equipo.tag ? ' · ' + esc(equipo.tag) : ''}</small>` }),
       el('span', { html: anterior
@@ -582,7 +633,9 @@ async function abrirCaptura(v) {
     avisoBanda,
     zonaMedidor,
     cajaFoto,
+    el('label', { text: 'Novedad en este punto' }, [selAviso]),
     el('label', { text: 'Observación' }, [obs]),
+    pistaAviso,
     el('label', { class: 'fila' },
       [chkSinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })]),
     el('div', { class: 'acciones-fijas' }, [
@@ -624,9 +677,18 @@ async function abrirCaptura(v) {
       dispositivo: navigator.userAgent.slice(0, 120)
     };
 
+    if (selAviso.value) {
+      if (!obs.value.trim() && selAviso.value === 'otra')
+        return toast('Escribe qué pasó: elegiste "Otra"', true);
+      fila.aviso_categoria = selAviso.value === 'otra' ? null : Number(selAviso.value);
+      fila.aviso_descripcion = obs.value.trim() || selAviso.selectedOptions[0].text;
+    }
+
     await DB.encolar(fila, blobFoto);
     cerrarModal();
-    toast('Guardado en el dispositivo');
+    toast(fila.aviso_categoria || fila.aviso_descripcion
+      ? 'Lectura y aviso guardados en el dispositivo'
+      : 'Guardado en el dispositivo');
     await actualizarConexion();
     await pintarLista();
     if (navigator.onLine) sincronizar(true);
@@ -1126,10 +1188,10 @@ async function vistaConsumos(c) {
   for (const [k, v] of Object.entries(MODOS))
     selModo.append(el('option', { value: k, selected: R.modo === k || null, text: v }));
 
-  const gruposVisibles = new Set(S.catalogo.variables.map(v => v.grupo_id));
+  const gruposVisibles = new Set(S.catalogo.variables.flatMap(v => v.punto.grupos || []));
   const selGrupo = el('select', { onchange: e => { R.grupo = e.target.value; cargar(); } });
   selGrupo.append(el('option', { value: '', text: 'Todos los grupos' }));
-  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.id))
+  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.nombre))
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
@@ -1208,7 +1270,7 @@ async function vistaConsumos(c) {
     const [desde, hasta] = limites();
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('sitio').order('punto');
-    if (R.grupo) q = q.eq('grupo', R.grupo);
+    if (R.grupo) q = q.contains('grupos', [R.grupo]);
     if (R.sitio) q = q.eq('sitio', R.sitio);
     const { data, error } = await q;
     if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
@@ -1417,7 +1479,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const cons = await traerTodo(() => {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('mes').order('sitio').order('punto');
-    if (filtros.grupo) q = q.eq('grupo', filtros.grupo);
+    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
     return q;
   });
@@ -1430,7 +1492,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     let q = sb.from('v_respaldo').select('*')
              .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
              .order('periodo');
-    if (filtros.grupo) q = q.eq('grupo', filtros.grupo);
+    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
     return q;
   });
@@ -1445,7 +1507,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   for (const c of cons) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
       tag: c.tag || '', sitio: c.sitio, grupo: c.grupo || 'Sin grupo', punto: c.punto,
-      variable: c.variable, unidad: c.unidad_reporte, cons: {}, estado: {}, metodo: {}, lect: {}
+      variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
+      cons: {}, estado: {}, metodo: {}, lect: {}
     });
     const v = porVar.get(c.variable_id);
     v.cons[c.mes] = Number(c.consumo);
@@ -1463,15 +1526,16 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
 
   // ---- 1 · Resumen anual: bloques por grupo y unidad, con subtotal ----
-  const resumen = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
-  const general = {};
-  // Un subtotal que mezcla kWh con m3 es un número que no significa nada:
-  // por eso cada grupo cierra con un subtotal POR UNIDAD.
+  const resumen = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
+  // Sumar kWh con m3 no significa nada: cada grupo cierra con una suma POR UNIDAD.
+  // Y no hay TOTAL GENERAL a propósito: los puntos tienen naturalezas distintas
+  // (unos en serie, otros en paralelo del mismo circuito), así que un gran total
+  // sería un número que nadie puede defender. Los grupos son vistas de reporte.
   let grupoActual = null, acumGrupo = {};
   const cerrarGrupo = () => {
     if (grupoActual === null) return;
     for (const [u, acum] of Object.entries(acumGrupo)) {
-      resumen.push(['', '', `Subtotal ${grupoActual}`, '', u,
+      resumen.push(['', '', `Suma del grupo (referencial)`, '', u, '',
         ...meses.map(m => redondear(acum[m])),
         redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     }
@@ -1483,20 +1547,12 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       grupoActual = v.grupo; acumGrupo = {};
       resumen.push([`GRUPO: ${grupoActual}`]);
     }
-    (general[v.unidad] ||= {});
     (acumGrupo[v.unidad] ||= {});
-    meses.forEach(m => {
-      general[v.unidad][m] = (general[v.unidad][m] || 0) + (v.cons[m] || 0);
-      acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0);
-    });
-    resumen.push([v.tag, v.sitio, v.punto, v.variable, v.unidad,
+    meses.forEach(m => { acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0); });
+    resumen.push([v.tag, v.sitio, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
       ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
   }
   cerrarGrupo();
-  for (const [u, acum] of Object.entries(general)) {
-    resumen.push(['', '', `TOTAL GENERAL (${u})`, '', u,
-      ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
-  }
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
   const detalle = [['TAG', 'Sitio', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
@@ -1520,9 +1576,10 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     { nombre: nombreHoja('Resumen anual', usados), filas: resumen },
     { nombre: nombreHoja('Detalle mensual', usados), filas: detalle }
   ];
-  const grupos = [...new Set(filasVar.map(v => v.grupo))].sort(compararGrupos);
+  const grupos = [...new Set(filasVar.flatMap(v => v.grupos.length ? v.grupos : ['Sin grupo']))]
+                   .sort(compararGrupos);
   for (const g of grupos) {
-    const suyas = filasVar.filter(v => v.grupo === g);
+    const suyas = filasVar.filter(v => (v.grupos.length ? v.grupos : ['Sin grupo']).includes(g));
     const f = [[`GRUPO: ${g}`], [], ['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
     for (const v of suyas)
       f.push([v.tag, v.sitio, v.punto, v.variable, v.unidad,
@@ -1531,7 +1588,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     for (const v of suyas) { (porUnidad[v.unidad] ||= {}); meses.forEach(m => porUnidad[v.unidad][m] = (porUnidad[v.unidad][m] || 0) + (v.cons[m] || 0)); }
     f.push([]);
     for (const [u, acum] of Object.entries(porUnidad))
-      f.push(['', '', `TOTAL ${g} (${u})`, '', u,
+      f.push(['', '', `Suma del grupo (referencial) · ${u}`, '', u,
         ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     hojas.push({ nombre: nombreHoja(g, usados), filas: f });
   }
@@ -1880,7 +1937,9 @@ async function editarPunto(punto) {
     tipo:   el('select'),
     foto:   el('input', { type: 'checkbox', checked: punto?.foto_obligatoria || null }),
     calidad: el('select'),
-    obs:    el('textarea', { value: punto?.observaciones || '' })
+    obs:    el('textarea', { value: punto?.observaciones || '' }),
+    instruccion: el('textarea', { rows: 2, value: punto?.instruccion_lectura || '',
+      placeholder: 'Horas de marcha: menú 730 · Energía: menú 732' })
   };
   for (const s of S.catalogo.sitios)
     f.sitio.append(el('option', { value: s.id, selected: punto?.sitio_id === s.id || null, text: s.nombre }));
@@ -1899,11 +1958,51 @@ async function editarPunto(punto) {
     el('label', { class: 'fila' }, [f.foto, el('span', { text: 'La foto es obligatoria en este punto' })]),
     el('label', { text: 'Calidad de la foto' }, [f.calidad]),
     el('p', { class: 'ayuda', text: 'Normal pesa ~300 KB y alcanza para leer un display. Alta pesa ~500 KB: úsala solo en los puntos que van a facturación o al reporte de la Ley 21.305.' }),
+    el('label', { text: 'Cómo se toma la lectura acá' }, [f.instruccion]),
+    el('p', { class: 'ayuda', text:
+      'Este texto aparece arriba de todo al abrir el punto en terreno. Es donde se escribe de qué ' +
+      'menú se saca cada valor, para que no dependa de quién vaya.' }),
     el('label', { text: 'Observaciones' }, [f.obs]),
     el('button', { class: 'btn primario grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
   ]);
 
   if (!nuevo) {
+    // Un punto puede estar en varios grupos: todos son grupos de reporte, así que
+    // el mismo punto puede salir en el informe de su sector y en uno transversal.
+    const enGrupo = new Set();
+    const cajas = [];
+    const zonaGrupos = el('div', { class: 'fila', style: 'flex-wrap:wrap;gap:10px 18px' });
+    for (const g of [...S.catalogo.grupos].sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))) {
+      const chk = el('input', { type: 'checkbox',
+        onchange: e => { e.target.checked ? enGrupo.add(g.id) : enGrupo.delete(g.id); } });
+      cajas.push({ id: g.id, chk });
+      zonaGrupos.append(el('label', { class: 'fila', style: 'margin:0' },
+        [chk, el('span', { text: g.nombre })]));
+    }
+    sb.from('grupo_puntos').select('grupo_id').eq('punto_id', punto.id).then(({ data }) => {
+      for (const x of (data || [])) enGrupo.add(x.grupo_id);
+      for (const c of cajas) c.chk.checked = enGrupo.has(c.id);
+    });
+    cuerpo.append(
+      el('h3', { text: 'Grupos de reporte', style: 'margin-top:26px' }),
+      el('p', { class: 'ayuda', text:
+        'El punto aparece en el informe de cada grupo que marques. Ningún total lo suma dos veces: ' +
+        'los grupos son vistas de reporte, no cajones excluyentes.' }),
+      zonaGrupos,
+      el('button', { class: 'btn', style: 'margin-top:12px', text: 'Guardar los grupos', onclick: async () => {
+        const del = await sb.from('grupo_puntos').delete().eq('punto_id', punto.id);
+        if (del.error) return toast(del.error.message, true);
+        if (enGrupo.size) {
+          const ins = await sb.from('grupo_puntos')
+            .insert([...enGrupo].map(grupo_id => ({ grupo_id, punto_id: punto.id })));
+          if (ins.error) return toast(ins.error.message, true);
+        }
+        await DB.descargarCatalogo().catch(() => {});
+        S.catalogo = await DB.catalogo();
+        toast('Grupos actualizados');
+      } })
+    );
+
     const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
     cuerpo.append(el('h3', { text: 'Equipo instalado', style: 'margin-top:26px' }), zona);
 
@@ -1969,7 +2068,8 @@ async function editarPunto(punto) {
       tipo_equipo_id: Number(f.tipo.value),
       foto_obligatoria: f.foto.checked,
       foto_calidad: f.calidad.value,
-      observaciones: f.obs.value.trim() || null
+      observaciones: f.obs.value.trim() || null,
+      instruccion_lectura: f.instruccion.value.trim() || null
     };
     if (!datos.nombre) return toast('El punto necesita un nombre', true);
     const r = nuevo
@@ -2258,7 +2358,7 @@ async function vistaRespaldo(c) {
       const nombreXlsx = `Cierre_de_Mes_${rangoDesde.slice(0,7)}_a_${rangoHasta.slice(0,7)}.xlsx`;
       zip.file(nombreXlsx, xlsx);
 
-      // ---- fotos, en Año / Mes / Grupo / TAG_Punto ----
+      // ---- fotos, en Año / Mes / Grupo ----
       const conFoto = filas.filter(f => f.storage_path);
       const idsFoto = [];
       const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Sitio', 'Punto', 'TAG',
@@ -2269,14 +2369,17 @@ async function vistaRespaldo(c) {
         const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 900);
         if (!url?.signedUrl) continue;
         const blob = await (await fetch(url.signedUrl)).blob();
+        // Año / Mes / Grupo, y el archivo con el nombre del PUNTO: el TAG es del
+        // medidor y el medidor se cambia; el punto es lo que se queda.
         const d = new Date(f.periodo);
         const carpeta = [
           d.getUTCFullYear(),
           R.MESES_N[d.getUTCMonth()],
-          R.limpio(f.grupo || f.sitio),
-          R.limpio(`${f.tag || 'sin-TAG'}_${f.punto}`)
+          R.limpio(f.grupo || f.sitio)
         ].join('/');
-        const nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.tag || 'sin-TAG')}_${f.valor ?? 'sd'}.jpg`;
+        const varias = (f.variable && !/^energ[ií]a activa importada$/i.test(f.variable))
+          ? '_' + R.limpio(f.variable) : '';
+        const nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.punto)}${varias}_${f.valor ?? 'sd'}.jpg`;
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
         indice.push([`${carpeta}/${nombre}`, d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()],
@@ -2300,7 +2403,7 @@ async function vistaRespaldo(c) {
         tipo, periodo_desde: rangoDesde, periodo_hasta: rangoHasta,
         lecturas: idsLectura.length, fotos: idsFoto.length,
         excel: nombreXlsx,
-        estructura: 'Año / Mes / Grupo / TAG_Punto / fecha_TAG_lectura.jpg',
+        estructura: 'Año / Mes / Grupo / fecha_Punto_lectura.jpg',
         indice: 'indice_fotos.xlsx · una fila por foto, con su ruta, el punto y quién la tomó',
         aviso_grupos: 'Las carpetas usan el grupo que el punto tiene HOY. Si un punto cambia de ' +
                       'grupo, los respaldos nuevos lo guardan en la carpeta nueva; los ya ' +
@@ -3081,7 +3184,7 @@ async function vistaEtiquetas(c) {
     ...sitios.map(s => el('option', { value: s.id, text: s.nombre }))]);
   const selGrupo = el('select', {}, [el('option', { value: '', text: 'Todos los grupos' }),
     ...[...S.catalogo.grupos].sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))
-        .map(g => el('option', { value: g.id, text: g.nombre }))]);
+        .map(g => el('option', { value: g.nombre, text: g.nombre }))]);
   const cuales = el('select', {}, [
     el('option', { value: 'ambos', text: 'Punto y medidor (dos etiquetas)' }),
     el('option', { value: 'punto', text: 'Solo los puntos' }),
@@ -3093,7 +3196,7 @@ async function vistaEtiquetas(c) {
     const puntos = new Map();
     for (const v of S.catalogo.variables) {
       if (selSitio.value && String(v.punto.sitio.id) !== selSitio.value) continue;
-      if (selGrupo.value && String(v.grupo_id) !== selGrupo.value) continue;
+      if (selGrupo.value && !(v.punto.grupos || []).includes(selGrupo.value)) continue;
       puntos.set(v.punto.id, v.punto);
     }
     const lista = [...puntos.values()].sort((a, b) => a.nombre.localeCompare(b.nombre));

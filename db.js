@@ -80,27 +80,35 @@
 
   // ---------------- Catálogo (se descarga con señal) ----------------
   async function descargarCatalogo() {
-    const [puntos, sitios, grupos, avisos, generadores, instalados, gente] = await Promise.all([
+    const [puntos, sitios, grupos, avisos, generadores, instalados, gente, gruposPunto] = await Promise.all([
       sb.from('variables').select(`
           id, nombre, unidad_display, unidad_reporte, decimales_display,
-          formato_lectura, activo, grupo_id,
+          formato_lectura, activo,
           punto:puntos!inner ( id, nombre, area, foto_obligatoria, foto_calidad, activo,
+            instruccion_lectura,
             sitio:sitios!inner ( id, nombre ),
             tipo:tipos_equipo!inner ( id, nombre )
           )`).eq('activo', true),
       sb.from('sitios').select('*').order('nombre'),
-      sb.from('grupos').select('*').order('nombre'),
+      sb.from('grupos').select('*').order('orden').order('nombre'),
       sb.from('catalogo_avisos').select('*').eq('activo', true).order('categoria'),
       sb.from('generadores').select('*').eq('activo', true).order('n_equipo'),
       // el equipo ya no cuelga del punto: viene de la asignación vigente
       sb.from('v_puntos').select('id, equipo_id, tag, marca, modelo, n_serie, certificado, vence_certificado, equipo_desde'),
-      sb.from('usuarios').select('id, nombre')
+      sb.from('usuarios').select('id, nombre'),
+      // El grupo vive en grupo_puntos y un punto puede estar en varios.
+      sb.from('v_grupos_punto').select('punto_id, grupos')
     ]);
     for (const r of [puntos, sitios, grupos, avisos, generadores, instalados]) if (r.error) throw r.error;
 
     const porPunto = {};
     for (const p of instalados.data) porPunto[p.id] = p.equipo_id ? p : null;
-    for (const v of puntos.data) v.punto.equipo = porPunto[v.punto.id] || null;
+    const gruposDe = {};
+    for (const g of (gruposPunto.data || [])) gruposDe[g.punto_id] = g.grupos || [];
+    for (const v of puntos.data) {
+      v.punto.equipo = porPunto[v.punto.id] || null;
+      v.punto.grupos = gruposDe[v.punto.id] || [];
+    }
 
     const datos = {
       variables: puntos.data, sitios: sitios.data, grupos: grupos.data,
@@ -110,6 +118,29 @@
     };
     await idb.guardar('catalogo', { clave: 'principal', datos });
     return datos;
+  }
+
+  // La banda esperada de cada variable tarda unos segundos en calcularse en el
+  // servidor. Se baja aparte, sin bloquear el arranque, y queda en el dispositivo:
+  // así abrir un punto en terreno no espera a la red nunca.
+  async function descargarBandas() {
+    const { data, error } = await sb.from('v_bandas').select('*');
+    if (error) throw error;
+    const mapa = {};
+    for (const b of data) mapa[b.variable_id] = { media: Number(b.media), sigma: Number(b.sigma), meses: b.meses };
+    await idb.guardar('catalogo', { clave: 'bandas', datos: { mapa, bajadoEn: Date.now() } });
+    return mapa;
+  }
+  async function bandasCache() {
+    const r = await idb.leer('catalogo', 'bandas');
+    return r ? r.datos.mapa : {};
+  }
+  // Se refresca sola en segundo plano si está vieja; nadie la espera.
+  async function refrescarBandas() {
+    if (!navigator.onLine) return;
+    const r = await idb.leer('catalogo', 'bandas');
+    if (r && Date.now() - r.datos.bajadoEn < 12 * 3600e3) return;
+    try { await descargarBandas(); } catch (e) { console.warn('bandas:', e.message); }
   }
 
   async function catalogo({ forzar = false } = {}) {
@@ -217,7 +248,9 @@
           continue;
         }
 
-        const { data: nuevoId, error } = await sb.rpc('guardar_lectura', {
+        // En terreno la lectura y el aviso son el mismo gesto: viajan juntos y el
+        // servidor los guarda en una sola llamada, o no se guarda ninguno.
+        const { data: nuevoId, error } = await sb.rpc('guardar_lectura_con_aviso', {
           p_variable_id: fila.variable_id,
           p_periodo: fila.periodo,
           p_fecha_lectura: fila.fecha_lectura,
@@ -228,7 +261,9 @@
           p_observacion: fila.observacion ?? null,
           p_es_reset: !!fila.es_reset,
           p_tipo_reset: fila.tipo_reset ?? null,
-          p_dispositivo: fila.dispositivo ?? null
+          p_dispositivo: fila.dispositivo ?? null,
+          p_aviso_categoria: fila.aviso_categoria ?? null,
+          p_aviso_descripcion: fila.aviso_descripcion ?? null
         });
         if (error) throw error;
         const ins = { id: nuevoId };
@@ -297,6 +332,7 @@
     sb, idb, comprimirFoto, catalogo, descargarCatalogo,
     lecturasDelPeriodo, lecturasCache, ultimasLecturas, ultimasCache,
     encolar, pendientes, sincronizar, exportarPendientes,
+    descargarBandas, bandasCache, refrescarBandas,
     estadoAlmacenamiento, pedirPersistencia
   };
 })();

@@ -135,8 +135,8 @@ input[type=number]{-moz-appearance:textfield}
   color:var(--ink-3);padding:16px 12px 6px;border-top:1px solid var(--line);margin-top:8px}
 .menu-pie{margin-top:auto;font-size:13px;color:var(--ink-3);padding:0 12px}
 .menu-pie span{display:block;margin-bottom:6px}
-.menu-pie .link{display:block;margin-bottom:4px}
-.velo{position:fixed;inset:0;background:rgba(15,34,38,.45);z-index:30}
+.menu-pie .link{display:block;margin-bottom:4px;text-align:left;padding:0}
+.velo{position:fixed;inset:0;background:rgba(15,34,38,.45);z-index:30;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
 
 /* ---------- contenido ---------- */
 /* min-width:0 · sin esto una tabla ancha estira la columna del grid y
@@ -207,6 +207,7 @@ main{padding:14px;max-width:1280px;margin:0 auto;padding-bottom:48px;
 .banda{padding:10px 14px;border-radius:var(--radio);font-size:14px;margin:12px 0}
 .banda.ok{background:var(--ok-bg);color:var(--ok)}
 .banda.warn{background:var(--warn-bg);color:var(--warn)}
+.banda.acento{background:var(--acento-suave);color:var(--acento-ink);border-color:var(--acento)}
 .banda.bad{background:var(--bad-bg);color:var(--bad)}
 .foto-caja{display:grid;gap:10px;margin:14px 0}
 .foto-previa{width:100%;max-height:280px;object-fit:contain;background:var(--surface-2);
@@ -252,7 +253,7 @@ tbody tr:hover{background:var(--surface-2)}
 
 /* ---------- modal ---------- */
 .modal{position:fixed;inset:0;z-index:50;background:rgba(15,34,38,.5);
-  display:grid;place-items:center;padding:16px}
+  display:grid;place-items:center;padding:16px;backdrop-filter:blur(6px) saturate(.9);-webkit-backdrop-filter:blur(6px) saturate(.9)}
 .modal-caja{background:var(--surface);border-radius:12px;width:100%;max-width:640px;
   max-height:90dvh;display:flex;flex-direction:column;box-shadow:var(--sombra)}
 .modal-caja header{display:flex;align-items:center;gap:10px;padding:12px 8px 12px 18px;
@@ -390,3 +391,16 @@ tbody tr:hover{background:var(--surface-2)}
   .impresion .etiqueta .que{color:#000}
   .impresion .etiqueta .pie{color:#333}
 }
+
+
+/* ---------- filtros de la lista de terreno ---------- */
+.filtros-terreno{gap:8px;flex-wrap:wrap;margin:10px 0 4px}
+.chip-filtro{
+  border:1px solid var(--line);background:var(--surface);color:var(--ink-2);
+  border-radius:100px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
+  min-height:38px;
+}
+.chip-filtro.sel{background:var(--acento-suave);border-color:var(--acento);color:var(--acento-ink)}
+.chip-filtro:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.grupo-sitio{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.cuenta-seccion{font-size:12px;font-weight:400;color:var(--ink-3);text-transform:none;letter-spacing:0}

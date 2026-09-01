@@ -50,26 +50,34 @@
   </header>
 
   <nav id="menu" class="menu">
-    <button data-vista="terreno">Terreno · tomar lecturas</button>
-    <button data-vista="tablero"   data-rol="supervisor">Tablero del mes</button>
-    <button data-vista="validacion" data-rol="supervisor">Validación</button>
-    <button data-vista="consumos"  data-rol="supervisor">Consumos e informes</button>
+    <div class="menu-titulo">Terreno</div>
+    <button data-vista="terreno">Tomar lecturas</button>
     <button data-vista="avisos">Avisos</button>
+
+    <div class="menu-titulo" data-rol="supervisor">Revisión del mes</div>
+    <button data-vista="tablero"    data-rol="supervisor">Tablero del mes</button>
+    <button data-vista="validacion" data-rol="supervisor">Validación</button>
+    <button data-vista="auditoria"  data-rol="supervisor">Auditoría</button>
+
+    <div class="menu-titulo" data-rol="supervisor">Informes</div>
+    <button data-vista="consumos" data-rol="supervisor">Consumos e informes</button>
+    <button data-vista="respaldo" data-rol="supervisor">Respaldo</button>
+
     <div class="menu-titulo" data-rol="casa_fuerza">Casa de Fuerza</div>
     <button data-vista="generadores" data-rol="casa_fuerza">Generadores</button>
     <button data-vista="recargas"    data-rol="casa_fuerza">Recargas de combustible</button>
-    <button data-vista="dispositivo">Este dispositivo</button>
-    <button data-vista="auditoria" data-rol="supervisor">Auditoría</button>
-    <button data-vista="respaldo"  data-rol="supervisor">Respaldo</button>
+
     <div class="menu-titulo" data-rol="supervisor">Configuración</div>
-    <button data-vista="equipos"  data-rol="supervisor">Equipos</button>
-    <button data-vista="puntos"   data-rol="supervisor">Puntos de medición</button>
-    <button data-vista="grupos"   data-rol="supervisor">Grupos</button>
+    <button data-vista="equipos"   data-rol="supervisor">Equipos</button>
+    <button data-vista="puntos"    data-rol="supervisor">Puntos de medición</button>
+    <button data-vista="grupos"    data-rol="supervisor">Grupos</button>
     <button data-vista="etiquetas" data-rol="supervisor">Etiquetas QR</button>
-    <button data-vista="usuarios" data-rol="admin">Usuarios</button>
+    <button data-vista="usuarios"  data-rol="admin">Usuarios</button>
+
     <hr>
     <div class="menu-pie">
       <span id="menu-usuario"></span>
+      <button data-vista="dispositivo" class="link">Este dispositivo</button>
       <button id="btn-clave" class="link">Cambiar mi contraseña</button>
       <button id="btn-salir" class="link">Cerrar sesión</button>
     </div>

@@ -286,7 +286,7 @@ async function sincronizar(silencioso = false) {
   if (!navigator.onLine) { if (!silencioso) toast('Sin señal. Se enviará solo cuando vuelva.', true); return; }
 
   $('#btn-sync').disabled = true;
-  const r = await DB.sincronizar();
+  const r = await DB.sincronizar(null, !silencioso);   // a mano se reintenta todo
   $('#btn-sync').disabled = false;
 
   await refrescarDatos();
@@ -592,8 +592,10 @@ async function abrirCaptura(v) {
   // que guardar la lectura, salir, volver a entrar y recién ahí abrir el aviso.
   const selAviso = el('select');
   selAviso.append(el('option', { value: '', text: '— sin novedad —' }));
-  for (const a of S.catalogo.catalogoAvisos)
+  for (const a of S.catalogo.catalogoAvisos) {
+    if (/^Otro/i.test(a.categoria)) continue;      // va al final, con su propio texto
     selAviso.append(el('option', { value: a.id, text: a.categoria }));
+  }
   selAviso.append(el('option', { value: 'otra', text: 'Otra · la describo abajo' }));
   const obs = el('textarea', { placeholder: 'Qué viste. Si marcaste una novedad, esto queda como su descripción.' });
   const pistaAviso = el('p', { class: 'ayuda', text:
@@ -791,7 +793,11 @@ async function abrirCaptura(v) {
     if (selAviso.value) {
       if (!obs.value.trim() && selAviso.value === 'otra')
         return toast('Escribe qué pasó: elegiste "Otra"', true);
-      fila.aviso_categoria = selAviso.value === 'otra' ? null : Number(selAviso.value);
+      // "Otra" también es una categoría del catálogo: mandar null hacía que el
+      // servidor rechazara todo el registro y la lectura quedaba atascada.
+      const otra = S.catalogo.catalogoAvisos.find(a => /^Otro/i.test(a.categoria));
+      fila.aviso_categoria = selAviso.value === 'otra'
+        ? (otra ? otra.id : null) : Number(selAviso.value);
       fila.aviso_descripcion = obs.value.trim() || selAviso.selectedOptions[0].text;
     }
 
@@ -1408,6 +1414,9 @@ async function vistaConsumos(c) {
               .order('sitio').order('punto');
     if (R.grupo) q = q.contains('grupos', [R.grupo]);
     if (R.sitio) q = q.eq('sitio', R.sitio);
+    // Sin esto, un punto con importada y exportada aparecería dos veces y la
+    // suma del grupo contaría el mismo medidor dos veces.
+    if (!R.secundarias) q = q.eq('principal', true);
     const { data, error } = await q;
     if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
 
@@ -1759,6 +1768,239 @@ async function imprimirInforme() {
   };
   window.addEventListener('afterprint', limpiar);
   setTimeout(() => window.print(), 120);
+}
+
+/* ===================================================================
+   PLANILLA ANUAL EN EXCEL
+   Dos miradas del mismo dato, porque sirven para cosas distintas:
+   · Resumen anual  → una fila por punto, para leer y mandar.
+   · Detalle mensual → totalizador, consumo y variación, para revisar.
+   Más una pestaña por grupo, para mandarle a cada sector solo lo suyo.
+   =================================================================== */
+
+// PostgREST devuelve 1.000 filas como máximo. Con dos años de lecturas eso
+// truncaría la planilla en silencio, que es la peor forma de fallar.
+async function traerTodo(armar, paso = 1000) {
+  const salida = [];
+  for (let desde = 0; ; desde += paso) {
+    const { data, error } = await armar().range(desde, desde + paso - 1);
+    if (error) throw error;
+    salida.push(...data);
+    if (data.length < paso) return salida;
+  }
+}
+
+const MES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function etiquetaMes(m, variosAnios) {
+  const [a, mm] = m.split('-');
+  return variosAnios ? `${MES_CORTO[+mm - 1]}-${a}` : MES_CORTO[+mm - 1];
+}
+const mesSiguiente = m => {
+  const d = new Date(m + 'T00:00:00Z');
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return d.toISOString().slice(0, 10);
+};
+// Excel no acepta : \ / ? * [ ] en el nombre de una hoja, ni más de 31 caracteres.
+const nombreHoja = (s, usados) => {
+  let base = String(s).replace(/[:\\\/\?\*\[\]]/g, '-').slice(0, 31) || 'Hoja';
+  let n = base, i = 2;
+  while (usados.has(n)) { n = base.slice(0, 28) + '~' + i++; }
+  usados.add(n);
+  return n;
+};
+
+async function descargarPlanilla(desde, hasta, filtros = {}) {
+  const paso = t => { const p = $('#planilla-paso'); if (p) p.textContent = t; };
+  if (typeof JSZip === 'undefined') {
+    paso('Cargando el compresor…');
+    await new Promise((ok, mal) => {
+      const s = document.createElement('script');
+      s.src = 'jszip.js'; s.onload = ok; s.onerror = mal;
+      document.head.append(s);
+    });
+  }
+  paso('Consultando consumos…');
+  const cons = await traerTodo(() => {
+    let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
+              .order('mes').order('sitio').order('punto');
+    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
+    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
+    // La secundaria (la exportada, por ejemplo) no entra al informe salvo que se pida.
+    if (!filtros.secundarias) q = q.eq('principal', true);
+    return q;
+  });
+  if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
+
+  paso('Consultando lecturas…');
+  // El totalizador de un mes es la lectura del mes siguiente, así que hay que
+  // pedir un mes más para que la última columna no quede vacía.
+  const lect = await traerTodo(() => {
+    let q = sb.from('v_respaldo').select('*')
+             .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
+             .order('periodo');
+    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
+    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
+    return q;
+  });
+
+  paso('Armando el libro…');
+  const meses = [...new Set(cons.map(c => c.mes))].sort();
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const cabMeses = meses.map(m => etiquetaMes(m, variosAnios));
+
+  // ---- datos por variable ----
+  const porVar = new Map();
+  for (const c of cons) {
+    if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
+      tag: c.tag || '', sitio: c.sitio, grupo: c.grupo || 'Sin grupo', punto: c.punto,
+      variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
+      principal: c.principal !== false, cons: {}, estado: {}, metodo: {}, lect: {}
+    });
+    const v = porVar.get(c.variable_id);
+    v.cons[c.mes] = Number(c.consumo);
+    v.estado[c.mes] = c.completo ? 'cerrado' : 'provisional';
+    v.metodo[c.mes] = c.metodo;
+  }
+  for (const f of lect) {
+    const v = porVar.get(f.variable_id);
+    if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
+  }
+  const filasVar = [...porVar.values()].sort((a, b) =>
+    compararGrupos(a.grupo, b.grupo) ||
+    (a.sitio + a.punto).localeCompare(b.sitio + b.punto));
+
+  const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
+
+  // ---- 1 · Resumen anual: bloques por grupo y unidad, con subtotal ----
+  const resumen = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
+  // Sumar kWh con m3 no significa nada: cada grupo cierra con una suma POR UNIDAD.
+  // Y no hay TOTAL GENERAL a propósito: los puntos tienen naturalezas distintas
+  // (unos en serie, otros en paralelo del mismo circuito), así que un gran total
+  // sería un número que nadie puede defender. Los grupos son vistas de reporte.
+  let grupoActual = null, acumGrupo = {};
+  const cerrarGrupo = () => {
+    if (grupoActual === null) return;
+    for (const [u, acum] of Object.entries(acumGrupo)) {
+      resumen.push(['', '', 'Suma del grupo (referencial)', '', u, '',
+        ...meses.map(m => redondear(acum[m])),
+        redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
+    }
+    resumen.push([]);
+  };
+  for (const v of filasVar) {
+    if (v.grupo !== grupoActual) {
+      cerrarGrupo();
+      grupoActual = v.grupo; acumGrupo = {};
+      resumen.push([`GRUPO: ${grupoActual}`]);
+    }
+    (acumGrupo[v.unidad] ||= {});
+    meses.forEach(m => { acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0); });
+    resumen.push([v.tag, v.sitio, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
+      ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
+  }
+  cerrarGrupo();
+
+  // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
+  const detalle = [['TAG', 'Sitio', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
+  for (const v of filasVar) {
+    detalle.push([v.tag, v.sitio, v.grupo, v.punto, v.variable, v.unidad, 'Totalizador',
+      ...meses.map(m => redondear(v.lect[mesSiguiente(m)]))]);
+    detalle.push(['', '', '', '', '', '', 'Consumo del mes',
+      ...meses.map(m => redondear(v.cons[m]))]);
+    detalle.push(['', '', '', '', '', '', 'Var. % vs mes anterior', ...meses.map((m, i) => {
+      if (i === 0) return '';
+      const a = v.cons[meses[i - 1]], b = v.cons[m];
+      // en puntos porcentuales: -62,8 se lee solo; -0,628 obliga a formatear la celda
+      return (a && b) ? Number((100 * (b - a) / a).toFixed(1)) : '';
+    })]);
+    detalle.push(['', '', '', '', '', '', 'Estado', ...meses.map(m => v.estado[m] || '')]);
+  }
+
+  // ---- 3 · una hoja por grupo ----
+  const usados = new Set();
+  const hojas = [
+    { nombre: nombreHoja('Resumen anual', usados), filas: resumen },
+    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle }
+  ];
+  const grupos = [...new Set(filasVar.flatMap(v => v.grupos.length ? v.grupos : ['Sin grupo']))]
+                   .sort(compararGrupos);
+  for (const g of grupos) {
+    const suyas = filasVar.filter(v => (v.grupos.length ? v.grupos : ['Sin grupo']).includes(g));
+    const f = [[`GRUPO: ${g}`], [], ['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
+    for (const v of suyas)
+      f.push([v.tag, v.sitio, v.punto, v.variable, v.unidad,
+        ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
+    const porUnidad = {};
+    for (const v of suyas) { (porUnidad[v.unidad] ||= {}); meses.forEach(m => porUnidad[v.unidad][m] = (porUnidad[v.unidad][m] || 0) + (v.cons[m] || 0)); }
+    f.push([]);
+    for (const [u, acum] of Object.entries(porUnidad))
+      f.push(['', '', `Suma del grupo (referencial) · ${u}`, '', u,
+        ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
+    hojas.push({ nombre: nombreHoja(g, usados), filas: f });
+  }
+
+  // ---- 4 · lecturas y 5 · consumos en formato largo ----
+  hojas.push({ nombre: nombreHoja('Lecturas', usados), filas: [
+    ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable',
+     'Unidad', 'Valor', 'Sin dato', 'Reinicio', 'Consumo declarado', 'Estado', 'Origen',
+     'Observación', 'Obs. validación', 'Foto'],
+    ...lect.map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
+      f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable,
+      f.unidad, f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
+      f.es_reset ? (f.tipo_reset || 'sí') : 'no',
+      f.consumo_manual === null || f.consumo_manual === undefined ? '' : Number(f.consumo_manual),
+      f.estado, f.origen, f.observacion || '', f.obs_validacion || '', f.storage_path ? 'sí' : 'no'])
+  ]});
+  hojas.push({ nombre: nombreHoja('Consumos', usados), filas: [
+    ['Mes', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
+    ...cons.map(c => [c.mes, c.sitio, c.grupo || '', c.punto, c.tag || '', c.variable,
+      c.unidad_reporte, Number(c.consumo), c.dias_asignados, c.metodo,
+      c.completo ? 'cerrado' : 'provisional'])
+  ]});
+
+  // ---- 6 · calidad del dato ----
+  const cuenta = (arr, f) => arr.reduce((a, x) => { const k = f(x); a[k] = (a[k] || 0) + 1; return a; }, {});
+  const porMetodo = cuenta(cons, c => c.metodo);
+  const prov = cons.filter(c => !c.completo);
+  hojas.push({ nombre: nombreHoja('Calidad del dato', usados), filas: [
+    ['Concepto', 'Valor'],
+    ['Periodo', `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`],
+    ['Generado', new Date().toLocaleString('es-CL')],
+    ['Generado por', S.usuario.nombre],
+    ['Filtro de grupo', filtros.grupo || 'todos'],
+    ['Filtro de sitio', filtros.sitio || 'todos'],
+    ['Lecturas secundarias', filtros.secundarias ? 'incluidas' : 'excluidas (solo las principales)'],
+    ['Puntos', new Set(cons.map(c => c.punto_id)).size],
+    ['Valores de consumo', cons.length],
+    ['Lecturas incluidas', lect.length],
+    [],
+    ['Cómo se calculó cada consumo', ''],
+    ['directo (lectura del día 1)', porMetodo.directo || 0],
+    ['prorrateado (fecha corrida)', porMetodo.prorrateado || 0],
+    ['estimado (carga histórica)', porMetodo.estimado || 0],
+    [],
+    ['Valores provisionales', prov.length],
+    ['', 'Un mes queda cerrado cuando existe la lectura del mes siguiente.'],
+    [],
+    ['Cómo leer la planilla', ''],
+    ['', 'El consumo de un mes se reparte entre las lecturas que lo cubren, por días de calendario.'],
+    ['', 'En "Detalle mensual", el totalizador de un mes es la lectura tomada al comienzo del mes siguiente.'],
+    ...prov.slice(0, 200).map(c => ['provisional', `${c.mes} · ${c.punto} · ${c.variable}`])
+  ]});
+
+  paso('Escribiendo el archivo…');
+  const blob = await window.RESPALDO.construirExcel(hojas);
+  const alcance = filtros.grupo ? '_' + window.RESPALDO.limpio(filtros.grupo)
+                : filtros.sitio ? '_' + window.RESPALDO.limpio(filtros.sitio) : '';
+  descargar(blob, `Consumos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}${alcance}.xlsx`);
+  paso('');
+  toast(`Planilla lista: ${filasVar.length} puntos, ${meses.length} meses`);
+}
+
+// Excel guarda lo que le den: conviene no arrastrar 12 decimales de un prorrateo.
+function redondear(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '';
+  return Math.round(Number(v) * 100) / 100;
 }
 
 /* ===================================================================
@@ -3370,13 +3612,49 @@ async function verificarMedidor(v, zona) {
     el('p', { class: 'banda bad', text: instalado
       ? `El medidor instalado en este punto es ${codigoEquipo(instalado)}` +
         `${v.punto.equipo.tag ? ' (' + v.punto.equipo.tag + ')' : ''}, y escaneaste ${codigoEquipo(c.id)}. ` +
-        'Toma la lectura igual: el dato del display es el dato. Pero deja el aviso para que el supervisor ' +
-        'corrija la asignación, porque si no el consumo se va a comparar contra el histórico del medidor viejo.'
-      : `Este punto no tiene medidor asignado y escaneaste ${codigoEquipo(c.id)}. Deja el aviso para que lo asignen.` }),
-    el('button', { class: 'btn', text: 'Dejar aviso de medidor cambiado',
+        'Toma la lectura igual: el dato del display es el dato. Y si el medidor se cambió, ' +
+        'confírmalo aquí para que el consumo no se compare contra el histórico del medidor viejo.'
+      : `Este punto no tiene medidor asignado y escaneaste ${codigoEquipo(c.id)}.` }),
+    el('button', { class: 'btn', text: `Sí, ahora este punto tiene el ${codigoEquipo(c.id)}`,
+      onclick: () => reasignarMedidor(v, c.id, zona) }),
+    el('button', { class: 'btn chico', text: 'No estoy seguro, solo dejar aviso',
       onclick: () => abrirAviso(v.punto, `Se escaneó ${codigoEquipo(c.id)} en este punto` +
         (instalado ? `, pero la asignación vigente es ${codigoEquipo(instalado)}.` : ', que no tiene medidor asignado.')) })
   );
+}
+
+// El cambio se aplica directo, sin pasar por el supervisor: quien está parado
+// frente al instrumento es quien sabe cuál está instalado. Queda en la cola
+// como cualquier otro registro, así que funciona sin señal, y en la auditoría
+// con el motivo "Reasignado en terreno por QR".
+async function reasignarMedidor(v, equipoId, zona) {
+  const anterior = v.punto.equipo?.equipo_id || null;
+  if (!confirm(`Vas a dejar el medidor ${codigoEquipo(equipoId)} como el instalado en "${v.punto.nombre}"` +
+      (anterior ? `, en reemplazo del ${codigoEquipo(anterior)}` : '') + '. ¿Confirmas?')) return;
+
+  await DB.encolar({
+    tipo: 'reasignacion',
+    punto_id: v.punto.id,
+    equipo_id: equipoId,
+    motivo: 'Reasignado en terreno por QR',
+    dispositivo: navigator.userAgent.slice(0, 120)
+  });
+
+  // El catálogo local se corrige de inmediato para que el resto de la jornada
+  // no siga avisando de un cambio que ya se registró.
+  // El TAG solo se conoce sin señal si ese medidor está asignado a otro punto
+  // del catálogo; si no, queda en blanco hasta la próxima bajada del catálogo.
+  const otro = S.catalogo.variables.find(x => x.punto.equipo && x.punto.equipo.equipo_id === equipoId);
+  const nuevo = otro ? { ...otro.punto.equipo } : { equipo_id: equipoId, tag: null };
+  S.catalogo.variables.forEach(x => {
+    if (x.punto.id === v.punto.id) x.punto.equipo = nuevo;
+    else if (x.punto.equipo && x.punto.equipo.equipo_id === equipoId) x.punto.equipo = null;
+  });
+
+  poner(zona, el('p', { class: 'banda ok', text:
+    `Listo: este punto queda con el ${codigoEquipo(equipoId)}${nuevo.tag ? ' · ' + nuevo.tag : ''}. ` +
+    'Se envía junto con la lectura.' }));
+  if (navigator.onLine) sincronizar(true);
 }
 
 /* ---------------- hoja de etiquetas imprimible ---------------- */

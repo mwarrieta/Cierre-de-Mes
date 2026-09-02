@@ -212,12 +212,25 @@
     return ruta;
   }
 
-  async function sincronizar(alAvanzar) {
+  // Dos sincronizaciones al mismo tiempo mandaban el mismo registro dos veces
+  // y la segunda volvía con error de duplicado, dejándolo trabado en la cola.
+  let sincronizando = null;
+  async function sincronizar(alAvanzar, forzado = false) {
+    if (sincronizando) return sincronizando;
+    sincronizando = sincronizarAhora(alAvanzar, forzado);
+    try { return await sincronizando; } finally { sincronizando = null; }
+  }
+
+  async function sincronizarAhora(alAvanzar, forzado = false) {
     if (!navigator.onLine) return { enviados: 0, fallidos: 0, sinRed: true };
     const cola = await idb.todos('cola');
     let enviados = 0, fallidos = 0;
 
     for (const item of cola) {
+      // Un registro que ya falló varias veces no se reintenta solo en cada
+      // sincronización: se queda esperando el botón "Intentar enviar ahora",
+      // con su error a la vista. Reintentar en bucle esconde el problema.
+      if (!forzado && (item.intentos || 0) >= 5) { fallidos++; continue; }
       try {
         const { fotoId, id: idLocal, creado, intentos, _foto, tipo, ...fila } = item;
 
@@ -253,6 +266,23 @@
             p_dispositivo: fila.dispositivo ?? null
           });
           if (e2) throw e2;
+          await idb.borrar('cola', idLocal);
+          enviados++;
+          alAvanzar && alAvanzar(enviados, fallidos, cola.length);
+          continue;
+        }
+
+        // Reasignación de medidor hecha en terreno con el QR del equipo.
+        // El servidor la aplica directo y es idempotente, así que reintentarla
+        // desde la cola no duplica asignaciones.
+        if (tipo === 'reasignacion') {
+          const { error: e4 } = await sb.rpc('reasignar_medidor', {
+            p_punto_id: fila.punto_id,
+            p_equipo_id: fila.equipo_id,
+            p_motivo: fila.motivo ?? null,
+            p_dispositivo: fila.dispositivo ?? null
+          });
+          if (e4) throw e4;
           await idb.borrar('cola', idLocal);
           enviados++;
           alAvanzar && alAvanzar(enviados, fallidos, cola.length);

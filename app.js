@@ -434,10 +434,17 @@ async function pintarLista() {
     const l = S.lecturas.find(x => x.variable_id === v.id);
     return !!(l && l.sin_dato);
   };
+  // Una lectura opcional (la exportada, por ejemplo) se puede cargar pero no
+  // cuenta como pendiente: si contara, la lista de terreno se duplicaría con
+  // datos que no siempre están y el mes nunca se vería completo.
+  const obligatoria = v => !v.opcional;
+  const falta = v => obligatoria(v) && !tomada(v);
   const total = items.length;
-  const pend = items.filter(v => !tomada(v)).length;
+  const pend = items.filter(falta).length;
   const nSinDato = items.filter(sinDato).length;
-  if (S.soloPendientes === 'pendientes') items = items.filter(v => !tomada(v));
+  const nOpc = items.filter(v => v.opcional && !tomada(v)).length;
+  if (S.soloPendientes === 'pendientes') items = items.filter(falta);
+  if (S.soloPendientes === 'opcionales') items = items.filter(v => v.opcional);
   if (S.soloPendientes === 'sindato') items = items.filter(sinDato);
 
   cont.replaceChildren();
@@ -455,6 +462,8 @@ async function pintarLista() {
     // la de los puntos a los que hay que volver.
     nSinDato ? chip(`No se pudo leer · ${nSinDato}`, S.soloPendientes === 'sindato',
       () => { S.soloPendientes = 'sindato'; pintarLista(); }) : null,
+    nOpc ? chip(`Opcionales · ${nOpc}`, S.soloPendientes === 'opcionales',
+      () => { S.soloPendientes = 'opcionales'; pintarLista(); }) : null,
     el('span', { class: 'crece' }),
     chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
     chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
@@ -483,7 +492,7 @@ async function pintarLista() {
 
   for (const seccion of orden) {
     const lista = secciones[seccion];
-    const faltan = lista.filter(v => !tomada(v)).length;
+    const faltan = lista.filter(falta).length;
     const sd = lista.filter(sinDato).length;
     cont.append(el('div', { class: 'grupo-sitio' }, [
       el('span', { text: seccion }),
@@ -500,6 +509,7 @@ async function pintarLista() {
         el('span', { class: 'txt' }, [
           el('span', { class: 'n', text: v.punto.nombre }),
           el('span', { class: 'd', text: `${tag ? tag + ' · ' : ''}${v.nombre} · ${u}` +
+            (v.principal === false ? ' · secundaria' : '') +
             ((v.punto.grupos || []).length > 1 && S.agrupar === 'grupo'
               ? ' · también en ' + [...v.punto.grupos].sort(compararGrupos).slice(1).join(', ')
               : '') })
@@ -509,6 +519,7 @@ async function pintarLista() {
           : l ? (l.sin_dato
                   ? `<span class="pill warn">no se pudo leer</span><small>${esc(quien(l))}</small>`
                   : `${num(l.valor)}<small>${esc(quien(l))}</small>`)
+              : v.opcional ? '<span class="pill neutro">opcional</span>'
               : '<span class="pill neutro">pendiente</span>' })
       ]));
     }
@@ -695,8 +706,23 @@ async function abrirCaptura(v) {
     }
   }
 
+  // Un punto puede tener más de una lectura (importada y exportada, por
+  // ejemplo). Hay que decir cuál se está tomando y cuál manda en el informe,
+  // porque parado frente al medidor las dos pantallas se parecen.
+  const hermanas = S.catalogo.variables.filter(x => x.punto.id === v.punto.id);
+  const cualLectura = hermanas.length < 2 ? null : el('div', { class: 'banda ' + (v.principal === false ? 'neutro' : 'acento') }, [
+    el('b', { text: v.nombre + (v.principal === false ? ' · secundaria' : ' · principal') }),
+    el('br'),
+    el('small', { text: v.principal === false
+      ? 'No entra al consumo del informe: la que manda es "' +
+        (hermanas.find(x => x.principal !== false)?.nombre || 'la principal') + '".' +
+        (v.opcional ? ' Es opcional: si el medidor no la entrega, sáltala.' : '')
+      : 'Esta es la que va al consumo del informe.' })
+  ]);
+
   const cuerpo = el('div', { class: 'captura' }, [
     zonaExistente,
+    cualLectura,
     v.punto.instruccion_lectura
       ? el('p', { class: 'banda acento', text: v.punto.instruccion_lectura })
       : null,
@@ -2358,13 +2384,14 @@ async function editarPunto(punto) {
       el('h3', { text: 'Lecturas de este punto', style: 'margin-top:26px' }),
       el('p', { class: 'ayuda', text:
         'La principal es la que va al consumo del informe. La secundaria se toma y se guarda ' +
-        'igual — sirve, por ejemplo, para saber en qué sentido circuló la energía — pero no suma.' }),
+        'igual — sirve, por ejemplo, para saber en qué sentido circuló la energía — pero no suma. ' +
+        'Una lectura opcional aparece en terreno pero no cuenta como pendiente del mes.' }),
       zonaVars);
     pintarVariables();
 
     async function pintarVariables() {
       const { data, error } = await sb.from('variables')
-        .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo')
+        .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
         .eq('punto_id', punto.id).order('id');
       if (error) { poner(zonaVars, el('p', { class: 'error', text: error.message })); return; }
       poner(zonaVars,
@@ -2374,8 +2401,11 @@ async function editarPunto(punto) {
             UNIDAD[x.unidad_display] || x.unidad_display,
             UNIDAD[x.unidad_reporte] || x.unidad_reporte,
             String(x.decimales_display ?? 0),
-            el('span', { class: 'pill ' + (x.principal ? 'ok' : 'neutro'),
-                         text: x.principal ? 'principal' : 'secundaria' }),
+            el('div', { class: 'fila' }, [
+              el('span', { class: 'pill ' + (x.principal ? 'ok' : 'neutro'),
+                           text: x.principal ? 'principal' : 'secundaria' }),
+              x.opcional ? el('span', { class: 'pill neutro', text: 'opcional' }) : null
+            ].filter(Boolean)),
             el('div', { class: 'fila' }, [
               el('button', { class: 'btn chico', text: 'Editar',
                 onclick: () => editarVariable(x, punto, pintarVariables) }),
@@ -2477,6 +2507,7 @@ function editarVariable(x, punto, alGuardar) {
     dec: el('input', { type: 'number', min: '0', max: '3', value: String(x?.decimales_display ?? 0) }),
     formato: el('select'),
     principal: el('input', { type: 'checkbox', checked: (x ? x.principal : true) || null }),
+    opcional: el('input', { type: 'checkbox', checked: (x ? x.opcional : false) || null }),
     activo: el('input', { type: 'checkbox', checked: (x ? x.activo : true) || null })
   };
   for (const u of UNIDADES) {
@@ -2500,6 +2531,8 @@ function editarVariable(x, punto, alGuardar) {
     el('label', { text: 'Formato de la lectura' }, [f.formato]),
     el('label', { class: 'fila' }, [f.principal,
       el('span', { text: 'Es la lectura principal (la que va al consumo del informe)' })]),
+    el('label', { class: 'fila' }, [f.opcional,
+      el('span', { text: 'Opcional (se puede cargar, pero no cuenta como pendiente del mes)' })]),
     el('label', { class: 'fila' }, [f.activo,
       el('span', { text: 'Activa (se pide en terreno)' })]),
     el('button', { class: 'btn primario grande', style: 'margin-top:14px',
@@ -2510,7 +2543,8 @@ function editarVariable(x, punto, alGuardar) {
           p_id: x?.id ?? null, p_punto_id: punto.id, p_nombre: f.nombre.value.trim(),
           p_unidad_display: f.display.value, p_unidad_reporte: f.reporte.value,
           p_decimales: Number(f.dec.value || 0), p_formato: f.formato.value,
-          p_principal: f.principal.checked, p_activo: f.activo.checked
+          p_principal: f.principal.checked, p_activo: f.activo.checked,
+          p_opcional: f.opcional.checked
         });
         e.target.disabled = false;
         if (error) {

@@ -449,3 +449,18 @@ table.planilla td.total{font-weight:700}
 
 .banner-version{background:var(--acento-suave);color:var(--acento-ink);
   border-bottom:1px solid var(--acento);padding:10px 14px;font-size:14px;gap:10px}
+
+/* --- captura de un punto: varias lecturas en el mismo display --- */
+.cabecera-punto { display:flex; flex-direction:column; gap:2px; padding:10px 12px;
+  background:var(--suave,#f2f5f4); border-radius:10px; margin-bottom:12px; }
+.cabecera-punto b { font-size:17px; }
+.cabecera-punto small { color:var(--gris,#667); }
+.lectura-bloque { border:1px solid var(--borde,#dde3e1); border-radius:12px;
+  padding:12px; margin-bottom:14px; }
+.lectura-bloque:last-child { margin-bottom:0; }
+.avisos-captura { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+.aviso-chip { display:flex; align-items:center; gap:8px; justify-content:space-between;
+  background:var(--suave,#f2f5f4); border-radius:10px; padding:8px 10px; }
+.aviso-chip .txt { min-width:0; overflow-wrap:anywhere; }
+.btn.peligro { border-color:#c0392b; color:#c0392b; }
+.btn.peligro:hover { background:#c0392b; color:#fff; }

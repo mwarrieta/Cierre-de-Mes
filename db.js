@@ -272,6 +272,38 @@
           continue;
         }
 
+        // La captura de un punto: varias lecturas del mismo display, sus avisos
+        // y UNA foto, todo en una sola llamada y una sola transacción.
+        if (tipo === 'captura') {
+          const { data, error: e5 } = await sb.rpc('guardar_captura', {
+            p_punto_id: fila.punto_id,
+            p_periodo: fila.periodo,
+            p_fecha_lectura: fila.fecha_lectura,
+            p_lecturas: fila.lecturas || [],
+            p_avisos: fila.avisos || [],
+            p_observacion: fila.observacion ?? null,
+            p_dispositivo: fila.dispositivo ?? null
+          });
+          if (e5) throw e5;
+
+          const idPrincipal = data && data.principal;
+          if (fotoId && idPrincipal) {
+            const f = await idb.leer('fotos', fotoId);
+            if (f && f.blob) {
+              const varPrincipal = (data.lecturas || []).find(x => x.lectura_id === idPrincipal);
+              await subirFotoALectura({
+                lectura_id: idPrincipal, periodo: fila.periodo,
+                variable_id: varPrincipal ? varPrincipal.variable_id : null,
+                blob: f.blob, tomada_en: new Date(creado).toISOString() });
+              await idb.borrar('fotos', fotoId);
+            }
+          }
+          await idb.borrar('cola', idLocal);
+          enviados++;
+          alAvanzar && alAvanzar(enviados, fallidos, cola.length);
+          continue;
+        }
+
         // Reasignación de medidor hecha en terreno con el QR del equipo.
         // El servidor la aplica directo y es idempotente, así que reintentarla
         // desde la cola no duplica asignaciones.

@@ -421,36 +421,53 @@ async function pintarLista() {
   const cont = $('#lista-puntos');
   if (!cont) return;
   const cola = await DB.pendientes();
-  const enCola = new Set(cola.map(x => x.variable_id));
+  const enCola = new Set();
+  for (const it of cola) {
+    if (it.tipo === 'captura') (it.lecturas || []).forEach(l => enCola.add(l.variable_id));
+    else if (it.variable_id) enCola.add(it.variable_id);
+  }
   const tomada = v => S.lecturas.some(l => l.variable_id === v.id) || enCola.has(v.id);
-
-  const f = S.filtro;
-  let items = S.catalogo.variables.filter(v => {
-    if (!f) return true;
-    const eq = v.punto.equipo?.tag || '';
-    return `${v.punto.nombre} ${v.punto.sitio.nombre} ${v.nombre} ${eq}`.toLowerCase().includes(f);
-  });
   const sinDato = v => {
     const l = S.lecturas.find(x => x.variable_id === v.id);
     return !!(l && l.sin_dato);
   };
-  // Una lectura opcional (la exportada, por ejemplo) se puede cargar pero no
-  // cuenta como pendiente: si contara, la lista de terreno se duplicaría con
-  // datos que no siempre están y el mes nunca se vería completo.
-  const obligatoria = v => !v.opcional;
-  const falta = v => obligatoria(v) && !tomada(v);
-  const total = items.length;
-  const pend = items.filter(falta).length;
-  const nSinDato = items.filter(sinDato).length;
-  const nOpc = items.filter(v => v.opcional && !tomada(v)).length;
-  if (S.soloPendientes === 'pendientes') items = items.filter(falta);
-  if (S.soloPendientes === 'opcionales') items = items.filter(v => v.opcional);
-  if (S.soloPendientes === 'sindato') items = items.filter(sinDato);
+
+  // Un PUNTO es lo que se recorre en terreno, no una variable: el mismo display
+  // puede mostrar importada, exportada y horas, y se toman de una sola vez.
+  const porPunto = new Map();
+  for (const v of S.catalogo.variables) {
+    if (!porPunto.has(v.punto.id)) porPunto.set(v.punto.id, { punto: v.punto, vars: [] });
+    porPunto.get(v.punto.id).vars.push(v);
+  }
+  let puntos = [...porPunto.values()];
+  for (const p of puntos) {
+    p.vars.sort((a, b) => (b.principal === true) - (a.principal === true) || a.id - b.id);
+    p.obligatorias = p.vars.filter(v => !v.opcional);
+    p.faltan = p.obligatorias.filter(v => !tomada(v));
+    p.sinDato = p.vars.filter(sinDato);
+    p.enCola = p.vars.some(v => enCola.has(v.id));
+    p.opcPendientes = p.vars.filter(v => v.opcional && !tomada(v));
+  }
+
+  const f = S.filtro;
+  if (f) puntos = puntos.filter(p => {
+    const eq = p.punto.equipo?.tag || '';
+    return `${p.punto.nombre} ${p.punto.sitio.nombre} ${eq} ${p.vars.map(v => v.nombre).join(' ')}`
+      .toLowerCase().includes(f);
+  });
+
+  const total = puntos.length;
+  const pend = puntos.filter(p => p.faltan.length).length;
+  const nSinDato = puntos.filter(p => p.sinDato.length).length;
+  const nOpc = puntos.filter(p => !p.faltan.length && p.opcPendientes.length).length;
+
+  let items = puntos;
+  if (S.soloPendientes === 'pendientes') items = items.filter(p => p.faltan.length);
+  if (S.soloPendientes === 'sindato') items = items.filter(p => p.sinDato.length);
+  if (S.soloPendientes === 'opcionales') items = items.filter(p => p.opcPendientes.length);
 
   cont.replaceChildren();
 
-  // Con 120 puntos, lo que se necesita en terreno es "qué me falta" y recorrer
-  // el sector completo, no una lista alfabética entera.
   const chip = (texto, activo, alTocar) => el('button', {
     class: 'chip-filtro' + (activo ? ' sel' : ''), text: texto, onclick: alTocar });
   cont.append(el('div', { class: 'fila filtros-terreno' }, [
@@ -458,11 +475,10 @@ async function pintarLista() {
       () => { S.soloPendientes = false; pintarLista(); }),
     chip(`Pendientes · ${pend}`, S.soloPendientes === 'pendientes',
       () => { S.soloPendientes = 'pendientes'; pintarLista(); }),
-    // "No se pudo leer" no es pendiente ni es dato: es su propia cola de trabajo,
-    // la de los puntos a los que hay que volver.
+    // "No se pudo leer" no es pendiente ni es dato: es su propia cola de trabajo.
     nSinDato ? chip(`No se pudo leer · ${nSinDato}`, S.soloPendientes === 'sindato',
       () => { S.soloPendientes = 'sindato'; pintarLista(); }) : null,
-    nOpc ? chip(`Opcionales · ${nOpc}`, S.soloPendientes === 'opcionales',
+    nOpc && nOpc < total ? chip(`Con opcional sin cargar · ${nOpc}`, S.soloPendientes === 'opcionales',
       () => { S.soloPendientes = 'opcionales'; pintarLista(); }) : null,
     el('span', { class: 'crece' }),
     chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
@@ -477,50 +493,55 @@ async function pintarLista() {
   }
 
   // Un punto puede estar en varios grupos, pero en terreno se toma UNA vez: se
-  // lista en su primer grupo y los demás se nombran en el detalle. Repetirlo en
-  // cada sección haría creer que hay puntos duplicados, que es justo el problema
-  // que veníamos de arreglar.
+  // lista en su primer grupo y los demás se nombran en el detalle.
   const secciones = {};
-  for (const v of items) {
-    const gs = v.punto.grupos && v.punto.grupos.length ? v.punto.grupos : ['Sin grupo'];
-    const clave = S.agrupar === 'sitio' ? v.punto.sitio.nombre
+  for (const p of items) {
+    const gs = p.punto.grupos && p.punto.grupos.length ? p.punto.grupos : ['Sin grupo'];
+    const clave = S.agrupar === 'sitio' ? p.punto.sitio.nombre
                 : [...gs].sort(compararGrupos)[0];
-    (secciones[clave] ||= []).push(v);
+    (secciones[clave] ||= []).push(p);
   }
   const orden = Object.keys(secciones).sort(
     S.agrupar === 'sitio' ? (a, b) => a.localeCompare(b) : compararGrupos);
 
   for (const seccion of orden) {
     const lista = secciones[seccion];
-    const faltan = lista.filter(falta).length;
-    const sd = lista.filter(sinDato).length;
+    const faltan = lista.filter(p => p.faltan.length).length;
+    const sd = lista.filter(p => p.sinDato.length).length;
     cont.append(el('div', { class: 'grupo-sitio' }, [
       el('span', { text: seccion }),
       el('span', { class: 'cuenta-seccion', text:
         faltan ? `faltan ${faltan}` : sd ? `${sd} sin poder leer` : 'completo' })
     ]));
-    for (const v of lista.sort((a, b) => a.punto.nombre.localeCompare(b.punto.nombre))) {
-      const { clase, l } = estadoDeVariable(v);
-      const cl = enCola.has(v.id) ? 'cola' : clase;
-      const tag = v.punto.equipo?.tag;
-      const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
 
-      cont.append(el('button', { class: 'item ' + cl, onclick: () => abrirCaptura(v) }, [
+    for (const p of lista.sort((a, b) => a.punto.nombre.localeCompare(b.punto.nombre))) {
+      const tag = p.punto.equipo?.tag;
+      const detalle = [
+        tag,
+        p.vars.map(v => v.nombre + (v.opcional ? ' (opc.)' : '')).join(' + '),
+        (p.punto.grupos || []).length > 1 && S.agrupar === 'grupo'
+          ? 'también en ' + [...p.punto.grupos].sort(compararGrupos).slice(1).join(', ') : null
+      ].filter(Boolean).join(' · ');
+
+      // El valor que se muestra es el de la lectura principal: es la que manda.
+      const ppal = p.vars.find(v => v.principal) || p.vars[0];
+      const lp = S.lecturas.find(l => l.variable_id === ppal.id);
+      const clase = p.enCola ? 'cola' : p.faltan.length ? 'pendiente' : 'lista';
+
+      cont.append(el('button', { class: 'item ' + clase, onclick: () => abrirCaptura(p.punto) }, [
         el('span', { class: 'txt' }, [
-          el('span', { class: 'n', text: v.punto.nombre }),
-          el('span', { class: 'd', text: `${tag ? tag + ' · ' : ''}${v.nombre} · ${u}` +
-            (v.principal === false ? ' · secundaria' : '') +
-            ((v.punto.grupos || []).length > 1 && S.agrupar === 'grupo'
-              ? ' · también en ' + [...v.punto.grupos].sort(compararGrupos).slice(1).join(', ')
-              : '') })
+          el('span', { class: 'n', text: p.punto.nombre }),
+          el('span', { class: 'd', text: detalle })
         ]),
-        el('span', { class: 'val', html: cl === 'cola'
+        el('span', { class: 'val', html: p.enCola
           ? '<span class="pill acento">por enviar</span>'
-          : l ? (l.sin_dato
-                  ? `<span class="pill warn">no se pudo leer</span><small>${esc(quien(l))}</small>`
-                  : `${num(l.valor)}<small>${esc(quien(l))}</small>`)
-              : v.opcional ? '<span class="pill neutro">opcional</span>'
-              : '<span class="pill neutro">pendiente</span>' })
+          : p.faltan.length
+            ? (p.sinDato.length ? '<span class="pill warn">no se pudo leer</span>'
+                                : '<span class="pill neutro">pendiente</span>')
+            : (lp && lp.sin_dato
+                ? `<span class="pill warn">no se pudo leer</span><small>${esc(quien(lp))}</small>`
+                : lp ? `${num(lp.valor)}<small>${esc(quien(lp))}</small>`
+                     : '<span class="pill ok">cargado</span>') })
       ]));
     }
   }
@@ -538,27 +559,64 @@ function quien(l) {
   return `${n.split(' ')[0]} · ${cuando}`;
 }
 
-/* ---------------- captura de una lectura ---------------- */
-async function abrirCaptura(v) {
-  const anterior = S.ultimas.find(u => u.variable_id === v.id);
-  const yaHay = S.lecturas.find(l => l.variable_id === v.id);
-  const equipo = v.punto.equipo || {};
-  const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
-  const doble = v.formato_lectura === 'doble_mwh_kwh';
 
-  // La banda sale del catálogo guardado en el dispositivo. Antes se consultaba
-  // al servidor al abrir cada punto: con mala señal, esa espera era la demora.
-  let banda = null;
-  try { banda = (await DB.bandasCache())[v.id] || null; } catch { /* sin banda */ }
+/* ---------------- borrar cosas de configuración ----------------
+   El servidor solo borra lo que está vacío: si tiene historia, se niega y
+   explica qué lo retiene. Acá solo se pide confirmación y se muestra la razón. */
+async function eliminarCosa({ rpc, id, nombre, que, alTerminar, desactivar }) {
+  if (!confirm(`Eliminar ${que} "${nombre}"?\n\nSi tiene datos cargados, la app te lo va a decir y no se borra nada.`)) return;
+  const { data, error } = await sb.rpc(rpc, id);
+  if (error) {
+    const puedeApagar = /tiene .* (lectura|movimiento|punto|asignad|instalado)/i.test(error.message) && desactivar;
+    if (puedeApagar && confirm(error.message + '\n\n¿Lo desactivo en su lugar?')) {
+      const e2 = await desactivar();
+      if (e2) return toast(e2.message || e2, true);
+      toast('Desactivado'); return alTerminar && alTerminar();
+    }
+    return toast(error.message, true);
+  }
+  cerrarModal();
+  toast(data || 'Eliminado');
+  await DB.descargarCatalogo().catch(() => {});
+  S.catalogo = await DB.catalogo();
+  alTerminar ? alTerminar() : render();
+}
+
+/* ---------------- captura de un punto ----------------
+   En terreno el gesto es uno solo: me paro frente al display, anoto TODO lo que
+   muestra (importada, exportada, horas), saco UNA foto y dejo los avisos que
+   correspondan. Antes había una pantalla por variable, y eso obligaba a una
+   foto por número y a perder lo escrito al abrir un aviso. */
+async function abrirCaptura(entrada) {
+  // Acepta un punto o una variable (el escáner de QR entrega una variable).
+  const punto = entrada.punto || entrada;
+  const vars = S.catalogo.variables
+    .filter(x => x.punto.id === punto.id)
+    .sort((a, b) => (b.principal === true) - (a.principal === true) || a.id - b.id);
+  if (!vars.length) return toast('Este punto no tiene lecturas configuradas', true);
+  const equipo = punto.equipo || {};
+
+  let bandas = {};
+  try { bandas = await DB.bandasCache(); } catch { /* sin bandas */ }
 
   let blobFoto = null;
 
-  // Dos caminos para la foto: la cámara en el momento, o una que ya está en el
-  // teléfono. El segundo es el que permite subir el archivo fotográfico viejo.
+  /* ---- foto: una sola para todo el punto ---- */
   const cajaFoto = el('div', { class: 'foto-caja' });
+  const previa = el('img', { class: 'foto-previa', hidden: true, alt: 'Foto del medidor' });
+  const textoFoto =
+    (punto.foto_obligatoria ? 'La foto es obligatoria en este punto.' : 'La foto es opcional en este punto.') +
+    (punto.foto_calidad === 'alta' ? ' Se guarda en calidad alta.' : '');
+  const pesoFoto = el('p', { class: 'ayuda', text: textoFoto });
+  const quitarFoto = el('button', { class: 'btn chico', text: 'Quitar la foto', hidden: true,
+    onclick: () => {
+      blobFoto = null; previa.hidden = true; quitarFoto.hidden = true;
+      inputCamara.value = ''; inputGaleria.value = '';
+      pesoFoto.textContent = textoFoto;
+    } });
   const tomarFoto = async f => {
     if (!f) return;
-    blobFoto = await DB.comprimirFoto(f, v.punto.foto_calidad || 'normal');
+    blobFoto = await DB.comprimirFoto(f, punto.foto_calidad || 'normal');
     previa.src = URL.createObjectURL(blobFoto);
     previa.hidden = false;
     pesoFoto.textContent = `Foto lista · ${Math.round(blobFoto.size / 1024)} KB`;
@@ -568,17 +626,6 @@ async function abrirCaptura(v) {
     hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
   const inputGaleria = el('input', { type: 'file', accept: 'image/*',
     hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
-  const previa = el('img', { class: 'foto-previa', hidden: true, alt: 'Foto del medidor' });
-  const quitarFoto = el('button', { class: 'btn chico', text: 'Quitar la foto', hidden: true,
-    onclick: () => {
-      blobFoto = null; previa.hidden = true; quitarFoto.hidden = true;
-      inputCamara.value = ''; inputGaleria.value = '';
-      pesoFoto.textContent = textoFoto;
-    } });
-  const textoFoto =
-    (v.punto.foto_obligatoria ? 'La foto es obligatoria en este punto.' : 'La foto es opcional en este punto.') +
-    (v.punto.foto_calidad === 'alta' ? ' Se guarda en calidad alta.' : '');
-  const pesoFoto = el('p', { class: 'ayuda', text: textoFoto });
   cajaFoto.append(
     el('div', { class: 'fila' }, [
       el('button', { class: 'btn', text: '📷 Tomar foto', onclick: () => inputCamara.click() }),
@@ -587,258 +634,293 @@ async function abrirCaptura(v) {
     ]),
     inputCamara, inputGaleria, previa, pesoFoto);
 
-  const campoValor = doble ? null : el('input', {
-    type: 'number', inputmode: 'decimal', class: 'dato-grande',
-    step: v.decimales_display > 0 ? '0.' + '0'.repeat(v.decimales_display - 1) + '1' : '1',
-    placeholder: '0', oninput: evaluar
-  });
-  const campoMwh = doble ? el('input', { type: 'number', inputmode: 'numeric',
-    class: 'dato-grande', placeholder: 'MWh', oninput: evaluar }) : null;
-  const campoKwh = doble ? el('input', { type: 'number', inputmode: 'numeric',
-    class: 'dato-grande', placeholder: 'kWh', oninput: evaluar }) : null;
+  /* ---- un bloque de campos por cada lectura del punto ---- */
+  const campos = [];        // { v, doble, valor, mwh, kwh, banda, yaHay, valorActual() }
+  const zonaLecturas = el('div');
 
-  const avisoBanda = el('div', { class: 'banda ok', hidden: true });
+  for (const v of vars) {
+    const doble = v.formato_lectura === 'doble_mwh_kwh';
+    const anterior = S.ultimas.find(u => u.variable_id === v.id);
+    const yaHay = S.lecturas.find(l => l.variable_id === v.id);
+    const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
+    const ud = UNIDAD[v.unidad_display] || v.unidad_display;
+    const avisoBanda = el('div', { class: 'banda ok', hidden: true });
 
-  // Novedades: la lectura y el aviso son el mismo gesto en terreno. Antes había
-  // que guardar la lectura, salir, volver a entrar y recién ahí abrir el aviso.
+    const c = { v, doble, banda: avisoBanda, yaHay };
+    const evaluar = () => evaluarCampo(c);
+    const paso = v.decimales_display > 0 ? '0.' + '0'.repeat(v.decimales_display - 1) + '1' : '1';
+
+    c.valor = doble ? null : el('input', { type: 'number', inputmode: 'decimal',
+      class: 'dato-grande', step: paso, placeholder: '0', oninput: evaluar });
+    c.mwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
+      placeholder: 'MWh', oninput: evaluar }) : null;
+    c.kwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
+      placeholder: 'kWh', oninput: evaluar }) : null;
+
+    c.sinDato = el('input', { type: 'checkbox', onchange: e => {
+      const off = e.target.checked;
+      [c.valor, c.mwh, c.kwh].forEach(x => { if (x) { x.disabled = off; x.value = ''; } });
+      evaluar();
+    } });
+
+    c.valorActual = () => {
+      if (c.sinDato.checked) return null;
+      if (doble) {
+        if (c.mwh.value === '' && c.kwh.value === '') return null;
+        return (Number(c.mwh.value || 0) * 1000) + Number(c.kwh.value || 0);
+      }
+      if (c.valor.value === '') return null;
+      const bruto = Number(c.valor.value);
+      return v.unidad_display === 'MWh' && v.unidad_reporte === 'kWh' ? bruto * 1000 : bruto;
+    };
+    c.anterior = anterior;
+
+    if (yaHay) {
+      if (!doble && yaHay.valor_display != null) c.valor.value = yaHay.valor_display;
+      if (doble) { c.mwh.value = yaHay.valor_mwh ?? ''; c.kwh.value = yaHay.valor_kwh ?? ''; }
+      if (yaHay.sin_dato) { c.sinDato.checked = true; c.sinDato.dispatchEvent(new Event('change')); }
+    }
+
+    const etiqueta = vars.length === 1 ? `Lectura del display · ${ud}` : `${v.nombre} · ${ud}`;
+    const rol = vars.length === 1 ? null
+      : (v.principal ? 'principal · va al informe'
+                     : 'secundaria' + (v.opcional ? ' · opcional' : ''));
+
+    zonaLecturas.append(el('div', { class: 'lectura-bloque' }, [
+      el('div', { class: 'anterior' }, [
+        el('span', { html: `<b>${esc(vars.length === 1 ? punto.nombre : v.nombre)}</b>` +
+          (rol ? `<br><small>${esc(rol)}</small>` : '') }),
+        el('span', { html: anterior
+          ? `Anterior<br><b>${num(anterior.valor)} ${u}</b><br><small>${fechaCorta(anterior.fecha_lectura)}</small>`
+          : '<small>Sin lectura anterior</small>' })
+      ]),
+      yaHay ? el('p', { class: 'ayuda', text:
+        `Ya cargada este mes: ${yaHay.sin_dato ? 'sin dato' : num(yaHay.valor) + ' ' + u} · ${quien(yaHay)}.` +
+        (yaHay.tomada_por === S.usuario.id ? ' Si cambias el número, se corrige.'
+                                           : ' La tomó otra persona; cambiarla pide motivo.') }) : null,
+      el('label', { text: doble ? etiqueta + ' · MWh' : etiqueta }, [doble ? c.mwh : c.valor]),
+      doble ? el('label', { text: 'Lectura del display · kWh' }, [c.kwh]) : null,
+      avisoBanda,
+      el('label', { class: 'fila' },
+        [c.sinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })])
+    ]));
+    campos.push(c);
+  }
+
+  function evaluarCampo(c) {
+    const b = c.banda;
+    if (c.sinDato.checked) { b.hidden = true; return; }
+    const val = c.valorActual();
+    if (val === null || Number.isNaN(val)) { b.hidden = true; return; }
+    const alertas = [];
+    if (c.anterior && val < Number(c.anterior.valor)) {
+      alertas.push(['bad', `Esta lectura (${num(val)}) es MENOR que la anterior (${num(c.anterior.valor)}). ` +
+        'Puede ser un reinicio del totalizador o un dígito de menos.']);
+    }
+    const bd = bandas[c.v.id];
+    if (bd && c.anterior && val >= Number(c.anterior.valor)) {
+      const cons = val - Number(c.anterior.valor);
+      const j = juzgarConsumo({ consumo: cons, media: bd.media, sigma: bd.sigma }, bd);
+      if (j) alertas.push([j.nivel, j.texto]);
+    }
+    if (!alertas.length) { b.hidden = true; return; }
+    b.hidden = false;
+    b.className = 'banda ' + (alertas.some(a => a[0] === 'bad') ? 'bad' : 'warn');
+    b.textContent = alertas.map(a => a[1]).join(' ');
+  }
+
+  /* ---- avisos: se acumulan acá mismo, sin salir de la pantalla ---- */
+  const avisos = [];
+  const listaAvisos = el('div', { class: 'avisos-captura' });
+  const pintarAvisos = () => {
+    poner(listaAvisos, ...(avisos.length
+      ? avisos.map((a, i) => el('div', { class: 'aviso-chip' }, [
+          el('span', { class: 'txt' }, [
+            el('b', { text: a.categoriaTexto }),
+            a.descripcion ? el('small', { text: ' · ' + a.descripcion }) : null
+          ].filter(Boolean)),
+          el('button', { class: 'btn chico', text: 'Quitar',
+            onclick: () => { avisos.splice(i, 1); pintarAvisos(); } })
+        ]))
+      : [el('p', { class: 'ayuda', text: 'Sin avisos. Puedes agregar los que necesites.' })]));
+  };
+  pintarAvisos();
+
   const selAviso = el('select');
-  selAviso.append(el('option', { value: '', text: '— sin novedad —' }));
+  selAviso.append(el('option', { value: '', text: '— elegir categoría —' }));
   for (const a of S.catalogo.catalogoAvisos) {
-    if (/^Otro/i.test(a.categoria)) continue;      // va al final, con su propio texto
+    if (/^Otro/i.test(a.categoria)) continue;
     selAviso.append(el('option', { value: a.id, text: a.categoria }));
   }
   selAviso.append(el('option', { value: 'otra', text: 'Otra · la describo abajo' }));
-  const obs = el('textarea', { placeholder: 'Qué viste. Si marcaste una novedad, esto queda como su descripción.' });
-  const pistaAviso = el('p', { class: 'ayuda', text:
-    'Sin novedad, este texto queda como observación de la lectura.' });
-  selAviso.addEventListener('change', () => {
-    pistaAviso.textContent = selAviso.value
-      ? 'Se va a abrir un aviso en este punto junto con la lectura, en un solo guardado.'
-      : 'Sin novedad, este texto queda como observación de la lectura.';
-  });
-  const chkSinDato = el('input', { type: 'checkbox', onchange: e => {
-    const off = e.target.checked;
-    [campoValor, campoMwh, campoKwh].forEach(x => { if (x) { x.disabled = off; x.value = ''; } });
-    evaluar();
-  } });
+  const txtAviso = el('textarea', { placeholder: 'Qué viste. Esto queda como descripción del aviso.' });
+  const agregarAviso = () => {
+    if (!selAviso.value) return toast('Elige la categoría del aviso', true);
+    const texto = txtAviso.value.trim();
+    if (selAviso.value === 'otra' && !texto) return toast('Escribe qué pasó: elegiste "Otra"', true);
+    const otra = S.catalogo.catalogoAvisos.find(a => /^Otro/i.test(a.categoria));
+    avisos.push({
+      categoria_id: selAviso.value === 'otra' ? (otra ? otra.id : null) : Number(selAviso.value),
+      categoriaTexto: selAviso.selectedOptions[0].text,
+      descripcion: texto || null
+    });
+    selAviso.value = ''; txtAviso.value = '';
+    pintarAvisos();
+    toast('Aviso agregado · se envía junto con la lectura');
+  };
 
-  function valorActual() {
-    if (doble) return (Number(campoMwh.value || 0) * 1000) + Number(campoKwh.value || 0);
-    const bruto = Number(campoValor.value);
-    if (!campoValor.value) return null;
-    return v.unidad_display === 'MWh' && v.unidad_reporte === 'kWh' ? bruto * 1000 : bruto;
-  }
+  const obs = el('textarea', { placeholder: 'Notas de esta visita al punto. Se guardan con la lectura.' });
+  const yaConObs = campos.find(c => c.yaHay && c.yaHay.observacion);
+  if (yaConObs) obs.value = yaConObs.yaHay.observacion;
 
-  function evaluar() {
-    if (chkSinDato.checked) { avisoBanda.hidden = true; return; }
-    const val = valorActual();
-    if (val === null || Number.isNaN(val)) { avisoBanda.hidden = true; return; }
-
-    const alertas = [];
-    if (anterior && val < Number(anterior.valor)) {
-      alertas.push(['bad', `Esta lectura (${num(val)}) es MENOR que la anterior (${num(anterior.valor)}). Puede ser un reinicio del totalizador o un dígito de menos.`]);
-    }
-    if (anterior && val === Number(anterior.valor)) {
-      alertas.push(['warn', 'La lectura es idéntica a la anterior. ¿La leíste o se copió?']);
-    }
-    if (anterior && Number(anterior.valor) > 0) {
-      const razon = val / Number(anterior.valor);
-      if (razon > 9.5 || razon < 0.105) {
-        alertas.push(['bad', 'La lectura saltó un orden de magnitud respecto de la anterior. Revisa la coma o un dígito de más.']);
-      }
-    }
-    if (banda && anterior) {
-      const consumo = val - Number(anterior.valor);
-      const z = (consumo - Number(banda.media)) / Number(banda.sigma);
-      if (Math.abs(z) > 3) {
-        alertas.push(['bad', `El consumo (${num(consumo)} ${u}) está muy lejos de lo habitual (~${num(banda.media)} ${u}). Revisa el número y deja una observación.`]);
-      } else if (Math.abs(z) > 1.5) {
-        const pct = Math.round((consumo / Number(banda.media) - 1) * 100);
-        alertas.push(['warn', `El consumo está ${pct > 0 ? pct + '% por sobre' : Math.abs(pct) + '% por debajo'} de lo habitual (~${num(banda.media)} ${u}). Puedes guardar igual.`]);
-      }
-    }
-
-    if (!alertas.length) { avisoBanda.hidden = true; return; }
-    const peor = alertas.find(a => a[0] === 'bad') || alertas[0];
-    avisoBanda.className = 'banda ' + peor[0];
-    avisoBanda.textContent = alertas.map(a => a[1]).join(' ');
-    avisoBanda.hidden = false;
-  }
-
-  // Verificación opcional del medidor: confirma que el instrumento que está
-  // al frente es el que la base cree instalado en este punto.
-  const zonaMedidor = el('div');
-  const btnMedidor = el('button', { class: 'btn chico', text: 'Verificar el medidor con el QR',
-    onclick: () => verificarMedidor(v, zonaMedidor) });
-  poner(zonaMedidor, btnMedidor);
-
-  // Si el punto ya tiene lectura en este periodo, la captura sirve para
-  // corregirla o para completarle la foto: no obliga a empezar de cero.
+  /* ---- fotos ya guardadas de este punto ---- */
   const zonaExistente = el('div');
-  if (yaHay) {
-    const mia = yaHay.tomada_por === S.usuario.id;
-    if (!doble && yaHay.valor_display != null) campoValor.value = yaHay.valor_display;
-    if (doble) { campoMwh.value = yaHay.valor_mwh ?? ''; campoKwh.value = yaHay.valor_kwh ?? ''; }
-    if (yaHay.observacion) obs.value = yaHay.observacion;
-
+  const guardadas = campos.filter(c => c.yaHay).map(c => c.yaHay);
+  const conFoto = guardadas.filter(l => l.fotos && l.fotos.length);
+  if (conFoto.length) {
     const fotos = el('div', { class: 'fila', style: 'flex-wrap:wrap' });
-    zonaExistente.append(
-      el('p', { class: 'banda ' + (mia ? 'warn' : 'bad'), text:
-        `Ya hay una lectura de este punto en ${nombrePeriodo(S.periodo)}: ` +
-        `${yaHay.sin_dato ? 'sin dato' : num(yaHay.valor)} ${u} · ${quien(yaHay)}. ` +
-        (mia ? 'Al guardar, la corriges: no se crea otra lectura. También puedes solo agregarle una foto.'
-             : 'La tomó otra persona. Si cambias el valor te va a pedir el motivo y queda en la auditoría. ' +
-               'También puedes solo agregarle una foto, sin tocar el número.') }),
-      fotos);
-    // miniaturas de lo que ya está guardado
-    if (yaHay.fotos && yaHay.fotos.length && navigator.onLine) {
+    zonaExistente.append(el('p', { class: 'ayuda', text: 'Fotos ya guardadas de este punto:' }), fotos);
+    if (navigator.onLine) {
       (async () => {
-        for (const f of yaHay.fotos) {
+        for (const l of conFoto) for (const f of l.fotos) {
           const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
           if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl, class: 'miniatura',
             alt: 'Foto guardada de esta lectura' }));
         }
       })();
-    } else if (yaHay.fotos && yaHay.fotos.length) {
-      fotos.append(el('span', { class: 'ayuda', text: `${yaHay.fotos.length} foto(s) guardadas.` }));
     } else {
-      fotos.append(el('span', { class: 'ayuda', text: 'Esta lectura no tiene foto. Puedes agregarle una.' }));
+      fotos.append(el('span', { class: 'ayuda', text: `${conFoto.reduce((n, l) => n + l.fotos.length, 0)} foto(s).` }));
     }
   }
 
-  // Un punto puede tener más de una lectura (importada y exportada, por
-  // ejemplo). Hay que decir cuál se está tomando y cuál manda en el informe,
-  // porque parado frente al medidor las dos pantallas se parecen.
-  const hermanas = S.catalogo.variables.filter(x => x.punto.id === v.punto.id);
-  const cualLectura = hermanas.length < 2 ? null : el('div', { class: 'banda ' + (v.principal === false ? 'neutro' : 'acento') }, [
-    el('b', { text: v.nombre + (v.principal === false ? ' · secundaria' : ' · principal') }),
-    el('br'),
-    el('small', { text: v.principal === false
-      ? 'No entra al consumo del informe: la que manda es "' +
-        (hermanas.find(x => x.principal !== false)?.nombre || 'la principal') + '".' +
-        (v.opcional ? ' Es opcional: si el medidor no la entrega, sáltala.' : '')
-      : 'Esta es la que va al consumo del informe.' })
-  ]);
+  /* ---- verificación del medidor por QR ---- */
+  const zonaMedidor = el('div');
+  poner(zonaMedidor, el('button', { class: 'btn chico', text: 'Verificar el medidor con el QR',
+    onclick: () => verificarMedidor(vars[0], zonaMedidor) }));
 
   const cuerpo = el('div', { class: 'captura' }, [
-    zonaExistente,
-    cualLectura,
-    v.punto.instruccion_lectura
-      ? el('p', { class: 'banda acento', text: v.punto.instruccion_lectura })
-      : null,
-    el('div', { class: 'anterior' }, [
-      el('span', { html: `<b>${esc(v.punto.nombre)}</b><br><small>${esc(v.punto.sitio.nombre)}${equipo.tag ? ' · ' + esc(equipo.tag) : ''}</small>` }),
-      el('span', { html: anterior
-        ? `Anterior<br><b>${num(anterior.valor)} ${u}</b><br><small>${fechaCorta(anterior.fecha_lectura)}</small>`
-        : '<small>Sin lectura anterior</small>' })
+    el('div', { class: 'cabecera-punto' }, [
+      el('b', { text: punto.nombre }),
+      el('small', { text: punto.sitio.nombre + (equipo.tag ? ' · ' + equipo.tag : '') +
+        (vars.length > 1 ? ` · ${vars.length} lecturas en el mismo display` : '') })
     ]),
-    el('label', { text: doble ? 'Lectura del display · MWh' : `Lectura del display · ${UNIDAD[v.unidad_display] || v.unidad_display}` },
-      [doble ? campoMwh : campoValor]),
-    doble ? el('label', { text: 'Lectura del display · kWh' }, [campoKwh]) : null,
-    avisoBanda,
+    punto.instruccion_lectura
+      ? el('p', { class: 'banda acento', text: punto.instruccion_lectura })
+      : null,
+    zonaExistente,
+    zonaLecturas,
     zonaMedidor,
     cajaFoto,
-    el('label', { text: 'Novedad en este punto' }, [selAviso]),
-    el('label', { text: 'Observación' }, [obs]),
-    pistaAviso,
-    el('label', { class: 'fila' },
-      [chkSinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })]),
+    el('h4', { text: 'Avisos de este punto', style: 'margin:18px 0 6px' }),
+    listaAvisos,
+    el('label', { text: 'Categoría' }, [selAviso]),
+    el('label', { text: 'Descripción' }, [txtAviso]),
+    el('button', { class: 'btn', text: '＋ Agregar este aviso', onclick: agregarAviso }),
+    el('label', { text: 'Observación de la visita', style: 'margin-top:18px' }, [obs]),
+    el('p', { class: 'ayuda', text:
+      'La observación queda pegada a la lectura y se puede ver después en Avisos y observaciones.' }),
     el('div', { class: 'acciones-fijas' }, [
-      el('button', { class: 'btn primario grande',
-        text: yaHay ? 'Guardar los cambios' : 'Guardar lectura', onclick: guardar }),
-      el('button', { class: 'btn', text: 'Registrar un aviso de este punto',
-        onclick: () => { cerrarModal(); abrirAviso(v.punto); } })
+      el('button', { class: 'btn primario grande', text: 'Guardar todo', onclick: guardar })
     ])
   ]);
 
   async function guardar() {
-    const sinDato = chkSinDato.checked;
-    const val = sinDato ? null : valorActual();
+    // Un aviso escrito y no agregado se pierde en silencio: mejor agregarlo.
+    if (selAviso.value && !avisos.length) agregarAviso();
 
-    if (!sinDato && (val === null || Number.isNaN(val))) {
-      return toast('Escribe la lectura o marca "no se pudo leer"', true);
+    const conValor = campos.filter(c => c.valorActual() !== null || c.sinDato.checked);
+    const obligatoriasVacias = campos.filter(c => !c.v.opcional && !c.sinDato.checked
+                                                  && c.valorActual() === null && !c.yaHay);
+    if (!conValor.length && !avisos.length) {
+      return toast('Escribe alguna lectura, marca "no se pudo leer" o agrega un aviso', true);
     }
-    if (v.punto.foto_obligatoria && !blobFoto && !sinDato) {
+    if (obligatoriasVacias.length && !avisos.length) {
+      return toast(`Falta ${obligatoriasVacias.map(c => c.v.nombre).join(' y ')}`, true);
+    }
+    const algunDato = conValor.some(c => !c.sinDato.checked);
+    if (punto.foto_obligatoria && !blobFoto && !conFoto.length && algunDato) {
       return toast('Este punto exige foto', true);
     }
 
-    const fila = {
-      variable_id: v.id,
-      periodo: S.periodo,
-      fecha_lectura: new Date().toISOString(),
-      valor_display: doble ? null : (campoValor.value === '' ? null : Number(campoValor.value)),
-      valor_mwh: doble ? Number(campoMwh.value || 0) : null,
-      valor_kwh: doble ? Number(campoKwh.value || 0) : null,
-      sin_dato: sinDato,
-      observacion: obs.value.trim() || null,
-      dispositivo: navigator.userAgent.slice(0, 120)
-    };
+    // Las que ya existen y cambiaron se corrigen aparte: corregir_lectura pide
+    // motivo y no se puede hacer sin señal.
+    const nuevas = [], correcciones = [];
+    for (const c of conValor) {
+      const val = c.valorActual();
+      const fila = {
+        variable_id: c.v.id,
+        valor_display: c.doble ? null : (c.valor.value === '' ? null : Number(c.valor.value)),
+        valor_mwh: c.doble ? Number(c.mwh.value || 0) : null,
+        valor_kwh: c.doble ? Number(c.kwh.value || 0) : null,
+        sin_dato: c.sinDato.checked
+      };
+      if (c.yaHay) {
+        const cambio = !c.sinDato.checked && val !== null && Number(c.yaHay.valor) !== Number(val);
+        if (cambio) correcciones.push({ c, fila, val });
+      } else {
+        nuevas.push(fila);
+      }
+    }
 
-    // La lectura ya existe: corregirla o completarle la foto, sin duplicarla.
-    if (yaHay) {
-      const mia = yaHay.tomada_por === S.usuario.id;
-      const cambio = !sinDato && val !== null && Number(yaHay.valor) !== Number(val);
-      if (!cambio && !blobFoto) return toast('No cambiaste nada', true);
-
-      if (cambio) {
-        if (!navigator.onLine) return toast('Corregir una lectura ya guardada necesita señal.', true);
-        let motivo = mia ? 'corrección del propio autor' : '';
+    if (correcciones.length) {
+      if (!navigator.onLine) return toast('Corregir una lectura ya guardada necesita señal.', true);
+      for (const { c, fila } of correcciones) {
+        const mia = c.yaHay.tomada_por === S.usuario.id;
+        let motivo = 'corrección del propio autor';
         if (!mia) {
-          motivo = (prompt('¿Por qué cambia esta lectura? (queda en la auditoría)') || '').trim();
+          motivo = (prompt(`¿Por qué cambia la lectura de "${c.v.nombre}"? (queda en la auditoría)`) || '').trim();
           if (!motivo) return toast('Sin motivo no se corrige', true);
         }
         const { error } = await sb.rpc('corregir_lectura', {
-          p_id: yaHay.id,
-          p_valor_display: doble ? null : Number(campoValor.value),
-          p_motivo: motivo,
-          p_valor_mwh: doble ? Number(campoMwh.value || 0) : null,
-          p_valor_kwh: doble ? Number(campoKwh.value || 0) : null
+          p_id: c.yaHay.id, p_valor_display: fila.valor_display, p_motivo: motivo,
+          p_valor_mwh: fila.valor_mwh, p_valor_kwh: fila.valor_kwh
         });
         if (error) return toast(error.message, true);
       }
+    }
 
-      if (blobFoto) {
-        const datos = { lectura_id: yaHay.id, periodo: S.periodo, variable_id: v.id };
-        if (navigator.onLine) {
-          try { await DB.subirFotoALectura({ ...datos, blob: blobFoto }); }
-          catch (e) { return toast('No se pudo subir la foto: ' + e.message, true); }
-        } else {
-          await DB.encolar({ tipo: 'foto', ...datos }, blobFoto);
-        }
+    // La foto de una lectura que ya existe se sube sola; la de una nueva viaja
+    // con la captura y se cuelga cuando el servidor devuelve el id.
+    const yaGuardada = campos.find(c => c.yaHay);
+    if (blobFoto && !nuevas.length && yaGuardada) {
+      const datos = { lectura_id: yaGuardada.yaHay.id, periodo: S.periodo, variable_id: yaGuardada.v.id };
+      if (navigator.onLine) {
+        try { await DB.subirFotoALectura({ ...datos, blob: blobFoto }); }
+        catch (e) { return toast('No se pudo subir la foto: ' + e.message, true); }
+      } else {
+        await DB.encolar({ tipo: 'foto', ...datos }, blobFoto);
       }
-
-      cerrarModal();
-      toast(cambio && blobFoto ? 'Lectura corregida y foto agregada'
-            : cambio ? 'Lectura corregida' : 'Foto agregada');
-      await refrescarDatos();
-      await actualizarConexion();
-      await pintarLista();
-      return;
+      blobFoto = null;
     }
 
-    if (selAviso.value) {
-      if (!obs.value.trim() && selAviso.value === 'otra')
-        return toast('Escribe qué pasó: elegiste "Otra"', true);
-      // "Otra" también es una categoría del catálogo: mandar null hacía que el
-      // servidor rechazara todo el registro y la lectura quedaba atascada.
-      const otra = S.catalogo.catalogoAvisos.find(a => /^Otro/i.test(a.categoria));
-      fila.aviso_categoria = selAviso.value === 'otra'
-        ? (otra ? otra.id : null) : Number(selAviso.value);
-      fila.aviso_descripcion = obs.value.trim() || selAviso.selectedOptions[0].text;
+    if (nuevas.length || avisos.length) {
+      await DB.encolar({
+        tipo: 'captura',
+        punto_id: punto.id,
+        periodo: S.periodo,
+        fecha_lectura: new Date().toISOString(),
+        lecturas: nuevas,
+        avisos: avisos.map(a => ({ categoria_id: a.categoria_id, descripcion: a.descripcion })),
+        observacion: obs.value.trim() || null,
+        dispositivo: navigator.userAgent.slice(0, 120)
+      }, blobFoto);
     }
 
-    await DB.encolar(fila, blobFoto);
     cerrarModal();
-    toast(fila.aviso_categoria || fila.aviso_descripcion
-      ? 'Lectura y aviso guardados en el dispositivo'
-      : 'Guardado en el dispositivo');
+    const partes = [];
+    if (nuevas.length) partes.push(nuevas.length === 1 ? '1 lectura' : `${nuevas.length} lecturas`);
+    if (correcciones.length) partes.push(`${correcciones.length} corregida(s)`);
+    if (avisos.length) partes.push(avisos.length === 1 ? '1 aviso' : `${avisos.length} avisos`);
+    toast(partes.length ? partes.join(' · ') + ' guardado en el dispositivo' : 'Foto agregada');
+
+    await refrescarDatos();
     await actualizarConexion();
     await pintarLista();
     if (navigator.onLine) sincronizar(true);
   }
 
-  modal(v.punto.nombre, cuerpo);
-  setTimeout(() => (doble ? campoMwh : campoValor)?.focus(), 100);
+  modal(punto.nombre, cuerpo);
+  setTimeout(() => (campos[0].doble ? campos[0].mwh : campos[0].valor)?.focus(), 100);
 }
 
 /* ---------------- aviso de anomalía ---------------- */
@@ -2033,31 +2115,185 @@ function redondear(v) {
    VISTA · AVISOS
    =================================================================== */
 async function vistaAvisos(c) {
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando avisos…' })]);
-  c.append(zona);
-  const { data, error } = await sb.from('avisos')
-    .select('id, descripcion, severidad, estado, abierto_en, resuelto_en, obs_resolucion, punto:puntos(nombre, sitio:sitios(nombre)), categoria:catalogo_avisos(categoria)')
-    .order('abierto_en', { ascending: false });
-  if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
-  if (!data.length) { zona.replaceChildren(el('p', { class: 'vacio', text: 'No hay avisos registrados.' })); return; }
-
-  const filas = data.map(a => [
-    a.punto?.sitio?.nombre || '—', a.punto?.nombre || '—', a.categoria?.categoria || '—',
-    el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad]), text: a.severidad }),
-    el('span', { class: 'pill ' + (a.estado === 'resuelto' ? 'ok' : 'warn'), text: a.estado }),
-    fechaCorta(a.abierto_en),
-    a.descripcion || '—',
-    a.estado === 'resuelto' ? '—' : el('button', { class: 'btn chico', text: 'Resolver', onclick: () => resolverAviso(a) })
+  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
+  const selVista = el('select', { onchange: pintar }, [
+    el('option', { value: 'avisos', text: 'Avisos' }),
+    el('option', { value: 'observaciones', text: 'Observaciones de terreno' }),
+    el('option', { value: 'informe', text: 'Informe ejecutivo' })
   ]);
-  zona.replaceChildren(
-    el('p', { class: 'ayuda', text: `${data.filter(a => a.estado !== 'resuelto').length} avisos abiertos de ${data.length}` }),
-    tabla(['Sitio', 'Punto', 'Categoría', 'Severidad', 'Estado', 'Abierto', 'Descripción', ''], filas));
+  const selEstado = el('select', { onchange: pintar }, [
+    el('option', { value: 'abiertos', text: 'Solo abiertos' }),
+    el('option', { value: '', text: 'Todos' }),
+    el('option', { value: 'resuelto', text: 'Solo resueltos' })
+  ]);
+  const buscar = el('input', { type: 'search', placeholder: 'Buscar punto, categoría o texto…',
+    oninput: () => pintar() });
+
+  c.append(
+    el('div', { class: 'fila entre seccion' }, [
+      el('p', { class: 'ayuda crece', text:
+        'Todo lo que se anotó en terreno: los avisos y también las observaciones ' +
+        'sueltas que antes se guardaban y no se veían en ninguna parte.' }),
+      selVista, selEstado
+    ]),
+    buscar, zona);
+  pintar();
+
+  async function pintar() {
+    poner(zona, el('p', { class: 'cargando', text: 'Cargando…' }));
+    selEstado.hidden = selVista.value === 'observaciones';
+    const q = (buscar.value || '').toLowerCase();
+
+    if (selVista.value === 'observaciones') {
+      const { data, error } = await sb.from('v_observaciones').select('*')
+        .order('fecha_lectura', { ascending: false }).limit(1000);
+      if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
+      const filas = (data || []).filter(o =>
+        !q || `${o.punto} ${o.sitio} ${o.variable} ${o.observacion}`.toLowerCase().includes(q));
+      if (!filas.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay observaciones.' }));
+      return poner(zona,
+        el('p', { class: 'ayuda', text: `${filas.length} observación(es) escritas en terreno.` }),
+        tabla(['Periodo', 'Sitio', 'Punto', 'Lectura', 'Valor', 'Observación', 'Quién', 'Foto'],
+          filas.map(o => [
+            nombrePeriodo(o.periodo), o.sitio, o.punto, o.variable,
+            o.sin_dato ? 'sin dato' : num(o.valor_display),
+            o.observacion,
+            o.tomada_por_nombre || '—',
+            o.fotos ? `${o.fotos} 📷` : '—'
+          ])));
+    }
+
+    const { data, error } = await sb.from('v_avisos').select('*')
+      .order('abierto_en', { ascending: false }).limit(1000);
+    if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
+    let avisos = data || [];
+    if (selEstado.value === 'abiertos') avisos = avisos.filter(a => a.estado !== 'resuelto');
+    if (selEstado.value === 'resuelto') avisos = avisos.filter(a => a.estado === 'resuelto');
+    if (q) avisos = avisos.filter(a =>
+      `${a.punto} ${a.sitio} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
+
+    if (selVista.value === 'informe') return informeAvisos(zona, avisos);
+
+    if (!avisos.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay avisos con este filtro.' }));
+
+    const puedo = a => S.usuario.rol === 'admin' || S.usuario.rol === 'supervisor'
+                    || (a.abierto_por === S.usuario.id && a.estado !== 'resuelto');
+
+    poner(zona,
+      el('p', { class: 'ayuda', text:
+        `${avisos.filter(a => a.estado !== 'resuelto').length} abiertos de ${avisos.length} mostrados.` }),
+      tabla(['Sitio', 'Punto', 'Categoría', 'Severidad', 'Estado', 'Abierto', 'Descripción', 'Quién', ''],
+        avisos.map(a => [
+          a.sitio, a.punto, a.categoria || '—',
+          el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro'),
+                       text: a.severidad }),
+          el('span', { class: 'pill ' + (a.estado === 'resuelto' ? 'ok' : 'warn'), text: a.estado }),
+          fechaCorta(a.abierto_en),
+          a.descripcion || '—',
+          a.abierto_por_nombre || '—',
+          el('div', { class: 'fila' }, [
+            a.estado === 'resuelto' ? null
+              : el('button', { class: 'btn chico', text: 'Resolver', onclick: () => resolverAviso(a, pintar) }),
+            puedo(a) ? el('button', { class: 'btn chico', text: 'Editar',
+              onclick: () => editarAviso(a, pintar) }) : null,
+            puedo(a) ? el('button', { class: 'btn chico peligro', text: 'Borrar',
+              onclick: () => borrarAviso(a, pintar) }) : null
+          ].filter(Boolean))
+        ])));
+  }
 }
 
-function resolverAviso(a) {
+// Lo que un jefe quiere ver de un vistazo: dónde se concentran y qué lleva
+// abierto demasiado tiempo.
+function informeAvisos(zona, avisos) {
+  if (!avisos.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay avisos con este filtro.' }));
+  const abiertos = avisos.filter(a => a.estado !== 'resuelto');
+  const dias = a => Math.floor((Date.now() - new Date(a.abierto_en)) / 86400e3);
+  const viejos = abiertos.filter(a => dias(a) > 30).sort((x, y) => dias(y) - dias(x));
+
+  const contar = (arr, clave) => {
+    const m = new Map();
+    for (const a of arr) m.set(a[clave] || '—', (m.get(a[clave] || '—') || 0) + 1);
+    return [...m.entries()].sort((x, y) => y[1] - x[1]);
+  };
+  const kpi = (n, t) => el('div', { class: 'kpi' }, [el('b', { text: String(n) }), el('span', { text: t })]);
+
+  poner(zona,
+    el('div', { class: 'kpis' }, [
+      kpi(abiertos.length, 'avisos abiertos'),
+      kpi(abiertos.filter(a => a.severidad === 'alta').length, 'de severidad alta'),
+      kpi(viejos.length, 'abiertos hace más de 30 días'),
+      kpi(new Set(abiertos.map(a => a.punto_id)).size, 'puntos afectados')
+    ]),
+
+    el('h3', { text: 'Por categoría', style: 'margin-top:22px' }),
+    tabla(['Categoría', 'Abiertos', 'Total'],
+      contar(abiertos, 'categoria').map(([k, n]) =>
+        [k, String(n), String(avisos.filter(a => (a.categoria || '—') === k).length)])),
+
+    el('h3', { text: 'Por sitio', style: 'margin-top:22px' }),
+    tabla(['Sitio', 'Abiertos'], contar(abiertos, 'sitio').map(([k, n]) => [k, String(n)])),
+
+    el('h3', { text: 'Puntos con más avisos abiertos', style: 'margin-top:22px' }),
+    tabla(['Punto', 'Sitio', 'Abiertos'],
+      contar(abiertos, 'punto').slice(0, 15).map(([k, n]) =>
+        [k, abiertos.find(a => a.punto === k)?.sitio || '—', String(n)])),
+
+    viejos.length ? el('h3', { text: 'Los que llevan más tiempo abiertos', style: 'margin-top:22px' }) : null,
+    viejos.length ? tabla(['Días', 'Punto', 'Categoría', 'Severidad', 'Descripción'],
+      viejos.slice(0, 20).map(a => [
+        String(dias(a)), a.punto, a.categoria || '—',
+        el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro'),
+                     text: a.severidad }),
+        a.descripcion || '—'])) : null,
+
+    el('div', { class: 'fila', style: 'margin-top:20px' }, [
+      el('button', { class: 'btn', text: '🖨 Imprimir este informe', onclick: () => {
+        document.body.classList.add('imprimiendo');
+        setTimeout(() => { window.print(); document.body.classList.remove('imprimiendo'); }, 60);
+      } })
+    ]));
+}
+
+function editarAviso(a, alGuardar) {
+  const sel = el('select');
+  for (const cat of S.catalogo.catalogoAvisos)
+    sel.append(el('option', { value: cat.id, selected: cat.id === a.categoria_id || null, text: cat.categoria }));
+  const sev = el('select');
+  for (const sv of ['baja', 'media', 'alta'])
+    sev.append(el('option', { value: sv, selected: sv === a.severidad || null, text: sv }));
+  const txt = el('textarea', { value: a.descripcion || '' });
+
+  modal('Editar aviso', el('div', {}, [
+    el('p', { class: 'ayuda', text: `${a.punto} · abierto ${fechaCorta(a.abierto_en)} por ${a.abierto_por_nombre || '—'}` }),
+    el('label', { text: 'Categoría' }, [sel]),
+    el('label', { text: 'Severidad' }, [sev]),
+    el('label', { text: 'Descripción' }, [txt]),
+    el('button', { class: 'btn primario grande', style: 'margin-top:14px', text: 'Guardar',
+      onclick: async e => {
+        e.target.disabled = true;
+        const { error } = await sb.rpc('editar_aviso', {
+          p_id: a.id, p_categoria_id: Number(sel.value),
+          p_descripcion: txt.value.trim() || null, p_severidad: sev.value
+        });
+        e.target.disabled = false;
+        if (error) return toast(error.message, true);
+        cerrarModal(); toast('Aviso actualizado'); alGuardar && alGuardar();
+      } })
+  ]));
+}
+
+async function borrarAviso(a, alGuardar) {
+  if (!confirm(`Borrar el aviso "${a.categoria}" de ${a.punto}? No se puede deshacer.`)) return;
+  const { error } = await sb.rpc('borrar_aviso', { p_id: a.id, p_motivo: 'borrado desde Avisos' });
+  if (error) return toast(error.message, true);
+  toast('Aviso borrado'); alGuardar && alGuardar();
+}
+
+function resolverAviso(a, alGuardar) {
   const obs = el('textarea', { placeholder: 'Qué se hizo para resolverlo' });
   modal('Resolver aviso', el('div', {}, [
-    el('p', { class: 'ayuda', text: `${a.punto?.nombre} · ${a.categoria?.categoria}` }),
+    el('p', { class: 'ayuda', text: `${a.punto} · ${a.categoria || ''}` }),
     el('label', { text: 'Observación de la solución' }, [obs]),
     el('button', { class: 'btn primario grande', text: 'Marcar como resuelto', onclick: async () => {
       const { error } = await sb.from('avisos').update({
@@ -2065,7 +2301,8 @@ function resolverAviso(a) {
         resuelto_en: new Date().toISOString(), obs_resolucion: obs.value.trim() || null
       }).eq('id', a.id);
       if (error) return toast(error.message, true);
-      cerrarModal(); toast('Aviso resuelto'); render();
+      cerrarModal(); toast('Aviso resuelto');
+      if (alGuardar) alGuardar(); else render();
     } })
   ]));
 }
@@ -2255,6 +2492,12 @@ async function editarEquipo(eq) {
     S.catalogo = await DB.descargarCatalogo(); render();
   }
 
+  if (!nuevo && S.usuario.rol !== 'colaborador') cuerpo.append(
+    el('button', { class: 'btn peligro', style: 'margin-top:18px', text: 'Eliminar este equipo',
+      onclick: () => eliminarCosa({
+        rpc: 'eliminar_equipo', id: { p_id: eq.id }, nombre: eq.tag || 'equipo', que: 'el equipo',
+        desactivar: async () => (await sb.from('equipos').update({ activo: false, estado: 'baja' }).eq('id', eq.id)).error
+      }) }));
   modal(nuevo ? 'Equipo nuevo' : (eq.tag || 'Equipo'), cuerpo);
 }
 
@@ -2493,6 +2736,12 @@ async function editarPunto(punto) {
     S.catalogo = await DB.descargarCatalogo(); render();
   }
 
+  if (!nuevo && S.usuario.rol !== 'colaborador') cuerpo.append(
+    el('button', { class: 'btn peligro', style: 'margin-top:18px', text: 'Eliminar este punto de medición',
+      onclick: () => eliminarCosa({
+        rpc: 'eliminar_punto', id: { p_id: punto.id }, nombre: punto.nombre, que: 'el punto',
+        desactivar: async () => (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error
+      }) }));
   modal(nuevo ? 'Punto nuevo' : punto.nombre, cuerpo);
 }
 
@@ -2699,6 +2948,10 @@ async function editarGrupo(g) {
     S.catalogo = await DB.descargarCatalogo(); render();
   }
 
+  if (!nuevo && S.usuario.rol !== 'colaborador') cuerpo.append(
+    el('button', { class: 'btn peligro', style: 'margin-top:18px', text: 'Eliminar este grupo',
+      onclick: () => eliminarCosa({
+        rpc: 'eliminar_grupo', id: { p_id: g.id }, nombre: g.nombre, que: 'el grupo' }) }));
   modal(nuevo ? 'Grupo nuevo' : g.nombre, cuerpo);
 }
 
@@ -3037,9 +3290,58 @@ async function vistaUsuarios(c) {
       const { error } = await sb.from('usuarios').update({ activo: e.target.checked }).eq('id', u.id);
       toast(error ? error.message : 'Actualizado', !!error);
     } });
-    return [u.nombre, u.correo, sel, act, u.casa_fuerza ? 'sí' : 'no'];
+    const borrar = (S.usuario.rol === 'admin' && u.id !== S.usuario.id)
+      ? el('button', { class: 'btn chico peligro', text: 'Eliminar',
+          onclick: () => eliminarCosa({
+            rpc: 'eliminar_usuario', id: { p_id: u.id }, nombre: u.nombre, que: 'al usuario',
+            alTerminar: () => render(),
+            desactivar: async () => (await sb.from('usuarios').update({ activo: false }).eq('id', u.id)).error
+          }) })
+      : null;
+    const clave = (S.usuario.rol === 'admin')
+      ? el('button', { class: 'btn chico', text: 'Cambiar clave', onclick: () => cambiarClaveUsuario(u) })
+      : null;
+    return [u.nombre, u.correo, sel, act, u.casa_fuerza ? 'sí' : 'no', clave || '—', borrar || '—'];
   });
-  zona.replaceChildren(tabla(['Nombre', 'Correo', 'Rol', 'Activo', 'Casa de Fuerza'], filas));
+  zona.replaceChildren(tabla(['Nombre', 'Correo', 'Rol', 'Activo', 'Casa de Fuerza', '', ''], filas));
+}
+
+function cambiarClaveUsuario(u) {
+  const clave1 = el('input', { type: 'password', minlength: 6, autocomplete: 'new-password', placeholder: 'Mínimo 6 caracteres' });
+  const clave2 = el('input', { type: 'password', minlength: 6, autocomplete: 'new-password', placeholder: 'Repetir la clave' });
+  const err = el('p', { class: 'error', hidden: true });
+  const btn = el('button', { class: 'btn primario', type: 'submit', text: 'Cambiar clave' });
+  const form = el('form', { onsubmit: async e => {
+    e.preventDefault();
+    err.hidden = true;
+    if (clave1.value.length < 6) { err.textContent = 'La clave debe tener al menos 6 caracteres.'; err.hidden = false; return; }
+    if (clave1.value !== clave2.value) { err.textContent = 'Las claves no coinciden.'; err.hidden = false; return; }
+    btn.disabled = true; btn.textContent = 'Cambiando…';
+    try {
+      const { data, error } = await sb.functions.invoke('cambiar_clave', {
+        body: { usuario_id: u.id, clave_nueva: clave1.value }
+      });
+      if (error) {
+        // El error de una edge function no siempre trae el mensaje del cuerpo; intentamos leerlo.
+        let msg = error.message || 'No se pudo cambiar la clave.';
+        try { const cuerpo = await error.context.json(); if (cuerpo?.error) msg = cuerpo.error; } catch {}
+        throw new Error(msg);
+      }
+      if (data?.error) throw new Error(data.error);
+      toast(`Clave de ${data?.nombre || u.nombre} actualizada.`);
+      cerrarModal();
+    } catch (ex) {
+      err.textContent = ex.message || 'No se pudo cambiar la clave.';
+      err.hidden = false;
+      btn.disabled = false; btn.textContent = 'Cambiar clave';
+    }
+  } }, [
+    el('label', { text: 'Nueva clave' }, [clave1]),
+    el('label', { text: 'Repetir clave' }, [clave2]),
+    err,
+    el('div', { class: 'fila fin' }, [btn])
+  ]);
+  modal(`Cambiar clave · ${u.nombre}`, form);
 }
 
 /* ===================================================================
@@ -3129,6 +3431,8 @@ async function vistaGeneradores(c) {
   const kwInstalado = operando.reduce((a, g) => a + Number(g.potencia_nominal_kw || 0), 0);
   const sinIngreso = vivos.filter(g => !g.ingreso_fecha);
 
+  const puedeAdmin = ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol);
+
   const filas = gens.map(g => [
     g.n_equipo,
     g.propiedad === 'Arriendo' ? `Arriendo · ${g.proveedor || '—'}` : (g.proveedor || 'Propio'),
@@ -3143,11 +3447,18 @@ async function vistaGeneradores(c) {
     g.litros_estadia != null ? num(g.litros_estadia) : '—',
     el('div', { class: 'fila' }, [
       el('button', { class: 'btn chico', text: 'Registrar', onclick: () => movimientoGenerador(g) }),
-      el('button', { class: 'btn chico', text: 'Historial', onclick: () => historialGenerador(g) })
-    ])
+      el('button', { class: 'btn chico', text: 'Historial', onclick: () => historialGenerador(g) }),
+      puedeAdmin ? el('button', { class: 'btn chico', text: 'Editar',
+        onclick: () => editarGenerador(g) }) : null
+    ].filter(Boolean))
   ]);
 
   poner(zona,
+    puedeAdmin ? el('div', { class: 'fila entre seccion' }, [
+      el('p', { class: 'ayuda crece', text: 'El parque de generadores en faena.' }),
+      el('button', { class: 'btn primario', text: '＋ Generador nuevo',
+        onclick: () => editarGenerador(null) })
+    ]) : null,
     el('div', { class: 'kpis seccion' }, [
       kpi(operando.length, 'operando'),
       kpi(vivos.length - operando.length, 'en faena sin operar', vivos.length - operando.length ? 'aviso' : ''),
@@ -3166,6 +3477,95 @@ async function vistaGeneradores(c) {
       'Horas, kWh y litros de la estadía se cuentan desde el último ingreso a faena. ' +
       'Para que avancen hay que registrar cada mes un movimiento de tipo "Lectura".' })
   );
+}
+
+/* ---------------- alta, edición y baja de generadores ---------------- */
+const PROPIEDAD_GEN = ['Arriendo', 'Propio'];
+const COMBUSTIBLES_GEN = ['Diesel', 'Gas', 'Bunker'];
+
+function editarGenerador(g) {
+  const nuevo = !g;
+  g = g || {};
+  const f = {
+    n_equipo: el('input', { value: g.n_equipo || '', placeholder: 'XCES 442' }),
+    n_interno: el('input', { value: g.n_interno || '', placeholder: 'G-10' }),
+    sitio: el('select'),
+    propiedad: el('select'),
+    proveedor: el('input', { value: g.proveedor || '', placeholder: 'Aggreko, Enerfrost…' }),
+    modelo: el('input', { value: g.modelo || '' }),
+    potencia: el('input', { type: 'number', step: '1', inputmode: 'numeric',
+      value: g.potencia_nominal_kw ?? '', placeholder: 'kW' }),
+    ubicacion: el('input', { value: g.ubicacion || '', placeholder: 'CFA, Chancado, Poza Intermedia…' }),
+    estado: el('select'),
+    sincronismo: el('input', { value: g.sincronismo || '', placeholder: 'Carga Base, Load Sharing…' }),
+    combustible: el('select'),
+    recargas: el('input', { type: 'checkbox', checked: (nuevo ? true : g.registra_recargas) || null }),
+    obs: el('textarea', { value: g.observaciones || '' }),
+    activo: el('input', { type: 'checkbox', checked: (nuevo ? true : g.activo) || null })
+  };
+  for (const s_ of S.catalogo.sitios)
+    f.sitio.append(el('option', { value: s_.id, selected: s_.id === g.sitio_id || null, text: s_.nombre }));
+  for (const p of PROPIEDAD_GEN)
+    f.propiedad.append(el('option', { value: p, selected: p === (g.propiedad || 'Arriendo') || null, text: p }));
+  for (const e_ of ESTADOS_GEN)
+    f.estado.append(el('option', { value: e_, selected: e_ === (g.estado || 'Disponible') || null, text: e_ }));
+  for (const cb of COMBUSTIBLES_GEN)
+    f.combustible.append(el('option', { value: cb, selected: cb === (g.combustible || 'Diesel') || null, text: cb }));
+
+  const cuerpo = el('div', {}, [
+    el('label', { text: 'Número de equipo' }, [f.n_equipo]),
+    el('label', { text: 'Número interno' }, [f.n_interno]),
+    el('label', { text: 'Sitio' }, [f.sitio]),
+    el('label', { text: 'Propiedad' }, [f.propiedad]),
+    el('label', { text: 'Proveedor' }, [f.proveedor]),
+    el('label', { text: 'Modelo' }, [f.modelo]),
+    el('label', { text: 'Potencia nominal (kW)' }, [f.potencia]),
+    el('label', { text: 'Ubicación' }, [f.ubicacion]),
+    el('label', { text: 'Estado' }, [f.estado]),
+    el('label', { text: 'Sincronismo' }, [f.sincronismo]),
+    el('label', { text: 'Combustible' }, [f.combustible]),
+    el('label', { class: 'fila' }, [f.recargas, el('span', { text: 'Registra recargas de combustible' })]),
+    el('label', { text: 'Observaciones' }, [f.obs]),
+    el('label', { class: 'fila' }, [f.activo, el('span', { text: 'Activo (aparece en el parque)' })]),
+    el('p', { class: 'ayuda', text:
+      'El estado que se ve en el parque lo manda el último movimiento registrado. ' +
+      'Acá se corrige la ficha del equipo, no su historia.' }),
+    el('button', { class: 'btn primario grande', style: 'margin-top:14px',
+      text: nuevo ? 'Crear el generador' : 'Guardar', onclick: async e => {
+        if (!f.n_equipo.value.trim()) return toast('Ponle el número de equipo', true);
+        e.target.disabled = true;
+        const { error } = await sb.rpc('guardar_generador', {
+          p_id: g.id ?? null,
+          p_n_equipo: f.n_equipo.value.trim(),
+          p_n_interno: f.n_interno.value.trim() || null,
+          p_sitio_id: Number(f.sitio.value),
+          p_propiedad: f.propiedad.value,
+          p_proveedor: f.proveedor.value.trim() || null,
+          p_modelo: f.modelo.value.trim() || null,
+          p_potencia_kw: f.potencia.value === '' ? null : Number(f.potencia.value),
+          p_ubicacion: f.ubicacion.value.trim() || null,
+          p_estado: f.estado.value,
+          p_sincronismo: f.sincronismo.value.trim() || null,
+          p_combustible: f.combustible.value,
+          p_registra_recargas: f.recargas.checked,
+          p_obs: f.obs.value.trim() || null,
+          p_activo: f.activo.checked
+        });
+        e.target.disabled = false;
+        if (error) return toast(error.message, true);
+        cerrarModal(); toast(nuevo ? 'Generador creado' : 'Generador actualizado'); render();
+      } })
+  ]);
+
+  if (!nuevo) cuerpo.append(
+    el('button', { class: 'btn peligro', style: 'margin-top:18px', text: 'Eliminar este generador',
+      onclick: () => eliminarCosa({
+        rpc: 'eliminar_generador', id: { p_id: g.id }, nombre: g.n_equipo, que: 'el generador',
+        desactivar: async () => (await sb.rpc('guardar_generador',
+          { p_id: g.id, p_n_equipo: g.n_equipo, p_activo: false, p_estado: 'De baja' })).error
+      }) }));
+
+  modal(nuevo ? 'Generador nuevo' : g.n_equipo, cuerpo);
 }
 
 function movimientoGenerador(g) {
@@ -3610,14 +4010,8 @@ async function escanearYAbrir() {
   if (!txt) return;
   const r = resolverCodigo(txt);
   if (r.error) return toast(r.error, true);
-  if (r.variables.length === 1) return abrirCaptura(r.variables[0]);
-  // Un punto con varias variables (kWh importada y exportada, por ejemplo)
-  modal(r.punto.nombre, el('div', {}, [
-    el('p', { class: 'ayuda', text: 'Este punto tiene más de una variable. ¿Cuál vas a tomar?' }),
-    ...r.variables.map(v => el('button', { class: 'btn grande', style: 'width:100%;margin-bottom:8px',
-      text: `${v.nombre} (${UNIDAD[v.unidad_reporte] || v.unidad_reporte})`,
-      onclick: () => { cerrarModal(); abrirCaptura(v); } }))
-  ]));
+  // La captura es del punto completo: ya no hay que elegir variable.
+  abrirCaptura(r.punto);
 }
 
 // Dentro de la captura: confirmar que el medidor que tengo enfrente es el

@@ -9,6 +9,14 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="styles.css">
+<script>
+  (function(){
+    try {
+      var m = localStorage.getItem('cierre_mes_modo');
+      if (m === 'dark' || m === 'light') document.documentElement.setAttribute('data-modo', m);
+    } catch(e){}
+  })();
+</script>
 </head>
 <body>
 
@@ -21,6 +29,10 @@
         <h1>Cierre de Mes</h1>
         <p>Lecturas de energía, agua y gas</p>
       </div>
+      <button class="icono btn-alternar-tema" id="btn-tema-login" type="button" title="Cambiar a tema oscuro o claro" aria-label="Cambiar tema" style="margin-left:auto">
+        <svg class="icono-luna" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        <svg class="icono-sol" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      </button>
     </div>
     <form id="form-login">
       <label>Correo
@@ -46,6 +58,10 @@
     <div class="estado">
       <span id="chip-conexion" class="chip">···</span>
       <button class="icono" id="btn-sync" title="Sincronizar" aria-label="Sincronizar">⟳</button>
+      <button class="icono btn-alternar-tema" id="btn-tema" title="Cambiar a tema oscuro o claro" aria-label="Cambiar tema">
+        <svg class="icono-luna" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        <svg class="icono-sol" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      </button>
     </div>
   </header>
 
@@ -79,6 +95,7 @@
       <span id="menu-usuario"></span>
       <button data-vista="dispositivo" class="link">Este dispositivo</button>
       <button id="btn-clave" class="link">Cambiar mi contraseña</button>
+      <button id="btn-tema-menu" class="link">Cambiar a modo oscuro / claro</button>
       <button id="btn-salir" class="link">Cerrar sesión</button>
     </div>
   </nav>

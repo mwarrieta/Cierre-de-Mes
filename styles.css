@@ -14,8 +14,22 @@
   --radio:8px;
   --sombra:0 1px 2px rgba(15,34,38,.06), 0 8px 24px -18px rgba(15,34,38,.4);
 }
+
+/* Modo oscuro explícito por usuario */
+:root[data-modo="dark"]{
+  --ground:#0b1517; --surface:#122124; --surface-2:#1a2f33;
+  --ink:#e7edeb; --ink-2:#b0c2bf; --ink-3:#7f9591;
+  --line:#24383b; --line-2:#345054;
+  --acento:#4fbdaf; --acento-ink:#8fd8cd; --acento-suave:#14332f;
+  --ok:#63bc8f; --ok-bg:#153021;
+  --warn:#d8a94e; --warn-bg:#332714;
+  --bad:#e08272; --bad-bg:#35201c;
+  --sombra:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
+}
+
+/* Modo oscuro automático (del sistema) cuando no se fuerza modo claro */
 @media (prefers-color-scheme:dark){
-  :root{
+  :root:not([data-modo="light"]){
     --ground:#0b1517; --surface:#122124; --surface-2:#1a2f33;
     --ink:#e7edeb; --ink-2:#b0c2bf; --ink-3:#7f9591;
     --line:#24383b; --line-2:#345054;
@@ -25,6 +39,22 @@
     --bad:#e08272; --bad-bg:#35201c;
     --sombra:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
   }
+}
+
+/* Ícono de alternar tema (SVG profesional y sutil) */
+.icono svg{
+  width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;display:block;
+}
+.icono-luna{display:block}
+.icono-sol{display:none}
+
+:root[data-modo="dark"] .icono-luna{display:none}
+:root[data-modo="dark"] .icono-sol{display:block}
+
+@media (prefers-color-scheme:dark){
+  :root:not([data-modo="light"]) .icono-luna{display:none}
+  :root:not([data-modo="light"]) .icono-sol{display:block}
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -464,3 +494,5 @@ table.planilla td.total{font-weight:700}
 .aviso-chip .txt { min-width:0; overflow-wrap:anywhere; }
 .btn.peligro { border-color:#c0392b; color:#c0392b; }
 .btn.peligro:hover { background:#c0392b; color:#fff; }
+
+

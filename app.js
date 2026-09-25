@@ -312,6 +312,43 @@ $('#modal-cerrar').addEventListener('click', cerrarModal);
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') cerrarModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarModal(); });
 
+// ------------------------------------------------------------------ tema claro / oscuro
+function esTemaOscuroActivo() {
+  const m = document.documentElement.getAttribute('data-modo');
+  if (m === 'dark') return true;
+  if (m === 'light') return false;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function fijarTema(modo) {
+  if (modo === 'dark') {
+    document.documentElement.setAttribute('data-modo', 'dark');
+  } else {
+    document.documentElement.setAttribute('data-modo', 'light');
+  }
+  try { localStorage.setItem('cierre_mes_modo', modo); } catch (e) {}
+
+  const metaTheme = $('meta[name="theme-color"]');
+  if (metaTheme) metaTheme.setAttribute('content', modo === 'dark' ? '#0b1517' : '#0f2226');
+}
+
+function alternarTema() {
+  const nuevoModo = esTemaOscuroActivo() ? 'light' : 'dark';
+  fijarTema(nuevoModo);
+  toast(nuevoModo === 'dark' ? 'Modo oscuro activado' : 'Modo claro activado');
+}
+
+// Sincronizar theme-color inicial
+const metaTheme = $('meta[name="theme-color"]');
+if (metaTheme) metaTheme.setAttribute('content', esTemaOscuroActivo() ? '#0b1517' : '#0f2226');
+
+$('#btn-tema')?.addEventListener('click', alternarTema);
+$('#btn-tema-login')?.addEventListener('click', alternarTema);
+$('#btn-tema-menu')?.addEventListener('click', () => {
+  menuAbierto(false);
+  alternarTema();
+});
+
 $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));
 

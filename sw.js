@@ -6,7 +6,7 @@
    para el próximo arranque. Así una versión publicada llega sola a los
    dispositivos sin depender de que alguien se acuerde de subir el número de
    CACHE en cada despliegue. */
-const CACHE = 'cierre-mes-v4';
+const CACHE = 'cierre-mes-v5';
 const ARCHIVOS = [
   './', './index.html', './styles.css', './config.js', './db.js', './app.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png', './supabase.js', './respaldo.js',

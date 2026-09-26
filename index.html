@@ -41,7 +41,12 @@
       <label>Contraseña
         <input type="password" id="login-clave" autocomplete="current-password" required>
       </label>
-      <button class="btn primario grande" type="submit">Entrar</button>
+      <div class="fila" style="justify-content:space-between; margin-top:0.5rem">
+        <button class="btn primario grande" type="submit" style="flex:1">Entrar</button>
+      </div>
+      <div style="text-align:center; margin-top:1rem">
+        <button type="button" class="link" id="btn-olvido-clave">¿Olvidaste tu contraseña?</button>
+      </div>
       <p class="error" id="login-error" hidden></p>
     </form>
   </div>
@@ -68,11 +73,11 @@
   <nav id="menu" class="menu">
     <div class="menu-titulo">Terreno</div>
     <button data-vista="terreno">Tomar lecturas</button>
-    <button data-vista="avisos">Avisos</button>
 
     <div class="menu-titulo" data-rol="supervisor">Revisión del mes</div>
     <button data-vista="tablero"    data-rol="supervisor">Tablero del mes</button>
     <button data-vista="validacion" data-rol="supervisor">Validación</button>
+    <button data-vista="avisos"     data-rol="supervisor">Avisos</button>
     <button data-vista="auditoria"  data-rol="supervisor">Auditoría</button>
 
     <div class="menu-titulo" data-rol="supervisor">Informes</div>
@@ -95,7 +100,6 @@
       <span id="menu-usuario"></span>
       <button data-vista="dispositivo" class="link">Este dispositivo</button>
       <button id="btn-clave" class="link">Cambiar mi contraseña</button>
-      <button id="btn-tema-menu" class="link">Cambiar a modo oscuro / claro</button>
       <button id="btn-salir" class="link">Cerrar sesión</button>
     </div>
   </nav>

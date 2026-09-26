@@ -152,6 +152,38 @@ $('#form-login').addEventListener('submit', async e => {
   await arrancar();
 });
 
+$('#btn-olvido-clave')?.addEventListener('click', () => {
+  const correo = el('input', { type: 'email', required: true, autocomplete: 'username' });
+  const aviso = el('p', { class: 'banda warn', hidden: true });
+  const boton = el('button', { class: 'btn primario', text: 'Enviar enlace' });
+
+  boton.onclick = async () => {
+    if (!correo.value) { correo.focus(); return; }
+    boton.disabled = true; boton.textContent = 'Enviando…';
+    aviso.hidden = true;
+    const urlRedireccion = window.location.origin + window.location.pathname;
+    console.log("Solicitando recuperación con redirectTo:", urlRedireccion);
+    const { error } = await sb.auth.resetPasswordForEmail(correo.value.trim(), {
+      redirectTo: urlRedireccion
+    });
+    if (error) {
+      boton.disabled = false; boton.textContent = 'Enviar enlace';
+      aviso.textContent = error.message;
+      aviso.hidden = false;
+    } else {
+      cerrarModal();
+      alert('Revisa tu correo. Te hemos enviado un enlace para cambiar tu contraseña.');
+    }
+  };
+
+  modal('Recuperar contraseña', el('div', { class: 'columna' }, [
+    el('p', { text: 'Ingresa tu correo para recibir un enlace de recuperación.' }),
+    el('label', { text: 'Correo electrónico' }, [correo]),
+    aviso,
+    boton
+  ]));
+});
+
 // Cada persona cambia su propia contraseña sin depender del panel de Supabase
 // ni de que alguien se la reasigne: si eso cuesta, nadie cambia la que le dieron.
 $('#btn-clave').addEventListener('click', () => {
@@ -344,10 +376,6 @@ if (metaTheme) metaTheme.setAttribute('content', esTemaOscuroActivo() ? '#0b1517
 
 $('#btn-tema')?.addEventListener('click', alternarTema);
 $('#btn-tema-login')?.addEventListener('click', alternarTema);
-$('#btn-tema-menu')?.addEventListener('click', () => {
-  menuAbierto(false);
-  alternarTema();
-});
 
 $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));
@@ -2236,6 +2264,9 @@ function redondear(v) {
    VISTA · AVISOS
    =================================================================== */
 async function vistaAvisos(c) {
+  let avisosVisibles = [];
+  let observacionesVisibles = [];
+
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
   const selVista = el('select', { onchange: pintar }, [
     el('option', { value: 'avisos', text: 'Avisos' }),
@@ -2247,15 +2278,26 @@ async function vistaAvisos(c) {
     el('option', { value: '', text: 'Todos' }),
     el('option', { value: 'resuelto', text: 'Solo resueltos' })
   ]);
+  const btnExportar = el('button', {
+    class: 'btn chico',
+    text: '🖨 Exportar PDF (Carta)',
+    onclick: () => {
+      if (selVista.value === 'observaciones') {
+        imprimirReporteObservaciones(observacionesVisibles);
+      } else {
+        imprimirReporteAvisos(avisosVisibles);
+      }
+    }
+  });
   const buscar = el('input', { type: 'search', placeholder: 'Buscar punto, categoría o texto…',
     oninput: () => pintar() });
 
   c.append(
-    el('div', { class: 'fila entre seccion' }, [
-      el('p', { class: 'ayuda crece', text:
-        'Todo lo que se anotó en terreno: los avisos y también las observaciones ' +
-        'sueltas que antes se guardaban y no se veían en ninguna parte.' }),
-      selVista, selEstado
+    el('div', { class: 'fila entre seccion', style: 'flex-wrap:wrap; gap:8px' }, [
+      el('div', { class: 'fila', style: 'gap:8px; flex-wrap:wrap' }, [
+        selVista, selEstado
+      ]),
+      btnExportar
     ]),
     buscar, zona);
   pintar();
@@ -2271,17 +2313,33 @@ async function vistaAvisos(c) {
       if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
       const filas = (data || []).filter(o =>
         !q || `${o.punto} ${o.sitio} ${o.variable} ${o.observacion}`.toLowerCase().includes(q));
+      observacionesVisibles = filas;
+      btnExportar.hidden = false;
       if (!filas.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay observaciones.' }));
+
+      const listaObs = el('div', { class: 'lista-compacta' },
+        filas.map(o => el('div', {
+          class: 'fila-compacta',
+          onclick: () => verDetalleObservacion(o)
+        }, [
+          el('div', { class: 'info-principal' }, [
+            el('div', { class: 'fila-titulo' }, [
+              el('strong', { text: `${o.sitio} / ${o.punto}` }),
+              el('span', { class: 'categoria-tag', text: o.variable })
+            ]),
+            el('p', { class: 'descripcion-corta', text: o.observacion || 'Sin texto de observación' }),
+            el('span', { class: 'texto-secundario', text: `${nombrePeriodo(o.periodo)} · por ${o.tomada_por_nombre || '—'}` })
+          ]),
+          el('div', { class: 'info-secundaria' }, [
+            o.sin_dato ? el('span', { class: 'pill warn', text: 'sin dato' }) : el('span', { class: 'num', text: num(o.valor_display) }),
+            o.fotos ? el('span', { class: 'pill neutro', text: `${o.fotos} 📷` }) : null
+          ].filter(Boolean))
+        ]))
+      );
+
       return poner(zona,
         el('p', { class: 'ayuda', text: `${filas.length} observación(es) escritas en terreno.` }),
-        tabla(['Periodo', 'Sitio', 'Punto', 'Lectura', 'Valor', 'Observación', 'Quién', 'Foto'],
-          filas.map(o => [
-            nombrePeriodo(o.periodo), o.sitio, o.punto, o.variable,
-            o.sin_dato ? 'sin dato' : num(o.valor_display),
-            o.observacion,
-            o.tomada_por_nombre || '—',
-            o.fotos ? `${o.fotos} 📷` : '—'
-          ])));
+        listaObs);
     }
 
     const { data, error } = await sb.from('v_avisos').select('*')
@@ -2293,35 +2351,254 @@ async function vistaAvisos(c) {
     if (q) avisos = avisos.filter(a =>
       `${a.punto} ${a.sitio} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
 
-    if (selVista.value === 'informe') return informeAvisos(zona, avisos);
+    if (selVista.value === 'informe') {
+      btnExportar.hidden = true;
+      return informeAvisos(zona, avisos);
+    }
+
+    btnExportar.hidden = false;
+    avisosVisibles = avisos;
 
     if (!avisos.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay avisos con este filtro.' }));
 
-    const puedo = a => S.usuario.rol === 'admin' || S.usuario.rol === 'supervisor'
-                    || (a.abierto_por === S.usuario.id && a.estado !== 'resuelto');
+    const listaAvisos = el('div', { class: 'lista-compacta' },
+      avisos.map(a => {
+        const sevClase = { alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro';
+        const estClase = a.estado === 'resuelto' ? 'ok' : 'warn';
+        const sevBorder = a.severidad === 'alta' ? ' error' : (a.severidad === 'media' ? ' alerta' : '');
+
+        return el('div', {
+          class: 'fila-compacta' + (a.estado === 'resuelto' ? ' resuelto' : sevBorder),
+          onclick: () => verDetalleAviso(a, pintar)
+        }, [
+          el('div', { class: 'info-principal' }, [
+            el('div', { class: 'fila-titulo' }, [
+              el('strong', { text: `${a.sitio} / ${a.punto}` }),
+              el('span', { class: 'categoria-tag', text: a.categoria || 'Aviso' })
+            ]),
+            el('p', { class: 'descripcion-corta', text: a.descripcion || 'Sin descripción adicional' }),
+            el('span', { class: 'texto-secundario', text: `Abierto por ${a.abierto_por_nombre || '—'} · ${fechaCorta(a.abierto_en)}` })
+          ]),
+          el('div', { class: 'info-secundaria' }, [
+            el('span', { class: 'pill ' + sevClase, text: a.severidad }),
+            el('span', { class: 'pill ' + estClase, text: a.estado })
+          ])
+        ]);
+      })
+    );
 
     poner(zona,
       el('p', { class: 'ayuda', text:
         `${avisos.filter(a => a.estado !== 'resuelto').length} abiertos de ${avisos.length} mostrados.` }),
-      tabla(['Sitio', 'Punto', 'Categoría', 'Severidad', 'Estado', 'Abierto', 'Descripción', 'Quién', ''],
-        avisos.map(a => [
-          a.sitio, a.punto, a.categoria || '—',
-          el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro'),
-                       text: a.severidad }),
-          el('span', { class: 'pill ' + (a.estado === 'resuelto' ? 'ok' : 'warn'), text: a.estado }),
-          fechaCorta(a.abierto_en),
-          a.descripcion || '—',
-          a.abierto_por_nombre || '—',
-          el('div', { class: 'fila' }, [
-            a.estado === 'resuelto' ? null
-              : el('button', { class: 'btn chico', text: 'Resolver', onclick: () => resolverAviso(a, pintar) }),
-            puedo(a) ? el('button', { class: 'btn chico', text: 'Editar',
-              onclick: () => editarAviso(a, pintar) }) : null,
-            puedo(a) ? el('button', { class: 'btn chico peligro', text: 'Borrar',
-              onclick: () => borrarAviso(a, pintar) }) : null
-          ].filter(Boolean))
-        ])));
+      listaAvisos);
   }
+}
+
+function imprimirReporteAvisos(avisos) {
+  if (!avisos || !avisos.length) return toast('No hay avisos para exportar.');
+
+  const abiertos = avisos.filter(a => a.estado !== 'resuelto');
+  const resueltos = avisos.filter(a => a.estado === 'resuelto');
+
+  const fechaReporte = new Date().toLocaleDateString('es-CL', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+
+  const hoja = el('div', { class: 'hoja-informe informe-carta-avisos' }, [
+    el('table', { class: 'cab-informe' }, [
+      el('tr', {}, [
+        el('td', {}, [
+          el('h1', { style: 'margin:0; font-size:14px; text-transform:uppercase', text: 'Reporte de Avisos y Pendientes de Terreno' }),
+          el('p', { style: 'margin:2px 0 0; font-size:9pt; color:#444', text: 'Cierre de Mes · Control operacional y mantenimiento' })
+        ]),
+        el('td', { class: 'num' }, [
+          el('p', { style: 'margin:0; font-size:9pt', html: `<b>Fecha de emisión:</b> ${fechaReporte}` }),
+          el('p', { style: 'margin:2px 0 0; font-size:8.5pt', text: `Total: ${avisos.length} avisos (${abiertos.length} abiertos / ${resueltos.length} resueltos)` })
+        ])
+      ])
+    ]),
+
+    el('p', { style: 'margin:0 0 6px; font-size:8pt; color:#333; font-style:italic',
+      text: 'Lista para revisión y levantamiento en terreno. Priorizar avisos con severidad ALTA.' }),
+
+    el('table', { class: 'planilla tabla-avisos-impresion' }, [
+      el('thead', {}, [
+        el('tr', {}, [
+          el('th', { style: 'width:24px; text-align:center', text: 'N°' }),
+          el('th', { style: 'width:125px', text: 'Sitio / Punto' }),
+          el('th', { style: 'width:85px', text: 'Categoría' }),
+          el('th', { style: 'width:55px; text-align:center', text: 'Severidad' }),
+          el('th', { style: 'width:55px; text-align:center', text: 'Estado' }),
+          el('th', { style: 'width:75px', text: 'Fecha / Por' }),
+          el('th', { text: 'Descripción del aviso / Problema' }),
+          el('th', { class: 'col-accion', text: 'Solución / Firma' })
+        ])
+      ]),
+      el('tbody', {}, avisos.map((a, i) => {
+        const esAlta = (a.severidad || '').toLowerCase() === 'alta';
+        const esResuelto = a.estado === 'resuelto';
+        return el('tr', { class: esResuelto ? 'fila-resuelto' : '' }, [
+          el('td', { style: 'text-align:center; font-weight:bold', text: String(i + 1) }),
+          el('td', {}, [
+            el('b', { text: a.sitio || '—' }),
+            el('br'),
+            el('span', { text: a.punto || '—' })
+          ]),
+          el('td', { text: a.categoria || '—' }),
+          el('td', { style: 'text-align:center', class: esAlta ? 'sev-alta' : '', text: (a.severidad || '').toUpperCase() }),
+          el('td', { style: 'text-align:center', text: esResuelto ? 'Resuelto' : 'Abierto' }),
+          el('td', {}, [
+            el('span', { text: fechaCorta(a.abierto_en) }),
+            el('br'),
+            el('small', { text: a.abierto_por_nombre || '—' })
+          ]),
+          el('td', {}, [
+            el('div', { text: a.descripcion || '(Sin descripción)' }),
+            a.obs_resolucion ? el('small', { style: 'font-style:italic; display:block; margin-top:2px', text: `Resuelto: ${a.obs_resolucion}` }) : null
+          ]),
+          el('td', { class: 'col-accion' }, [
+            esResuelto ? el('small', { text: `OK: ${a.resuelto_por_nombre || ''}` }) : null
+          ])
+        ]);
+      }))
+    ]),
+
+    el('div', { class: 'pie-informe', style: 'margin-top:10px; display:flex; justify-content:space-between; font-size:8pt; color:#444' }, [
+      el('p', { text: 'Cierre de Mes · Sistema Operativo' }),
+      el('p', { text: 'Documento para resolución en terreno' })
+    ])
+  ]);
+
+  const cont = document.getElementById('impresion');
+  cont.replaceChildren(hoja);
+  document.body.classList.add('imprimiendo');
+
+  const limpiar = () => {
+    document.body.classList.remove('imprimiendo');
+    cont.replaceChildren();
+    window.removeEventListener('afterprint', limpiar);
+  };
+  window.addEventListener('afterprint', limpiar);
+  setTimeout(() => window.print(), 120);
+}
+
+function imprimirReporteObservaciones(filas) {
+  if (!filas || !filas.length) return toast('No hay observaciones para exportar.');
+
+  const fechaReporte = new Date().toLocaleDateString('es-CL', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+
+  const hoja = el('div', { class: 'hoja-informe informe-carta-avisos' }, [
+    el('table', { class: 'cab-informe' }, [
+      el('tr', {}, [
+        el('td', {}, [
+          el('h1', { style: 'margin:0; font-size:14px; text-transform:uppercase', text: 'Reporte de Observaciones de Terreno' }),
+          el('p', { style: 'margin:2px 0 0; font-size:9pt; color:#444', text: 'Cierre de Mes · Anotaciones registradas en la toma mensual' })
+        ]),
+        el('td', { class: 'num' }, [
+          el('p', { style: 'margin:0; font-size:9pt', html: `<b>Fecha de emisión:</b> ${fechaReporte}` }),
+          el('p', { style: 'margin:2px 0 0; font-size:8.5pt', text: `Total: ${filas.length} observaciones` })
+        ])
+      ])
+    ]),
+
+    el('table', { class: 'planilla tabla-avisos-impresion' }, [
+      el('thead', {}, [
+        el('tr', {}, [
+          el('th', { style: 'width:24px; text-align:center', text: 'N°' }),
+          el('th', { style: 'width:60px', text: 'Periodo' }),
+          el('th', { style: 'width:125px', text: 'Sitio / Punto' }),
+          el('th', { style: 'width:90px', text: 'Variable' }),
+          el('th', { style: 'width:55px; text-align:right', text: 'Valor' }),
+          el('th', { text: 'Observación' }),
+          el('th', { style: 'width:80px', text: 'Tomada por' }),
+          el('th', { style: 'width:40px; text-align:center', text: 'Fotos' })
+        ])
+      ]),
+      el('tbody', {}, filas.map((o, i) => {
+        return el('tr', {}, [
+          el('td', { style: 'text-align:center; font-weight:bold', text: String(i + 1) }),
+          el('td', { text: nombrePeriodo(o.periodo) }),
+          el('td', {}, [
+            el('b', { text: o.sitio || '—' }),
+            el('br'),
+            el('span', { text: o.punto || '—' })
+          ]),
+          el('td', { text: o.variable || '—' }),
+          el('td', { style: 'text-align:right' }, [
+            o.sin_dato ? el('span', { text: 'sin dato' }) : el('span', { text: num(o.valor_display) })
+          ]),
+          el('td', { text: o.observacion || '—' }),
+          el('td', { text: o.tomada_por_nombre || '—' }),
+          el('td', { style: 'text-align:center', text: o.fotos ? `${o.fotos} 📷` : '—' })
+        ]);
+      }))
+    ]),
+
+    el('div', { class: 'pie-informe', style: 'margin-top:10px; display:flex; justify-content:space-between; font-size:8pt; color:#444' }, [
+      el('p', { text: 'Cierre de Mes · Registro de lecturas' }),
+      el('p', { text: 'Documento impreso desde el sistema' })
+    ])
+  ]);
+
+  const cont = document.getElementById('impresion');
+  cont.replaceChildren(hoja);
+  document.body.classList.add('imprimiendo');
+
+  const limpiar = () => {
+    document.body.classList.remove('imprimiendo');
+    cont.replaceChildren();
+    window.removeEventListener('afterprint', limpiar);
+  };
+  window.addEventListener('afterprint', limpiar);
+  setTimeout(() => window.print(), 120);
+}
+
+function verDetalleAviso(a, alGuardar) {
+  const puedo = S.usuario.rol === 'admin' || S.usuario.rol === 'supervisor'
+              || (a.abierto_por === S.usuario.id && a.estado !== 'resuelto');
+  const sevClase = { alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro';
+  const estClase = a.estado === 'resuelto' ? 'ok' : 'warn';
+
+  const contenido = el('div', {}, [
+    el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
+      el('span', { html: `<b>${esc(a.sitio)} / ${esc(a.punto)}</b><br><small>${esc(a.categoria || 'Aviso')}</small>` }),
+      el('span', { html: `<span class="pill ${sevClase}">${esc(a.severidad)}</span> <span class="pill ${estClase}">${esc(a.estado)}</span>` })
+    ]),
+    el('p', { class: 'ayuda', text: `Abierto por ${a.abierto_por_nombre || '—'} el ${fechaHora(a.abierto_en)}` }),
+    a.descripcion ? el('div', { class: 'card', style: 'margin:12px 0; padding:12px; font-size:14px; background:var(--ground)' }, [
+      el('strong', { text: 'Descripción:' }),
+      el('p', { style: 'margin:6px 0 0; white-space:pre-wrap', text: a.descripcion })
+    ]) : el('p', { class: 'ayuda', text: 'Sin descripción detallada.' }),
+    a.estado === 'resuelto' ? el('div', { class: 'card', style: 'margin:12px 0; padding:12px; font-size:14px; background:var(--ok-bg)' }, [
+      el('strong', { text: `Resuelto por ${a.resuelto_por_nombre || '—'} · ${fechaHora(a.resuelto_en)}` }),
+      a.obs_resolucion ? el('p', { style: 'margin:6px 0 0', text: a.obs_resolucion }) : null
+    ]) : null,
+    el('div', { class: 'fila', style: 'margin-top:16px; gap:8px; flex-wrap:wrap' }, [
+      a.estado !== 'resuelto' ? el('button', { class: 'btn ok crece', text: 'Resolver aviso', onclick: () => { cerrarModal(); resolverAviso(a, alGuardar); } }) : null,
+      puedo ? el('button', { class: 'btn chico', text: 'Editar', onclick: () => { cerrarModal(); editarAviso(a, alGuardar); } }) : null,
+      puedo ? el('button', { class: 'btn chico peligro', text: 'Borrar', onclick: () => { cerrarModal(); borrarAviso(a, alGuardar); } }) : null
+    ].filter(Boolean))
+  ]);
+
+  modal('Detalle del aviso', contenido);
+}
+
+function verDetalleObservacion(o) {
+  const contenido = el('div', {}, [
+    el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
+      el('span', { html: `<b>${esc(o.sitio)} / ${esc(o.punto)}</b><br><small>${esc(o.variable)}</small>` }),
+      el('span', { html: `<b>${o.sin_dato ? 'Sin dato' : num(o.valor_display)}</b><br><small>${nombrePeriodo(o.periodo)}</small>` })
+    ]),
+    el('p', { class: 'ayuda', text: `Registrado por ${o.tomada_por_nombre || '—'} el ${fechaHora(o.fecha_lectura)}` }),
+    o.observacion ? el('div', { class: 'card', style: 'margin:12px 0; padding:12px; font-size:14px; background:var(--ground)' }, [
+      el('strong', { text: 'Observación:' }),
+      el('p', { style: 'margin:6px 0 0; white-space:pre-wrap', text: o.observacion })
+    ]) : null
+  ]);
+
+  modal('Observación de terreno', contenido);
 }
 
 // Lo que un jefe quiere ver de un vistazo: dónde se concentran y qué lleva
@@ -4462,6 +4739,45 @@ async function revisarVersion() {
     document.getElementById('app').prepend(barra);
   } catch { /* sin conexión o sin archivo: no pasa nada */ }
 }
-sb.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') location.reload(); });
+sb.auth.onAuthStateChange((evento) => { 
+  if (evento === 'SIGNED_OUT') location.reload(); 
+  if (evento === 'PASSWORD_RECOVERY') {
+    // Al volver del enlace de recuperación de correo
+    const nueva = el('input', { type: 'password', autocomplete: 'new-password' });
+    const otra  = el('input', { type: 'password', autocomplete: 'new-password' });
+    const aviso = el('p', { class: 'banda warn', hidden: true });
+    const boton = el('button', { class: 'btn primario', text: 'Guardar nueva contraseña' });
+
+    boton.onclick = async () => {
+      if (nueva.value.length < 8) {
+        aviso.textContent = 'La contraseña debe tener al menos 8 caracteres.';
+        aviso.hidden = false; return;
+      }
+      if (nueva.value !== otra.value) {
+        aviso.textContent = 'Las contraseñas no coinciden.';
+        aviso.hidden = false; return;
+      }
+      boton.disabled = true; boton.textContent = 'Guardando…';
+      const { error } = await sb.auth.updateUser({ password: nueva.value });
+      if (error) {
+        boton.disabled = false; boton.textContent = 'Guardar nueva contraseña';
+        aviso.textContent = error.message;
+        aviso.hidden = false;
+      } else {
+        cerrarModal();
+        alert('Tu contraseña ha sido cambiada con éxito. Ya puedes usar la plataforma.');
+        location.hash = '';
+        arrancar();
+      }
+    };
+
+    modal('Elige tu nueva contraseña', el('div', { class: 'columna' }, [
+      el('label', { text: 'Contraseña nueva' }, [nueva]),
+      el('label', { text: 'Repítela' }, [otra]),
+      aviso,
+      boton
+    ]));
+  }
+});
 arrancar();
 })();

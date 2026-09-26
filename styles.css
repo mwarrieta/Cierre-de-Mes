@@ -495,4 +495,19 @@ table.planilla td.total{font-weight:700}
 .btn.peligro { border-color:#c0392b; color:#c0392b; }
 .btn.peligro:hover { background:#c0392b; color:#fff; }
 
+/* --- Lista de validación compacta --- */
+.lista-validacion { display:flex; flex-direction:column; gap:8px; margin-top:16px; }
+.fila-validacion {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:12px 16px; background:var(--surface);
+  border:1px solid var(--line); border-radius:8px;
+  cursor:pointer; transition:border-color 0.2s, background 0.2s;
+}
+.fila-validacion:hover { background:var(--surface-2); border-color:var(--acento); }
+.fila-validacion.error { border-left:4px solid var(--bad); }
+.fila-validacion.alerta { border-left:4px solid var(--warn); }
+.fila-validacion .info-principal { display:flex; flex-direction:column; }
+.fila-validacion .info-secundaria { display:flex; align-items:center; gap:12px; }
+.fila-validacion .texto-secundario { font-size:0.85em; color:var(--ink-3); }
+
 

@@ -1075,10 +1075,32 @@ function tabla(cabeceras, filas, opciones = {}) {
    VISTA · VALIDACIÓN
    =================================================================== */
 async function vistaValidacion(c) {
-  c.append(el('div', { class: 'fila entre seccion' }, [selectorPeriodo()]));
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
-  c.append(zona);
+  S.filtroValidacion = S.filtroValidacion || '';
+  
+  const cabecera = el('div', { class: 'fila entre seccion' }, [
+    selectorPeriodo(),
+    el('button', { class: 'btn primario', text: 'Validar sin errores', onclick: validarTodasSinAlertas })
+  ]);
+  
+  const buscador = el('div', { class: 'buscador' }, [
+    el('input', {
+      type: 'search', placeholder: 'Buscar punto o sitio…', value: S.filtroValidacion,
+      oninput: e => { S.filtroValidacion = e.target.value.toLowerCase(); renderListaValidacion(); }
+    })
+  ]);
 
+  const zona = el('div', { id: 'zona-validacion' }, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
+  c.append(cabecera, buscador, zona);
+
+  await renderListaValidacion();
+}
+
+async function renderListaValidacion() {
+  const zona = $('#zona-validacion');
+  if (!zona) return;
+
+  const dup = await bloqueDuplicados(S.periodo);
+  
   let alertas = [];
   try {
     const { data } = await sb.from('v_alertas_duras').select('*').eq('periodo', S.periodo);
@@ -1087,7 +1109,6 @@ async function vistaValidacion(c) {
   const porLectura = {};
   for (const a of alertas) (porLectura[a.lectura_id] ||= []).push(a);
 
-  const dup = await bloqueDuplicados(S.periodo);
   const pendientes = S.lecturas.filter(l => !['validada', 'descartada'].includes(l.estado));
   if (!pendientes.length) {
     poner(zona, dup, el('p', { class: 'vacio', text: 'No hay lecturas por validar en este periodo.' }));
@@ -1096,26 +1117,89 @@ async function vistaValidacion(c) {
 
   const filas = pendientes.map(l => {
     const v = S.catalogo.variables.find(x => x.id === l.variable_id);
-    const u = v ? (UNIDAD[v.unidad_reporte] || v.unidad_reporte) : '';
-    const al = porLectura[l.id] || [];
-    return [
-      v ? v.punto.sitio.nombre : '—',
-      v ? v.punto.nombre : ('variable ' + l.variable_id),
-      v ? v.nombre : '',
-      l.sin_dato ? el('span', { class: 'pill warn', text: 'sin dato' })
-                 : el('span', { class: 'num', text: `${num(l.valor)} ${u}` }),
-      fechaCorta(l.fecha_lectura),
-      al.length ? el('span', { class: 'pill ' + (al.some(a => a.severidad === 'alta') ? 'bad' : 'warn'),
-                               text: al.length + ' alerta' + (al.length > 1 ? 's' : '') })
-                : el('span', { class: 'pill ok', text: 'sin alertas' }),
-      el('div', { class: 'fila' }, [
-        el('button', { class: 'btn chico', text: 'Revisar', onclick: () => revisarLectura(l, v, al) })
-      ])
-    ];
-  });
+    if (!v) return null;
+    
+    const txt = `${v.punto.sitio.nombre} ${v.punto.nombre} ${v.nombre}`.toLowerCase();
+    if (S.filtroValidacion && !txt.includes(S.filtroValidacion)) return null;
 
-  poner(zona, dup, tabla(
-    ['Sitio', 'Punto', 'Variable', 'Lectura', 'Fecha', 'Estado', ''], filas));
+    const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
+    const al = porLectura[l.id] || [];
+
+    const tieneAlertas = al.length > 0;
+    const severidadAlta = al.some(a => a.severidad === 'alta');
+    
+    return el('div', { 
+        class: 'fila-validacion' + (tieneAlertas ? (severidadAlta ? ' error' : ' alerta') : ''), 
+        onclick: () => revisarLectura(l, v, al) 
+      }, [
+      el('div', { class: 'info-principal' }, [
+        el('strong', { text: v.punto.sitio.nombre + ' / ' + v.punto.nombre }),
+        el('span', { class: 'texto-secundario', text: ' — ' + v.nombre })
+      ]),
+      el('div', { class: 'info-secundaria' }, [
+        l.sin_dato ? el('span', { class: 'pill warn', text: 'sin dato' }) : el('span', { class: 'num', text: `${num(l.valor)} ${u}` }),
+        tieneAlertas 
+          ? el('span', { class: 'pill ' + (severidadAlta ? 'bad' : 'warn'), text: al.length + (al.length === 1 ? ' alerta' : ' alertas') })
+          : el('span', { class: 'pill ok', text: '✓' })
+      ])
+    ]);
+  }).filter(x => x !== null);
+
+  if (!filas.length) {
+    poner(zona, dup, el('p', { class: 'vacio', text: 'No hay coincidencias en la búsqueda.' }));
+    return;
+  }
+
+  const contenedorLista = el('div', { class: 'lista-validacion' }, filas);
+  poner(zona, dup, contenedorLista);
+}
+
+async function validarTodasSinAlertas(e) {
+  const pendientes = S.lecturas.filter(l => !['validada', 'descartada'].includes(l.estado));
+  if (!pendientes.length) return toast('No hay lecturas pendientes.');
+
+  const btn = e.target;
+  const textoOriginal = btn.textContent;
+  btn.textContent = 'Buscando alertas...';
+  btn.disabled = true;
+
+  let alertas = [];
+  try {
+    const { data } = await sb.from('v_alertas_duras').select('*').eq('periodo', S.periodo);
+    alertas = data || [];
+  } catch { /* ignorar */ }
+  const conAlerta = new Set(alertas.map(a => a.lectura_id));
+
+  const sinAlertas = pendientes.filter(l => !conAlerta.has(l.id));
+  if (!sinAlertas.length) {
+    btn.textContent = textoOriginal;
+    btn.disabled = false;
+    return toast('Todas las lecturas pendientes tienen alertas. Revísalas manualmente.');
+  }
+
+  if (!confirm(`¿Validar automáticamente ${sinAlertas.length} lecturas sin alertas ni errores?`)) {
+    btn.textContent = textoOriginal;
+    btn.disabled = false;
+    return;
+  }
+
+  btn.textContent = 'Validando...';
+
+  try {
+    let oks = 0;
+    for (const l of sinAlertas) {
+      const r = await sb.rpc('validar_lectura', { p_id: l.id, p_aprobar: true, p_obs: null });
+      if (!r.error) oks++;
+    }
+    toast(`${oks} lecturas validadas correctamente.`);
+    await refrescarDatos(); 
+    render();
+  } catch (err) {
+    toast('Error al validar algunas lecturas.', true);
+  } finally {
+    btn.textContent = textoOriginal;
+    btn.disabled = false;
+  }
 }
 
 async function revisarLectura(l, v, alertas) {

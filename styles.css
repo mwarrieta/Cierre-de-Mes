@@ -218,7 +218,14 @@ main{padding:14px;max-width:1280px;margin:0 auto;padding-bottom:48px;
 .item.pendiente{border-left-color:var(--line-2)}
 .item.cola{border-left-color:var(--acento)}
 .item .txt{flex:1;min-width:0}
-.item .n{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .n{font-weight:600;display:flex;align-items:center;overflow:hidden;white-space:nowrap;gap:6px}
+.item .n .n-nom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .badge-foto{
+  display:inline-flex;align-items:center;gap:3px;flex-shrink:0;
+  padding:2px 5px;border-radius:10px;background:var(--acento-suave);
+  color:var(--acento-ink);font-size:11px;font-weight:700;line-height:1;
+}
+.item .badge-foto .mini-camara{display:block}
 .item .d{font-size:12.5px;color:var(--ink-3);display:block;margin-top:2px}
 .item .val{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
 .item .val small{display:block;font-weight:400;font-size:11px;color:var(--ink-3)}

@@ -455,9 +455,17 @@ async function pintarLista() {
   if (!cont) return;
   const cola = await DB.pendientes();
   const enCola = new Set();
+  const enColaFoto = new Set();
   for (const it of cola) {
-    if (it.tipo === 'captura') (it.lecturas || []).forEach(l => enCola.add(l.variable_id));
-    else if (it.variable_id) enCola.add(it.variable_id);
+    if (it.tipo === 'captura') {
+      (it.lecturas || []).forEach(l => enCola.add(l.variable_id));
+      if (it.fotoId) enColaFoto.add(it.punto_id);
+    } else if (it.tipo === 'foto') {
+      if (it.variable_id) enColaFoto.add(it.variable_id);
+      if (it.punto_id) enColaFoto.add(it.punto_id);
+    } else if (it.variable_id) {
+      enCola.add(it.variable_id);
+    }
   }
   const tomada = v => S.lecturas.some(l => l.variable_id === v.id) || enCola.has(v.id);
   const sinDato = v => {
@@ -480,6 +488,16 @@ async function pintarLista() {
     p.sinDato = p.vars.filter(sinDato);
     p.enCola = p.vars.some(v => enCola.has(v.id));
     p.opcPendientes = p.vars.filter(v => v.opcional && !tomada(v));
+
+    const lecturasPunto = p.vars.map(v => S.lecturas.find(l => l.variable_id === v.id)).filter(Boolean);
+    let nFotos = lecturasPunto.reduce((acc, l) => acc + (l.fotos?.length || 0), 0);
+    if (enColaFoto.has(p.punto.id) || p.vars.some(v => enColaFoto.has(v.id))) {
+      nFotos += 1;
+    }
+    p.nFotos = nFotos;
+    p.tieneFoto = nFotos > 0;
+    p.conDato = p.vars.some(tomada);
+    p.sinFoto = p.conDato && !p.tieneFoto;
   }
 
   const f = S.filtro;
@@ -493,6 +511,7 @@ async function pintarLista() {
   const pend = puntos.filter(p => p.faltan.length).length;
   const nSinDato = puntos.filter(p => p.sinDato.length).length;
   const nOpc = puntos.filter(p => !p.faltan.length && p.opcPendientes.length).length;
+  const nSinFoto = puntos.filter(p => p.sinFoto).length;
 
   S.filtrosEstados = S.filtrosEstados || new Set();
 
@@ -502,6 +521,7 @@ async function pintarLista() {
       if (S.filtrosEstados.has('pendientes') && p.faltan.length) return true;
       if (S.filtrosEstados.has('sindato') && p.sinDato.length) return true;
       if (S.filtrosEstados.has('opcionales') && p.opcPendientes.length) return true;
+      if (S.filtrosEstados.has('sinfoto') && p.sinFoto) return true;
       return false;
     });
   }
@@ -527,6 +547,8 @@ async function pintarLista() {
       () => toggleFiltro('sindato')) : null,
     nOpc && nOpc < total ? chip(`Con opcional sin cargar · ${nOpc}`, S.filtrosEstados.has('opcionales'),
       () => toggleFiltro('opcionales')) : null,
+    chip(`Sin foto · ${nSinFoto}`, S.filtrosEstados.has('sinfoto'),
+      () => toggleFiltro('sinfoto')),
     el('span', { class: 'crece' }),
     chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
     chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
@@ -577,7 +599,14 @@ async function pintarLista() {
 
       cont.append(el('button', { class: 'item ' + clase, onclick: () => abrirCaptura(p.punto) }, [
         el('span', { class: 'txt' }, [
-          el('span', { class: 'n', text: p.punto.nombre }),
+          el('span', { class: 'n' }, [
+            el('span', { class: 'n-nom', text: p.punto.nombre }),
+            p.tieneFoto ? el('span', {
+              class: 'badge-foto',
+              title: `${p.nFotos} foto(s) registrada(s)`,
+              html: `<svg class="mini-camara" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>${p.nFotos > 1 ? `<span class="n-fotos">${p.nFotos}</span>` : ''}`
+            }) : null
+          ]),
           el('span', { class: 'd', text: detalle })
         ]),
         el('span', { class: 'val', html: p.enCola

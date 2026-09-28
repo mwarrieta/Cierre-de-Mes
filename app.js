@@ -494,32 +494,46 @@ async function pintarLista() {
   const nSinDato = puntos.filter(p => p.sinDato.length).length;
   const nOpc = puntos.filter(p => !p.faltan.length && p.opcPendientes.length).length;
 
+  S.filtrosEstados = S.filtrosEstados || new Set();
+
   let items = puntos;
-  if (S.soloPendientes === 'pendientes') items = items.filter(p => p.faltan.length);
-  if (S.soloPendientes === 'sindato') items = items.filter(p => p.sinDato.length);
-  if (S.soloPendientes === 'opcionales') items = items.filter(p => p.opcPendientes.length);
+  if (S.filtrosEstados.size > 0) {
+    items = items.filter(p => {
+      if (S.filtrosEstados.has('pendientes') && p.faltan.length) return true;
+      if (S.filtrosEstados.has('sindato') && p.sinDato.length) return true;
+      if (S.filtrosEstados.has('opcionales') && p.opcPendientes.length) return true;
+      return false;
+    });
+  }
 
   cont.replaceChildren();
 
   const chip = (texto, activo, alTocar) => el('button', {
     class: 'chip-filtro' + (activo ? ' sel' : ''), text: texto, onclick: alTocar });
+    
+  const toggleFiltro = (f) => {
+    if (S.filtrosEstados.has(f)) S.filtrosEstados.delete(f);
+    else S.filtrosEstados.add(f);
+    pintarLista();
+  };
+
   cont.append(el('div', { class: 'fila filtros-terreno' }, [
-    chip(`Todos · ${total}`, !S.soloPendientes,
-      () => { S.soloPendientes = false; pintarLista(); }),
-    chip(`Pendientes · ${pend}`, S.soloPendientes === 'pendientes',
-      () => { S.soloPendientes = 'pendientes'; pintarLista(); }),
+    chip(`Todos · ${total}`, S.filtrosEstados.size === 0,
+      () => { S.filtrosEstados.clear(); pintarLista(); }),
+    chip(`Pendientes · ${pend}`, S.filtrosEstados.has('pendientes'),
+      () => toggleFiltro('pendientes')),
     // "No se pudo leer" no es pendiente ni es dato: es su propia cola de trabajo.
-    nSinDato ? chip(`No se pudo leer · ${nSinDato}`, S.soloPendientes === 'sindato',
-      () => { S.soloPendientes = 'sindato'; pintarLista(); }) : null,
-    nOpc && nOpc < total ? chip(`Con opcional sin cargar · ${nOpc}`, S.soloPendientes === 'opcionales',
-      () => { S.soloPendientes = 'opcionales'; pintarLista(); }) : null,
+    nSinDato ? chip(`No se pudo leer · ${nSinDato}`, S.filtrosEstados.has('sindato'),
+      () => toggleFiltro('sindato')) : null,
+    nOpc && nOpc < total ? chip(`Con opcional sin cargar · ${nOpc}`, S.filtrosEstados.has('opcionales'),
+      () => toggleFiltro('opcionales')) : null,
     el('span', { class: 'crece' }),
     chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
     chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
   ].filter(Boolean)));
 
   if (!items.length) {
-    cont.append(el('p', { class: 'vacio', text: S.soloPendientes && total
+    cont.append(el('p', { class: 'vacio', text: S.filtrosEstados.size > 0 && total
       ? 'No queda nada con este filtro. Buen trabajo.'
       : 'Nada coincide con la búsqueda.' }));
     return;
@@ -817,7 +831,7 @@ async function abrirCaptura(entrada) {
       (async () => {
         for (const l of conFoto) for (const f of l.fotos) {
           const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
-          if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl, class: 'miniatura',
+          if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl,
             alt: 'Foto guardada de esta lectura' }));
         }
       })();

@@ -108,8 +108,8 @@ punto:
 - **Qué se lee en este punto**, con casillas: energía importada (kWh+), energía exportada
   (kWh-), horas de marcha, volumen de agua (m³), volumen de gas (m³) y litros. Para la energía
   se elige cómo la muestra el display: *kWh*, *MWh* o *MWh y kWh en dos campos*. El informe
-  siempre queda en kWh y la app convierte sola. Si hay importada y exportada, se marca cuál
-  **va al informe**; la otra se guarda pero no suma. *Opcional* = aparece en terreno pero no
+  siempre queda en kWh y la app convierte sola. Cada lectura marcada puede ir o no **al
+  informe** (pueden ir varias del mismo punto); la que no va se guarda igual. *Opcional* = aparece en terreno pero no
   cuenta como pendiente. Una lectura que se desmarca no se borra (tiene historia): queda
   inactiva. Lo que no calza en la lista se configura en *Otras lecturas (avanzado)*.
 - Instrucción de lectura (aparece arriba al abrir el punto en terreno).
@@ -161,11 +161,10 @@ El punto es lo permanente: la serie histórica cuelga del punto, no del medidor.
   cuadra con la historia del punto.
 - **Validación:** fotos y dato lado a lado, corrección con motivo, auditoría completa.
 - **Consumos e informes:** mes, año o rango por grupo; vista para imprimir y descarga en Excel.
-  **Qué incluir**: *Lo principal* (una lectura por punto, la que va al consumo) o las mediciones
-  que se elijan, varias a la vez: kWh+, kWh-, horas, agua, gas, litros, otras. Por ejemplo
-  kWh+ y horas para variadores y partidores suaves. Las sumas de grupo se hacen **por
-  medición** (nunca se suma kWh+ con kWh- ni energía con horas) y el Excel deja anotado en
-  *Calidad del dato* qué mediciones incluyó.
+  Cada punto aporta las lecturas marcadas **"Va al informe"** en su ficha: un medidor puede
+  mandar kWh+ y kWh-, un variador o partidor suave kWh+ y horas, un FIT m³. Así un grupo que
+  mezcla equipos distintos no queda con columnas vacías. Las sumas de grupo se hacen **por
+  medición** (nunca se suma kWh+ con kWh- ni energía con horas).
 - **Avisos:** lista por grupo y **PDF de avisos pendientes** en blanco y negro para adjuntar a
   los informes (lo genera el navegador con *Guardar como PDF*).
 - **Casa de Fuerza:** generadores (con ubicación en texto libre) y recargas de combustible.

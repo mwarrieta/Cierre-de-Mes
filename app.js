@@ -894,8 +894,7 @@ async function abrirCaptura(entrada) {
 
     const etiqueta = vars.length === 1 ? `Lectura del display · ${ud}` : `${v.nombre} · ${ud}`;
     const rol = vars.length === 1 ? null
-      : (v.principal ? 'principal · va al informe'
-                     : 'secundaria' + (v.opcional ? ' · opcional' : ''));
+      : ((v.en_informe ?? v.principal) ? 'va al informe' : 'solo se registra') + (v.opcional ? ' · opcional' : '');
 
     // Compacto: nombre y lectura anterior en una línea, la unidad dentro del campo.
     const conUnidad = (input, unidad) => el('div', { class: 'campo-num' },
@@ -1772,10 +1771,9 @@ async function vistaConsumos(c) {
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
-    grupo: '', medir: 'principales'
+    grupo: ''
   };
   const R = S.rep;
-  if (!R.medir) R.medir = 'principales';
 
   const selModo = el('select', { onchange: e => { R.modo = e.target.value; pintarFiltros(); cargar(); } });
   for (const [k, v] of Object.entries(MODOS))
@@ -1788,39 +1786,22 @@ async function vistaConsumos(c) {
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
-  // Qué mediciones entran: "Lo principal" (una por punto) o las que se elijan.
-  const hayMedicion = new Set(S.catalogo.variables.map(v => medicionDe(v.nombre, v.unidad_reporte)));
-  const zonaMedir = el('div', { class: 'filtros-terreno chips-medir' });
-  function pintarMedir() {
-    const esPpal = R.medir === 'principales';
-    const chip = (txt, sel, fn, titulo) => el('button', { class: 'chip-filtro' + (sel ? ' sel' : ''), text: txt, title: titulo || '', onclick: fn });
-    poner(zonaMedir,
-      chip('Lo principal', esPpal, () => { R.medir = 'principales'; pintarMedir(); cargar(); },
-        'Una lectura por punto: la que va al consumo'),
-      ...MEDICIONES.filter(m => hayMedicion.has(m.k)).map(m =>
-        chip(m.corto, !esPpal && R.medir.includes(m.k), () => {
-          let sel = esPpal ? [] : [...R.medir];
-          sel = sel.includes(m.k) ? sel.filter(x => x !== m.k) : [...sel, m.k];
-          R.medir = sel.length ? MEDICIONES.map(x => x.k).filter(k => sel.includes(k)) : 'principales';
-          pintarMedir(); cargar();
-        }, m.etiqueta)));
-  }
-  pintarMedir();
   const zonaFiltros = el('div', { class: 'fila crece' });
   const barra = el('div', { class: 'fila seccion' }, [
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
     el('label', { text: 'Grupo' }, [selGrupo])
   ]);
-  const barraMedir = el('div', { class: 'seccion' }, [
-    el('p', { class: 'ayuda', style: 'margin:0 0 4px', text: 'Qué incluir en el informe (puedes elegir varias):' }), zonaMedir]);
+  const barraMedir = el('p', { class: 'ayuda seccion', text:
+    'Cada punto aporta las lecturas marcadas "Va al informe" en su ficha (Configuración → Puntos de medición). ' +
+    'Las sumas de cada grupo se separan por medición: kWh+, kWh-, horas, m³…' });
   const acciones = el('div', { class: 'fila entre seccion' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
     el('span', { class: 'ayuda', id: 'planilla-paso' }),
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo, medir: R.medir }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1830,7 +1811,7 @@ async function vistaConsumos(c) {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
         await descargarPlanilla(primero, primerDiaDelMes(new Date()),
-          { grupo: R.grupo, medir: R.medir });
+          { grupo: R.grupo });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1878,16 +1859,14 @@ async function vistaConsumos(c) {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('punto');
     if (R.grupo) q = q.contains('grupos', [R.grupo]);
-    // Con "lo principal" se filtra en el servidor; si se eligen mediciones, acá.
-    if (R.medir === 'principales') q = q.eq('principal', true);
+    q = q.eq('en_informe', true);
     const r0 = await q;
     if (r0.error) { zona.replaceChildren(el('p', { class: 'error', text: r0.error.message })); return; }
-    const data = r0.data.filter(f => incluyeMedicion(R.medir, f.variable, f.unidad_reporte, f.principal))
-                        .sort(ordenFilaInforme);
+    const data = r0.data.sort(ordenFilaInforme);
 
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
-      incluyeMedicion(R.medir, v.nombre, v.unidad_reporte, v.principal) &&
+      (v.en_informe ?? v.principal) &&
       (!R.grupo || (v.punto.grupos || []).includes(R.grupo)));
     const conDato = new Set(data.map(f => f.variable_id));
     // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
@@ -1911,7 +1890,7 @@ async function vistaConsumos(c) {
     } catch { /* sin avisos, el informe igual sirve */ }
 
     const bandas = await DB.bandasCache().catch(() => ({}));
-    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, medir: R.medir };
+    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas };
     poner(zona, ...armarInforme(data, desde, hasta, { faltantes, noLeidos, avisos, bandas }));
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
@@ -1923,10 +1902,9 @@ async function vistaConsumos(c) {
   cargar();
 }
 
-/* ---------- qué mediciones entran al informe ----------
-   "Lo principal" = una lectura por punto (la que va al consumo), como siempre.
-   O bien se eligen mediciones: kWh+, kWh-, horas, agua, gas, litros, otras; por
-   ejemplo kWh+ y horas para un variador o un partidor suave.
+/* ---------- mediciones del informe ----------
+   Qué lecturas van al informe se decide en cada punto ("Va al informe", en_informe):
+   un medidor puede mandar kWh+ y kWh-, un variador kWh+ y horas, un FIT m³.
    Las sumas de grupo se hacen POR MEDICIÓN: sumar kWh+ con kWh- (o kWh con horas)
    daría un número sin significado. */
 const MEDICIONES = [
@@ -1948,12 +1926,6 @@ function claveSuma(variable, unidad) {
   const k = medicionDe(variable, unidad);
   return k === 'otras' ? `${variable} · ${UNIDAD[unidad] || unidad}` : MEDICIONES.find(m => m.k === k).etiqueta;
 }
-function incluyeMedicion(medir, nombre, unidad, principal) {
-  if (!medir || medir === 'principales') return principal !== false;
-  return medir.includes(medicionDe(nombre, unidad));
-}
-const textoMedir = medir => (!medir || medir === 'principales') ? 'lo principal de cada punto'
-  : medir.map(k => MEDICIONES.find(m => m.k === k)?.corto || k).join(' + ');
 // Orden dentro de un punto: importada, exportada, el resto.
 const rangoNombre = nombre => rangoVar({ nombre });
 const ordenFilaInforme = (a, b) => compararGrupos(a.grupo, b.grupo) ||
@@ -2120,7 +2092,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
    archiva, y tiene que leerse como una tabla, no como una foto de la pantalla. */
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
-  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {}, medir } = S.repDatos;
+  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {} } = S.repDatos;
   const R = S.rep;
 
   const meses = [...new Set(filas.map(f => f.mes))].sort();
@@ -2193,7 +2165,7 @@ async function imprimirInforme() {
     el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
       el('td', {}, [
         el('h1', { text: 'Consumos · ' + titulo }),
-        el('p', { text: `${periodo} · ${textoMedir(medir)}` })
+        el('p', { text: periodo })
       ]),
       el('td', { class: 'num', html:
         `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
@@ -2324,9 +2296,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('mes').order('punto');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    if (!filtros.medir || filtros.medir === 'principales') q = q.eq('principal', true);
-    return q;
-  }).then(rows => rows.filter(c => incluyeMedicion(filtros.medir, c.variable, c.unidad_reporte, c.principal)));
+    return q.eq('en_informe', true);
+  });
   if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
 
   paso('Consultando lecturas…');
@@ -2465,7 +2436,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     ['Generado', new Date().toLocaleString('es-CL')],
     ['Generado por', S.usuario.nombre],
     ['Filtro de grupo', filtros.grupo || 'todos'],
-    ['Mediciones incluidas', textoMedir(filtros.medir)],
+    ['Lecturas incluidas', 'las marcadas "Va al informe" en cada punto'],
     ['Puntos', new Set(cons.map(c => c.punto_id)).size],
     ['Valores de consumo', cons.length],
     ['Lecturas incluidas', lect.length],
@@ -3187,22 +3158,19 @@ function armarConfigLecturas(existentes, punto) {
       t, ex,
       quiere: !!(ex && ex.activo),
       display: ex ? displayDe(ex) : 'kWh',
-      principal: ex ? !!ex.principal : !t.opcionalPorDefecto,
+      informe: ex ? !!ex.en_informe : !t.opcionalPorDefecto,
       opcional: ex ? !!ex.opcional : !!t.opcionalPorDefecto
     };
   });
   const otras = existentes.filter(v => !usadas.has(v.id));
   const nuevo = !existentes.length;
   // Punto nuevo: lo más común es un medidor de energía con importada.
-  if (nuevo) { filas[0].quiere = true; filas[0].principal = true; }
+  if (nuevo) { filas[0].quiere = true; filas[0].informe = true; }
 
   const zona = el('div', { class: 'config-lecturas' });
   function pintar() {
-    const energiaMarcada = filas.filter(r => r.t.energia && r.quiere);
-    // Si solo una de energía está marcada, esa va al informe.
-    if (energiaMarcada.length === 1) energiaMarcada[0].principal = true;
     poner(zona,
-      el('p', { class: 'ayuda', text: 'Marca lo que se lee en este punto. El informe siempre queda en kWh, m³, L u horas: si el display muestra MWh, la app convierte sola.' }),
+      el('p', { class: 'ayuda', text: 'Marca lo que se lee en este punto y, de eso, lo que va al informe (puede ser más de una: por ejemplo kWh+ y horas en un variador). El informe queda en kWh, m³, L u horas: si el display muestra MWh, la app convierte sola.' }),
       ...filas.map(r => {
         const chk = el('input', { type: 'checkbox', checked: r.quiere || null,
           onchange: e => { r.quiere = e.target.checked; pintar(); } });
@@ -3211,13 +3179,10 @@ function armarConfigLecturas(existentes, punto) {
           const sel = el('select', { onchange: e => { r.display = e.target.value; } });
           for (const [v, txt] of DISPLAY_ENERGIA) sel.append(el('option', { value: v, selected: r.display === v || null, text: txt }));
           extra.push(el('label', { class: 'mini', text: 'El display muestra' }, [sel]));
-          if (energiaMarcada.length > 1) {
-            extra.push(el('label', { class: 'fila mini' }, [
-              el('input', { type: 'radio', name: 'va-informe', checked: r.principal || null,
-                onchange: () => { for (const o of filas) if (o.t.energia) o.principal = (o === r); } }),
-              el('span', { text: 'Va al informe' })]));
-          }
         }
+        if (r.quiere) extra.push(el('label', { class: 'fila mini' }, [
+          el('input', { type: 'checkbox', checked: r.informe || null, onchange: e => { r.informe = e.target.checked; } }),
+          el('span', { text: 'Va al informe' })]));
         if (r.quiere) extra.push(el('label', { class: 'fila mini' }, [
           el('input', { type: 'checkbox', checked: r.opcional || null, onchange: e => { r.opcional = e.target.checked; } }),
           el('span', { text: 'Opcional', title: 'No cuenta como pendiente del mes' })]));
@@ -3245,22 +3210,28 @@ function armarConfigLecturas(existentes, punto) {
   return {
     nodo: zona,
     hayAlguna: () => filas.some(r => r.quiere) || otras.some(v => v.activo),
-    // Aplica los cambios en el orden que respeta "una principal por unidad":
-    // primero lo que se apaga o deja de ser principal, después el resto.
+    // "Va al informe" (en_informe) lo decide la persona y puede haber varias.
+    // "Principal" es interno: una por unidad, la que se muestra en la lista de terreno
+    // y a la que se cuelgan fotos y avisos. Se calcula sola: la primera que va al
+    // informe en cada unidad (importada antes que exportada).
+    // Se aplica en un orden que respeta "una principal por unidad": primero lo que se
+    // apaga o deja de ser principal, después el resto.
     async aplicar(puntoId) {
       const ops = [];
-      // Dos tipos marcados en la misma unidad (agua y gas en m³): solo uno puede ser principal.
       const principalPorUnidad = {};
-      for (const r of filas) {
-        if (!r.quiere) continue;
-        const p = r.t.energia ? r.principal : !principalPorUnidad[r.t.reporte];
-        r.principalFinal = p && !principalPorUnidad[r.t.reporte];
-        if (r.principalFinal) principalPorUnidad[r.t.reporte] = true;
+      for (const v of otras) if (v.activo && v.principal) principalPorUnidad[v.unidad_reporte] = true;
+      for (const pasada of [true, false]) {
+        for (const r of filas) {
+          if (!r.quiere || r.principalFinal !== undefined && r.principalFinal) continue;
+          if (pasada && !r.informe) continue;
+          r.principalFinal = !principalPorUnidad[r.t.reporte];
+          if (r.principalFinal) principalPorUnidad[r.t.reporte] = true;
+        }
       }
       for (const r of filas) {
         const d = r.t.energia ? displayA(r.display) : { unidad_display: r.t.reporte, formato_lectura: 'simple' };
         if (!r.quiere) {
-          if (r.ex && r.ex.activo) ops.push({ orden: 0, args: { ...base(r.ex), p_principal: false, p_activo: false } });
+          if (r.ex && r.ex.activo) ops.push({ orden: 0, args: { ...base(r.ex), p_principal: false, p_activo: false }, informe: false });
           continue;
         }
         const args = {
@@ -3273,14 +3244,25 @@ function armarConfigLecturas(existentes, punto) {
         if (r.ex) {
           const igual = r.ex.activo && r.ex.unidad_display === d.unidad_display && r.ex.formato_lectura === d.formato_lectura &&
             !!r.ex.principal === r.principalFinal && !!r.ex.opcional === r.opcional;
-          if (igual) continue;
-          ops.push({ orden: r.principalFinal ? 2 : 1, args });
-        } else ops.push({ orden: 3, args });
+          if (igual) {
+            if (!!r.ex.en_informe !== r.informe) ops.push({ orden: 4, soloInforme: r.ex.id, informe: r.informe });
+            continue;
+          }
+          ops.push({ orden: r.principalFinal ? 2 : 1, args, informe: r.informe });
+        } else ops.push({ orden: 3, args, informe: r.informe });
       }
       for (const o of ops.sort((a, b) => a.orden - b.orden)) {
-        const { error } = await sb.rpc('guardar_variable', o.args);
-        if (error) throw new Error(/variables_una_principal_por_unidad/.test(error.message)
-          ? 'Hay dos lecturas principales en la misma unidad. Revisa cuál va al informe.' : error.message);
+        let id = o.soloInforme;
+        if (!id) {
+          const { data, error } = await sb.rpc('guardar_variable', o.args);
+          if (error) throw new Error(/variables_una_principal_por_unidad/.test(error.message)
+            ? 'Hay dos lecturas principales en la misma unidad: revisa las "Otras lecturas" de este punto.' : error.message);
+          id = data || o.args.p_id;
+        }
+        if (id) {
+          const { error: e2 } = await sb.from('variables').update({ en_informe: o.informe }).eq('id', id);
+          if (e2) throw e2;
+        }
       }
       return ops.length;
       function base(v) {
@@ -3300,7 +3282,7 @@ async function editarPunto(puntoLista) {
     sb.from('tipos_equipo').select('id, nombre').order('nombre'),
     nuevo ? Promise.resolve({ data: [] }) : sb.from('grupo_puntos').select('grupo_id').eq('punto_id', puntoLista.id),
     nuevo ? Promise.resolve({ data: [] }) : sb.from('variables')
-      .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
+      .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional, en_informe')
       .eq('punto_id', puntoLista.id).order('id')
   ]);
   if (fila) punto = { ...puntoLista, ...fila };
@@ -3418,7 +3400,7 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
       .is('punto_actual_id', null).eq('activo', true).order('tag'),
     sb.from('v_puntos').select('equipo_id, tag, marca, modelo, n_serie, certificado, vence_certificado, equipo_desde, tipo_equipo_id')
       .eq('id', punto.id).maybeSingle(),
-    sb.from('variables').select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
+    sb.from('variables').select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional, en_informe')
       .eq('punto_id', punto.id).eq('activo', true)
   ]);
   // La unidad del display es del MEDIDOR: si el nuevo muestra MWh y el viejo kWh y
@@ -3529,6 +3511,7 @@ function editarVariable(x, punto, alGuardar) {
     dec: el('input', { type: 'number', min: '0', max: '3', value: String(x?.decimales_display ?? 0) }),
     formato: el('select'),
     principal: el('input', { type: 'checkbox', checked: (x ? x.principal : true) || null }),
+    informe: el('input', { type: 'checkbox', checked: (x ? x.en_informe : true) || null }),
     opcional: el('input', { type: 'checkbox', checked: (x ? x.opcional : false) || null }),
     activo: el('input', { type: 'checkbox', checked: (x ? x.activo : true) || null })
   };
@@ -3551,8 +3534,10 @@ function editarVariable(x, punto, alGuardar) {
       'escribe tal cual se lee en el equipo.' }),
     el('label', { text: 'Decimales del display' }, [f.dec]),
     el('label', { text: 'Formato de la lectura' }, [f.formato]),
+    el('label', { class: 'fila' }, [f.informe,
+      el('span', { text: 'Va al informe (puede haber varias por punto)' })]),
     el('label', { class: 'fila' }, [f.principal,
-      el('span', { text: 'Es la lectura principal (la que va al consumo del informe)' })]),
+      el('span', { text: 'Es la principal de su unidad (la que se muestra en la lista de terreno)' })]),
     el('label', { class: 'fila' }, [f.opcional,
       el('span', { text: 'Opcional (se puede cargar, pero no cuenta como pendiente del mes)' })]),
     el('label', { class: 'fila' }, [f.activo,
@@ -3561,7 +3546,7 @@ function editarVariable(x, punto, alGuardar) {
       text: nuevo ? 'Crear la lectura' : 'Guardar', onclick: async e => {
         if (!f.nombre.value.trim()) return toast('Ponle un nombre', true);
         e.target.disabled = true;
-        const { error } = await sb.rpc('guardar_variable', {
+        const { data: idVar, error } = await sb.rpc('guardar_variable', {
           p_id: x?.id ?? null, p_punto_id: punto.id, p_nombre: f.nombre.value.trim(),
           p_unidad_display: f.display.value, p_unidad_reporte: f.reporte.value,
           p_decimales: Number(f.dec.value || 0), p_formato: f.formato.value,
@@ -3571,9 +3556,11 @@ function editarVariable(x, punto, alGuardar) {
         e.target.disabled = false;
         if (error) {
           return toast(/variables_una_principal_por_unidad/.test(error.message)
-            ? 'Ya hay otra lectura principal en esa unidad para este punto. Marca esta como secundaria, o cambia la otra.'
+            ? 'Ya hay otra lectura principal en esa unidad para este punto. Desmarca "principal" aquí (puede ir igual al informe), o cambia la otra.'
             : error.message, true);
         }
+        const { error: e2 } = await sb.from('variables').update({ en_informe: f.informe.checked }).eq('id', idVar || x?.id);
+        if (e2) return toast(e2.message, true);
         cerrarModal();
         await DB.descargarCatalogo().catch(() => {});
         S.catalogo = await DB.catalogo();

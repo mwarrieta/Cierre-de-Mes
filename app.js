@@ -109,13 +109,35 @@ function toast(msg, malo = false) {
   tostadaTimer = setTimeout(() => { t.hidden = true; }, malo ? 5000 : 2600);
 }
 
-function modal(titulo, nodo) {
+/* El modal es uno solo. Opciones:
+   - completo: ocupa toda la pantalla (la captura en terreno).
+   - subtitulo: segunda línea bajo el título.
+   - alPedirCerrar: qué hacer cuando la persona toca ✕, el fondo o Escape. Sirve para
+     preguntar antes de perder lo escrito. Sin esta opción, se cierra directo. */
+let _modalOpts = {};
+function modal(titulo, nodo, opts = {}) {
+  _modalOpts = opts || {};
   $('#modal-titulo').textContent = titulo;
-  const cuerpo = $('#modal-cuerpo');
-  cuerpo.replaceChildren(nodo);
+  const sub = $('#modal-subtitulo');
+  sub.textContent = _modalOpts.subtitulo || '';
+  sub.hidden = !_modalOpts.subtitulo;
+  $('#modal').classList.toggle('completo', !!_modalOpts.completo);
+  $('#modal-cuerpo').replaceChildren(...[].concat(nodo));
   $('#modal').hidden = false;
+  document.body.classList.add('con-modal');
 }
-function cerrarModal() { $('#modal').hidden = true; $('#modal-cuerpo').replaceChildren(); }
+function cerrarModal() {
+  _modalOpts = {};
+  $('#modal').hidden = true;
+  $('#modal').classList.remove('completo');
+  $('#modal-cuerpo').replaceChildren();
+  document.body.classList.remove('con-modal');
+}
+function pedirCerrarModal() {
+  if ($('#modal').hidden) return;
+  const f = _modalOpts.alPedirCerrar;
+  if (f) f(); else cerrarModal();
+}
 
 // El orden de los grupos es parte del formato del informe: viene de la columna
 // `orden` de la tabla grupos, editable en Configuración → Grupos. Los grupos
@@ -308,9 +330,19 @@ function menuAbierto(abrir) {
 }
 $('#btn-menu').addEventListener('click', () => menuAbierto(!$('#menu').classList.contains('abierto')));
 $('#velo').addEventListener('click', () => menuAbierto(false));
-$('#modal-cerrar').addEventListener('click', cerrarModal);
-$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') cerrarModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarModal(); });
+$('#modal-cerrar').addEventListener('click', pedirCerrarModal);
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') pedirCerrarModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') pedirCerrarModal(); });
+
+// Sin zoom con los dedos: la app se usa en terreno y una pantalla ampliada por
+// accidente es difícil de volver a su tamaño. iOS ignora user-scalable=no del
+// viewport, por eso además se cortan los gestos de pellizco aquí.
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+}
+document.addEventListener('touchmove', e => {
+  if (e.touches && e.touches.length > 1) e.preventDefault();
+}, { passive: false });
 
 // ------------------------------------------------------------------ tema claro / oscuro
 function esTemaOscuroActivo() {
@@ -439,10 +471,14 @@ function vistaTerreno(c) {
       onclick: () => escanearYAbrir() })
   ]);
   // La confusión clásica: creer que la toma del 1 de septiembre "es" septiembre.
-  const explicacion = el('p', { class: 'ayuda', text:
-    `Estás tomando la lectura de ${nombrePeriodo(S.periodo)}, que cierra el consumo de ` +
-    `${nombrePeriodo(mesAnterior(S.periodo))}: el totalizador de hoy menos el del mes pasado. ` +
-    'Puedes adelantarla los últimos días del mes; la app guarda la fecha real en que la tomaste.' });
+  // Una línea a la vista y el detalle plegado: el párrafo entero empujaba la lista.
+  const explicacion = el('details', { class: 'explica-periodo' }, [
+    el('summary', { text: `Cierra el consumo de ${nombrePeriodo(mesAnterior(S.periodo))}` }),
+    el('p', { class: 'ayuda', text:
+      `El totalizador de hoy menos el del mes pasado da el consumo de ` +
+      `${nombrePeriodo(mesAnterior(S.periodo))}. Puedes adelantar la toma los últimos días ` +
+      'del mes; la app guarda la fecha real en que la tomaste.' })
+  ]);
   const lista = el('div', { id: 'lista-puntos' });
   c.append(cabecera, explicacion, buscador, lista);
   pintarLista();
@@ -543,7 +579,20 @@ async function pintarLista() {
     pintarLista();
   };
 
-  cont.append(el('div', { class: 'fila filtros-terreno' }, [
+  // Cuánto falta, de un vistazo.
+  const hechos = total - pend;
+  const nCola = puntos.filter(p => p.enCola).length;
+  cont.append(el('div', { class: 'avance' }, [
+    el('div', { class: 'avance-txt' }, [
+      el('b', { text: pend ? `Faltan ${pend} de ${total}` : `Todo tomado · ${total} puntos` }),
+      nCola ? el('span', { class: 'pill acento', text: `${nCola} por enviar` }) : null
+    ]),
+    el('div', { class: 'avance-barra' }, [
+      el('span', { style: `width:${total ? Math.round(100 * hechos / total) : 0}%` })
+    ])
+  ]));
+
+  cont.append(el('div', { class: 'filtros-terreno' }, [
     chip(`Todos · ${total}`, S.filtrosEstados.size === 0,
       () => { S.filtrosEstados.clear(); pintarLista(); }),
     chip(`Pendientes · ${pend}`, S.filtrosEstados.has('pendientes'),
@@ -717,7 +766,7 @@ async function abrirCaptura(entrada) {
       ])
     ])));
     const caben = cupoFotos();
-    btnCamara.textContent = nuevasFotos.length ? '📷 Tomar otra foto' : '📷 Tomar foto';
+    btnCamara.textContent = nuevasFotos.length ? '📷 Tomar otra foto' : '📷 Tomar foto del display';
     btnCamara.disabled = btnGaleria.disabled = caben === 0;
     pesoFoto.textContent = nuevasFotos.length
       ? `${base + nuevasFotos.length} de ${MAX_FOTOS} fotos · ${caben ? `puedes agregar ${caben} más` : 'llegaste al máximo'}.`
@@ -747,14 +796,23 @@ async function abrirCaptura(entrada) {
       procesandoFotos = false;
       pintarFotos();
     }
+    // Primera foto lista: el paso siguiente es escribir la lectura.
+    const primero = campos[0] && (campos[0].doble ? campos[0].mwh : campos[0].valor);
+    if (primero && primero.value === '' && !primero.disabled) {
+      primero.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => primero.focus({ preventScroll: true }), 350);
+    }
   }
   // Se copia la lista ANTES de vaciar el input: así se puede volver a elegir el mismo archivo.
   for (const input of [inputCamara, inputGaleria]) {
     input.addEventListener('change', e => { const l = [...e.target.files]; e.target.value = ''; agregarFotos(l); });
   }
+  btnCamara.className = 'btn primario grande';
+  btnGaleria.className = 'btn chico';
   cajaFoto.append(
-    el('div', { class: 'fila' }, [btnCamara, btnGaleria]),
-    inputCamara, inputGaleria, galeriaFotos, pesoFoto);
+    btnCamara,
+    inputCamara, inputGaleria, galeriaFotos,
+    el('div', { class: 'fila entre' }, [pesoFoto, btnGaleria]));
 
   /* ---- un bloque de campos por cada lectura del punto ---- */
   const campos = [];        // { v, doble, valor, mwh, kwh, banda, yaHay, valorActual() }
@@ -772,12 +830,14 @@ async function abrirCaptura(entrada) {
     const evaluar = () => evaluarCampo(c);
     const paso = v.decimales_display > 0 ? '0.' + '0'.repeat(v.decimales_display - 1) + '1' : '1';
 
+    // Sin "0" de ejemplo: se confundía con un cero escrito y el campo quedaba vacío.
+    // Si la lectura es cero, hay que escribir el 0.
     c.valor = doble ? null : el('input', { type: 'number', inputmode: 'decimal',
-      class: 'dato-grande', step: paso, placeholder: '0', oninput: evaluar });
+      class: 'dato-grande', step: paso, placeholder: 'Escribir lectura', oninput: evaluar });
     c.mwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
-      placeholder: 'MWh', oninput: evaluar }) : null;
+      placeholder: 'Escribir', oninput: evaluar }) : null;
     c.kwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
-      placeholder: 'kWh', oninput: evaluar }) : null;
+      placeholder: 'Escribir', oninput: evaluar }) : null;
 
     c.sinDato = el('input', { type: 'checkbox', onchange: e => {
       const off = e.target.checked;
@@ -808,22 +868,28 @@ async function abrirCaptura(entrada) {
       : (v.principal ? 'principal · va al informe'
                      : 'secundaria' + (v.opcional ? ' · opcional' : ''));
 
+    // Compacto: nombre y lectura anterior en una línea, la unidad dentro del campo.
+    const conUnidad = (input, unidad) => el('div', { class: 'campo-num' },
+      [input, el('span', { class: 'unidad', text: unidad })]);
     zonaLecturas.append(el('div', { class: 'lectura-bloque' }, [
-      el('div', { class: 'anterior' }, [
-        el('span', { html: `<b>${esc(vars.length === 1 ? punto.nombre : v.nombre)}</b>` +
-          (rol ? `<br><small>${esc(rol)}</small>` : '') }),
-        el('span', { html: anterior
-          ? `Anterior<br><b>${num(anterior.valor)} ${u}</b><br><small>${fechaCorta(anterior.fecha_lectura)}</small>`
+      el('div', { class: 'lectura-cab' }, [
+        el('div', { class: 'lectura-nombre' }, [
+          el('b', { text: vars.length === 1 ? 'Lectura del display' : v.nombre }),
+          rol ? el('small', { text: rol }) : null
+        ]),
+        el('div', { class: 'lectura-anterior', html: anterior
+          ? `<small>Anterior · ${fechaCorta(anterior.fecha_lectura)}</small><b>${num(anterior.valor)} ${esc(u)}</b>`
           : '<small>Sin lectura anterior</small>' })
       ]),
       yaHay ? el('p', { class: 'ayuda', text:
         `Ya cargada este mes: ${yaHay.sin_dato ? 'sin dato' : num(yaHay.valor) + ' ' + u} · ${quien(yaHay)}.` +
         (yaHay.tomada_por === S.usuario.id ? ' Si cambias el número, se corrige.'
                                            : ' La tomó otra persona; cambiarla pide motivo.') }) : null,
-      el('label', { text: doble ? etiqueta + ' · MWh' : etiqueta }, [doble ? c.mwh : c.valor]),
-      doble ? el('label', { text: 'Lectura del display · kWh' }, [c.kwh]) : null,
+      doble
+        ? el('div', { class: 'doble' }, [conUnidad(c.mwh, 'MWh'), conUnidad(c.kwh, 'kWh')])
+        : conUnidad(c.valor, ud),
       avisoBanda,
-      el('label', { class: 'fila' },
+      el('label', { class: 'fila sin-dato' },
         [c.sinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })])
     ]));
     campos.push(c);
@@ -862,22 +928,23 @@ async function abrirCaptura(entrada) {
             a.descripcion ? el('small', { text: ' · ' + a.descripcion }) : null
           ].filter(Boolean)),
           el('button', { class: 'btn chico', text: 'Quitar',
-            onclick: () => { avisos.splice(i, 1); pintarAvisos(); } })
+            onclick: () => { avisos.splice(i, 1); pintarAvisos(); if (typeof pintarResumenExtras === 'function') pintarResumenExtras(); } })
         ]))
       : [el('p', { class: 'ayuda', text: 'Sin avisos. Puedes agregar los que necesites.' })]));
   };
   pintarAvisos();
 
+  // "Otra" va primero y elegida: lo normal es describir lo que se vio con palabras.
   const selAviso = el('select');
-  selAviso.append(el('option', { value: '', text: '— elegir categoría —' }));
+  selAviso.append(el('option', { value: 'otra', text: 'Otra · la describo abajo', selected: '' }));
   for (const a of S.catalogo.catalogoAvisos) {
     if (/^Otro/i.test(a.categoria)) continue;
     selAviso.append(el('option', { value: a.id, text: a.categoria }));
   }
-  selAviso.append(el('option', { value: 'otra', text: 'Otra · la describo abajo' }));
+  selAviso.value = 'otra';
   const txtAviso = el('textarea', { placeholder: 'Qué viste. Esto queda como descripción del aviso.' });
+  const avisoAMedias = () => !!txtAviso.value.trim() || selAviso.value !== 'otra';
   const agregarAviso = () => {
-    if (!selAviso.value) return toast('Elige la categoría del aviso', true);
     const texto = txtAviso.value.trim();
     if (selAviso.value === 'otra' && !texto) return toast('Escribe qué pasó: elegiste "Otra"', true);
     const otra = S.catalogo.catalogoAvisos.find(a => /^Otro/i.test(a.categoria));
@@ -886,14 +953,14 @@ async function abrirCaptura(entrada) {
       categoriaTexto: selAviso.selectedOptions[0].text,
       descripcion: texto || null
     });
-    selAviso.value = ''; txtAviso.value = '';
+    selAviso.value = 'otra'; txtAviso.value = '';
     pintarAvisos();
     toast('Aviso agregado · se envía junto con la lectura');
   };
 
-  const obs = el('textarea', { placeholder: 'Notas de esta visita al punto. Se guardan con la lectura.' });
+  // La "observación de la visita" se eliminó: era lo mismo que un aviso de categoría
+  // "Otra". Las observaciones antiguas se siguen viendo (abajo y en Avisos).
   const yaConObs = campos.find(c => c.yaHay && c.yaHay.observacion);
-  if (yaConObs) obs.value = yaConObs.yaHay.observacion;
 
   /* ---- fotos ya guardadas de este punto ---- */
   const zonaExistente = el('div');
@@ -906,8 +973,8 @@ async function abrirCaptura(entrada) {
       (async () => {
         for (const l of conFoto) for (const f of fotosOrdenadas(l)) {
           const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
-          if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl,
-            alt: 'Foto guardada de esta lectura' }));
+          if (data?.signedUrl) fotos.append(el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
+            [el('img', { class: 'miniatura', src: data.signedUrl, alt: 'Foto guardada de esta lectura' })]));
         }
       })();
     } else {
@@ -916,39 +983,54 @@ async function abrirCaptura(entrada) {
   }
 
   /* ---- verificación del medidor por QR ---- */
-  const zonaMedidor = el('div');
+  const zonaMedidor = el('div', { class: 'zona-medidor' });
   poner(zonaMedidor, el('button', { class: 'btn chico', text: 'Verificar el medidor con el QR',
     onclick: () => verificarMedidor(vars[0], zonaMedidor) }));
 
-  const cuerpo = el('div', { class: 'captura' }, [
-    el('div', { class: 'cabecera-punto' }, [
-      el('b', { text: punto.nombre }),
-      el('small', { text: punto.sitio.nombre + (equipo.tag ? ' · ' + equipo.tag : '') +
-        (vars.length > 1 ? ` · ${vars.length} lecturas en el mismo display` : '') })
-    ]),
-    punto.instruccion_lectura
-      ? el('p', { class: 'banda acento', text: punto.instruccion_lectura })
-      : null,
-    zonaExistente,
-    zonaLecturas,
-    zonaMedidor,
-    cajaFoto,
-    el('h4', { text: 'Avisos de este punto', style: 'margin:18px 0 6px' }),
+  /* ---- orden en terreno: 1 foto · 2 lecturas · 3 (si hace falta) avisos ----
+     Avisos y observación van plegados: casi nunca se usan y ocupaban media pantalla. */
+  const resumenExtras = el('span', { class: 'contador' });
+  const pintarResumenExtras = () => {
+    resumenExtras.textContent = avisos.length ? String(avisos.length) : '';
+    resumenExtras.hidden = !avisos.length;
+  };
+  const extras = el('details', { class: 'plegable' }, [
+    el('summary', {}, [el('span', { text: 'Avisos de este punto' }), resumenExtras]),
     listaAvisos,
     el('label', { text: 'Categoría' }, [selAviso]),
     el('label', { text: 'Descripción' }, [txtAviso]),
-    el('button', { class: 'btn', text: '＋ Agregar este aviso', onclick: agregarAviso }),
-    el('label', { text: 'Observación de la visita', style: 'margin-top:18px' }, [obs]),
+    el('button', { class: 'btn', text: '＋ Agregar este aviso',
+      onclick: () => { agregarAviso(); pintarResumenExtras(); } }),
     el('p', { class: 'ayuda', text:
-      'La observación queda pegada a la lectura y se puede ver después en Avisos y observaciones.' }),
-    el('div', { class: 'acciones-fijas' }, [
+      'Puedes agregar varios. Si escribiste uno y no lo agregaste, se agrega solo al guardar.' }),
+    yaConObs ? el('p', { class: 'ayuda', html:
+      '<b>Nota anterior de esta lectura:</b> ' + esc(yaConObs.yaHay.observacion) }) : null
+  ]);
+
+  const cuerpo = el('div', { class: 'captura' }, [
+    punto.instruccion_lectura
+      ? el('p', { class: 'banda acento', text: punto.instruccion_lectura })
+      : null,
+    el('h3', { class: 'paso', text: '1 · Foto' }),
+    cajaFoto,
+    zonaExistente,
+    el('h3', { class: 'paso', text: vars.length > 1 ? `2 · Lecturas (${vars.length})` : '2 · Lectura' }),
+    zonaLecturas,
+    zonaMedidor,
+    extras,
+    el('div', { class: 'acciones-fijas dos' }, [
+      el('button', { class: 'btn grande', text: 'Cancelar', onclick: () => salir() }),
       el('button', { class: 'btn primario grande', text: 'Guardar todo', onclick: guardar })
     ])
   ]);
 
   async function guardar() {
     // Un aviso escrito y no agregado se pierde en silencio: mejor agregarlo.
-    if (selAviso.value && !avisos.length) agregarAviso();
+    if (avisoAMedias()) {
+      const antes = avisos.length;
+      agregarAviso();
+      if (avisos.length === antes) return;   // faltaba la descripción: ya se avisó
+    }
 
     const conValor = campos.filter(c => c.valorActual() !== null || c.sinDato.checked);
     const obligatoriasVacias = campos.filter(c => !c.v.opcional && !c.sinDato.checked
@@ -1028,7 +1110,7 @@ async function abrirCaptura(entrada) {
         fecha_lectura: new Date().toISOString(),
         lecturas: nuevas,
         avisos: avisos.map(a => ({ categoria_id: a.categoria_id, descripcion: a.descripcion })),
-        observacion: obs.value.trim() || null,
+        observacion: null,
         dispositivo: navigator.userAgent.slice(0, 120)
       }, nuevasFotos.map(f => f.blob));
     }
@@ -1047,8 +1129,27 @@ async function abrirCaptura(entrada) {
   }
 
   pintarFotos();
-  modal(punto.nombre, cuerpo);
-  setTimeout(() => (campos[0].doble ? campos[0].mwh : campos[0].valor)?.focus(), 100);
+  pintarResumenExtras();
+
+  // Lo que había al abrir: si nada cambió, salir no pregunta nada.
+  const huella = () => campos.map(c =>
+    [c.valor?.value, c.mwh?.value, c.kwh?.value, c.sinDato.checked].join('|')).join('§');
+  const huellaInicial = huella();
+  const sucio = () => nuevasFotos.length > 0 || avisos.length > 0 || avisoAMedias() ||
+    huella() !== huellaInicial;
+  function salir() {
+    if (sucio() && !confirm('¿Salir sin guardar?\nSe pierde lo que escribiste en este punto, incluidas las fotos.')) return;
+    nuevasFotos.forEach(f => URL.revokeObjectURL(f.url));
+    cerrarModal();
+  }
+
+  modal(punto.nombre, cuerpo, {
+    completo: true,
+    subtitulo: punto.sitio.nombre + (equipo.tag ? ' · ' + equipo.tag : '') +
+      (vars.length > 1 ? ` · ${vars.length} lecturas en el mismo display` : ''),
+    alPedirCerrar: salir
+  });
+  // Sin foco automático: el teclado tapaba el botón de la foto, que es el primer paso.
 }
 
 /* ---------------- aviso de anomalía ---------------- */
@@ -4213,6 +4314,8 @@ function escanear(titulo = 'Escanear código') {
     const habiaModal = !$('#modal').hidden;
     const tituloPrevio = $('#modal-titulo').textContent;
     const hijosPrevios = habiaModal ? [...$('#modal-cuerpo').childNodes] : null;
+    const optsPrevios = _modalOpts;
+    const scrollPrevio = $('#modal-cuerpo').scrollTop;
 
     const video = el('video', { playsinline: '', muted: '', autoplay: '' });
     const estado = el('p', { class: 'ayuda', text: 'Apunta al código. Se lee solo.' });
@@ -4224,8 +4327,8 @@ function escanear(titulo = 'Escanear código') {
       vivo = false;
       flujo && flujo.getTracks().forEach(t => t.stop());
       if (habiaModal) {
-        $('#modal-titulo').textContent = tituloPrevio;
-        $('#modal-cuerpo').replaceChildren(...hijosPrevios);
+        modal(tituloPrevio, hijosPrevios, optsPrevios);
+        $('#modal-cuerpo').scrollTop = scrollPrevio;
       } else {
         cerrarModal();
       }
@@ -4241,8 +4344,7 @@ function escanear(titulo = 'Escanear código') {
           onclick: () => manual.value.trim() && terminar(manual.value.trim()) }),
         el('button', { class: 'btn', text: 'Cancelar', onclick: () => terminar(null) })
       ])
-    ]));
-    $('#modal-cerrar').addEventListener('click', () => terminar(null), { once: true });
+    ]), { completo: !!(habiaModal && optsPrevios.completo), alPedirCerrar: () => terminar(null) });
 
     try {
       flujo = await navigator.mediaDevices.getUserMedia({

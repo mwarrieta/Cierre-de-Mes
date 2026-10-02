@@ -11,6 +11,7 @@
   --ok:#2e7150; --ok-bg:#e2efe7;
   --warn:#a2711a; --warn-bg:#f7ecd6;
   --bad:#a53728; --bad-bg:#f7e3df;
+  --guardar:#2b5ea7; --guardar-borde:#244f8c;
   --radio:8px;
   --sombra:0 1px 2px rgba(15,34,38,.06), 0 8px 24px -18px rgba(15,34,38,.4);
 }
@@ -24,6 +25,7 @@
   --ok:#63bc8f; --ok-bg:#153021;
   --warn:#d8a94e; --warn-bg:#332714;
   --bad:#e08272; --bad-bg:#35201c;
+  --guardar:#3f7bd0; --guardar-borde:#5b92dc;
   --sombra:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
 }
 
@@ -37,6 +39,7 @@
     --ok:#63bc8f; --ok-bg:#153021;
     --warn:#d8a94e; --warn-bg:#332714;
     --bad:#e08272; --bad-bg:#35201c;
+    --guardar:#3f7bd0; --guardar-borde:#5b92dc;
     --sombra:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
   }
 }
@@ -602,8 +605,8 @@ body.con-modal{overflow:hidden}
   font-weight:700;padding:1px 8px}
 
 /* barra de abajo: cancelar + guardar */
-.modal.completo .acciones-fijas{margin:0 -16px;padding:10px 16px;
-  padding-bottom:calc(10px + env(safe-area-inset-bottom));
+.modal.completo .acciones-fijas{margin:0 -16px;padding:8px 16px;
+  padding-bottom:calc(8px + env(safe-area-inset-bottom));
   border-top:1px solid var(--line);background:var(--surface)}
 .acciones-fijas.dos{grid-template-columns:minmax(0,1fr) minmax(0,2fr)}
 .captura .zona-medidor{margin-top:10px}
@@ -650,3 +653,11 @@ body.con-modal{overflow:hidden}
   background:var(--acento-suave)}
 .zona-medidor .banda{margin:8px 0}
 .zona-medidor > .btn{width:100%;margin-top:6px}
+
+/* guardar (azul) y cancelar (rojo): distintos del verde de la marca, que es "acción principal" */
+.btn.guardar{background:var(--guardar);border-color:var(--guardar-borde);color:#fff}
+.btn.guardar:hover{filter:brightness(1.08)}
+.btn.cancelar{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
+.btn.cancelar:hover{background:var(--bad);color:#fff}
+/* barra inferior más baja */
+.acciones-fijas.dos .btn{min-height:46px;font-size:16px;width:100%}

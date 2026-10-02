@@ -1033,8 +1033,8 @@ async function abrirCaptura(entrada) {
     zonaMedidor,
     extras,
     el('div', { class: 'acciones-fijas dos' }, [
-      el('button', { class: 'btn grande', text: 'Cancelar', onclick: () => salir() }),
-      el('button', { class: 'btn primario grande', text: 'Guardar todo', onclick: guardar })
+      el('button', { class: 'btn cancelar', text: 'Cancelar', onclick: () => salir(true) }),
+      el('button', { class: 'btn guardar', text: 'Guardar todo', onclick: guardar })
     ])
   ]);
 
@@ -1151,8 +1151,12 @@ async function abrirCaptura(entrada) {
   const huellaInicial = huella();
   const sucio = () => nuevasFotos.length > 0 || avisos.length > 0 || avisoAMedias() ||
     huella() !== huellaInicial;
-  function salir() {
-    if (sucio() && !confirm('¿Salir sin guardar?\nSe pierde lo que escribiste en este punto, incluidas las fotos.')) return;
+  // El botón Cancelar siempre pregunta; la ✕ solo si hay algo escrito.
+  function salir(desdeCancelar = false) {
+    const hayAlgo = sucio();
+    if ((hayAlgo || desdeCancelar) && !confirm(hayAlgo
+        ? '¿Cancelar sin guardar?\nSe pierde lo que escribiste en este punto, incluidas las fotos.'
+        : '¿Cancelar y volver a la lista?')) return;
     nuevasFotos.forEach(f => URL.revokeObjectURL(f.url));
     cerrarModal();
   }
@@ -2790,7 +2794,7 @@ function editarAviso(a, alGuardar) {
     el('label', { text: 'Categoría' }, [sel]),
     el('label', { text: 'Severidad' }, [sev]),
     el('label', { text: 'Descripción' }, [txt]),
-    el('button', { class: 'btn primario grande', style: 'margin-top:14px', text: 'Guardar',
+    el('button', { class: 'btn guardar grande', style: 'margin-top:14px', text: 'Guardar',
       onclick: async e => {
         e.target.disabled = true;
         const { error } = await sb.rpc('editar_aviso', {
@@ -2929,7 +2933,7 @@ async function editarEquipo(eq) {
     el('label', { class: 'fila' }, [f.cert, el('span', { text: 'Certificado' })]),
     el('label', { text: 'N° de certificado' }, [f.ncert]),
     el('label', { text: 'Vence el' }, [f.vence]),
-    el('button', { class: 'btn primario grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
+    el('button', { class: 'btn guardar grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
   ]);
 
   // --- instalación y su historial ---
@@ -3100,7 +3104,7 @@ async function editarPunto(punto) {
       'Este texto aparece arriba de todo al abrir el punto en terreno. Es donde se escribe de qué ' +
       'menú se saca cada valor, para que no dependa de quién vaya.' }),
     el('label', { text: 'Observaciones' }, [f.obs]),
-    el('button', { class: 'btn primario grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
+    el('button', { class: 'btn guardar grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
   ]);
 
   if (!nuevo) {
@@ -4126,7 +4130,7 @@ function movimientoGenerador(g) {
   };
   horom.addEventListener('input', revisar);
 
-  const guardar = el('button', { class: 'btn primario grande', text: 'Guardar movimiento',
+  const guardar = el('button', { class: 'btn guardar grande', text: 'Guardar movimiento',
     onclick: async () => {
       if (!fecha.value) return toast('Falta la fecha', true);
       const fila = {
@@ -4291,7 +4295,7 @@ function nuevaRecarga() {
   selGen.addEventListener('change', sincronizarComb);
   sincronizarComb();
 
-  const boton = el('button', { class: 'btn primario grande', text: 'Guardar recarga', onclick: async () => {
+  const boton = el('button', { class: 'btn guardar grande', text: 'Guardar recarga', onclick: async () => {
     if (!litros.value || Number(litros.value) <= 0) return toast('Falta cuántos litros se cargaron', true);
     if (!cuando.value) return toast('Falta la fecha y la hora', true);
     const fila = {

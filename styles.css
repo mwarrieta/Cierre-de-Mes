@@ -691,3 +691,16 @@ body.con-modal{overflow:hidden}
 .tipo-extra label.fila.mini{flex-wrap:nowrap;gap:8px}
 .tipo-extra label.fila.mini span{white-space:normal}
 .chips-medir{margin-top:0}
+
+/* Que nada ensanche la pantalla: un modal es un elemento de grilla y, sin esto, el
+   subtítulo largo (en una sola línea) o un texto sin cortes lo hacía más ancho que el
+   teléfono, y la captura quedaba cortada a la derecha. */
+.modal{grid-template-columns:minmax(0,1fr)}
+.modal-caja{min-width:0}
+.modal-caja header{min-width:0}
+.modal-tit strong{overflow-wrap:anywhere}
+#modal-cuerpo{overflow-x:hidden;min-width:0}
+.captura,.captura > *{min-width:0;max-width:100%}
+.captura > .acciones-fijas{max-width:none}
+.lectura-cab .lectura-nombre b{overflow-wrap:anywhere}
+.lectura-anterior b{white-space:nowrap}

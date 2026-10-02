@@ -372,6 +372,10 @@ function poner(cont, ...hijos) {
   cont.replaceChildren(...hijos.flat().filter(Boolean));
 }
 
+// Las fotos de una lectura, en el orden en que se sacaron (Foto 1, 2, 3).
+const fotosOrdenadas = l => [...(l.fotos || [])]
+  .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
+
 function render() {
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
@@ -455,14 +459,17 @@ async function pintarLista() {
   if (!cont) return;
   const cola = await DB.pendientes();
   const enCola = new Set();
-  const enColaFoto = new Set();
+  // clave ('p'+punto o 'v'+variable) → fotos esperando envío. El prefijo evita que
+  // el id de un punto se confunda con el de una variable.
+  const enColaFoto = new Map();
+  const sumarFotos = (k, n) => { if (n) enColaFoto.set(k, (enColaFoto.get(k) || 0) + n); };
   for (const it of cola) {
+    const nf = (it.fotoIds && it.fotoIds.length) ? it.fotoIds.length : (it.fotoId ? 1 : 0);
     if (it.tipo === 'captura') {
       (it.lecturas || []).forEach(l => enCola.add(l.variable_id));
-      if (it.fotoId) enColaFoto.add(it.punto_id);
+      if (it.punto_id) sumarFotos('p' + it.punto_id, nf);
     } else if (it.tipo === 'foto') {
-      if (it.variable_id) enColaFoto.add(it.variable_id);
-      if (it.punto_id) enColaFoto.add(it.punto_id);
+      if (it.variable_id) sumarFotos('v' + it.variable_id, nf);
     } else if (it.variable_id) {
       enCola.add(it.variable_id);
     }
@@ -491,9 +498,8 @@ async function pintarLista() {
 
     const lecturasPunto = p.vars.map(v => S.lecturas.find(l => l.variable_id === v.id)).filter(Boolean);
     let nFotos = lecturasPunto.reduce((acc, l) => acc + (l.fotos?.length || 0), 0);
-    if (enColaFoto.has(p.punto.id) || p.vars.some(v => enColaFoto.has(v.id))) {
-      nFotos += 1;
-    }
+    nFotos += (enColaFoto.get('p' + p.punto.id) || 0)
+            + p.vars.reduce((n, v) => n + (enColaFoto.get('v' + v.id) || 0), 0);
     p.nFotos = nFotos;
     p.tieneFoto = nFotos > 0;
     p.conDato = p.vars.some(tomada);
@@ -675,40 +681,80 @@ async function abrirCaptura(entrada) {
   let bandas = {};
   try { bandas = await DB.bandasCache(); } catch { /* sin bandas */ }
 
-  let blobFoto = null;
-
-  /* ---- foto: una sola para todo el punto ---- */
+  /* ---- fotos: hasta 3 por lectura, en el orden en que se sacan ----
+     La pantalla de un partidor suave, un variador o un generador rara vez cabe
+     en una sola imagen (las horas en un menú, la energía en otro). El orden en
+     que se sacan es el orden en que se guardan y se descargan: Foto 1, 2 y 3. */
+  const MAX_FOTOS = C.FOTOS_MAX || 3;
+  const nuevasFotos = [];   // { blob, url }, en orden de captura
+  let procesandoFotos = false;
   const cajaFoto = el('div', { class: 'foto-caja' });
-  const previa = el('img', { class: 'foto-previa', hidden: true, alt: 'Foto del medidor' });
+  const galeriaFotos = el('div', { class: 'fotos-nuevas' });
   const textoFoto =
-    (punto.foto_obligatoria ? 'La foto es obligatoria en este punto.' : 'La foto es opcional en este punto.') +
-    (punto.foto_calidad === 'alta' ? ' Se guarda en calidad alta.' : '');
+    (punto.foto_obligatoria ? 'Al menos una foto es obligatoria en este punto.' : 'Las fotos son opcionales en este punto.') +
+    (punto.foto_calidad === 'alta' ? ' Se guardan en calidad alta.' : '');
   const pesoFoto = el('p', { class: 'ayuda', text: textoFoto });
-  const quitarFoto = el('button', { class: 'btn chico', text: 'Quitar la foto', hidden: true,
-    onclick: () => {
-      blobFoto = null; previa.hidden = true; quitarFoto.hidden = true;
-      inputCamara.value = ''; inputGaleria.value = '';
-      pesoFoto.textContent = textoFoto;
-    } });
-  const tomarFoto = async f => {
-    if (!f) return;
-    blobFoto = await DB.comprimirFoto(f, punto.foto_calidad || 'normal');
-    previa.src = URL.createObjectURL(blobFoto);
-    previa.hidden = false;
-    pesoFoto.textContent = `Foto lista · ${Math.round(blobFoto.size / 1024)} KB`;
-    quitarFoto.hidden = false;
+  // Las ya guardadas en la lectura que recibirá las nuevas también cuentan para el tope.
+  const yaGuardadas = () => {
+    const destino = campos.find(c => c.yaHay);
+    return destino ? (destino.yaHay.fotos?.length || 0) : 0;
   };
-  const inputCamara = el('input', { type: 'file', accept: 'image/*', capture: 'environment',
-    hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
-  const inputGaleria = el('input', { type: 'file', accept: 'image/*',
-    hidden: true, onchange: e => tomarFoto(e.target.files[0]) });
+  const cupoFotos = () => Math.max(0, MAX_FOTOS - yaGuardadas() - nuevasFotos.length);
+  const inputCamara = el('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
+  const inputGaleria = el('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const btnCamara = el('button', { class: 'btn', text: '📷 Tomar foto', onclick: () => inputCamara.click() });
+  const btnGaleria = el('button', { class: 'btn', text: '🖼 Elegir del dispositivo', onclick: () => inputGaleria.click() });
+
+  function pintarFotos() {
+    const base = yaGuardadas();
+    poner(galeriaFotos, nuevasFotos.map((f, i) => el('figure', { class: 'foto-nueva' }, [
+      el('img', { src: f.url, alt: `Foto ${base + i + 1} del medidor` }),
+      el('figcaption', { text: `Foto ${base + i + 1} · ${Math.round(f.blob.size / 1024)} KB` }),
+      el('div', { class: 'foto-acciones' }, [
+        i > 0 ? el('button', { class: 'btn chico', text: '◀', title: 'Pasar antes', onclick: () => moverFoto(i, -1) }) : null,
+        i < nuevasFotos.length - 1 ? el('button', { class: 'btn chico', text: '▶', title: 'Pasar después', onclick: () => moverFoto(i, 1) }) : null,
+        el('button', { class: 'btn chico peligro', text: 'Quitar', onclick: () => quitarFoto(i) })
+      ])
+    ])));
+    const caben = cupoFotos();
+    btnCamara.textContent = nuevasFotos.length ? '📷 Tomar otra foto' : '📷 Tomar foto';
+    btnCamara.disabled = btnGaleria.disabled = caben === 0;
+    pesoFoto.textContent = nuevasFotos.length
+      ? `${base + nuevasFotos.length} de ${MAX_FOTOS} fotos · ${caben ? `puedes agregar ${caben} más` : 'llegaste al máximo'}.`
+      : textoFoto + (base ? ` Ya tiene ${base} guardada(s); caben ${caben} más.` : ` Hasta ${MAX_FOTOS} por lectura.`);
+  }
+  function quitarFoto(i) {
+    URL.revokeObjectURL(nuevasFotos[i].url);
+    nuevasFotos.splice(i, 1);
+    pintarFotos();
+  }
+  function moverFoto(i, d) {
+    [nuevasFotos[i], nuevasFotos[i + d]] = [nuevasFotos[i + d], nuevasFotos[i]];
+    pintarFotos();
+  }
+  async function agregarFotos(archivos) {
+    if (procesandoFotos || !archivos.length) return;
+    procesandoFotos = true;
+    try {
+      const caben = cupoFotos();
+      if (archivos.length > caben) toast(`Solo caben ${MAX_FOTOS} fotos por lectura`, true);
+      pesoFoto.textContent = 'Preparando la foto…';
+      for (const a of archivos.slice(0, caben)) {
+        const blob = await DB.comprimirFoto(a, punto.foto_calidad || 'normal');
+        nuevasFotos.push({ blob, url: URL.createObjectURL(blob) });
+      }
+    } finally {
+      procesandoFotos = false;
+      pintarFotos();
+    }
+  }
+  // Se copia la lista ANTES de vaciar el input: así se puede volver a elegir el mismo archivo.
+  for (const input of [inputCamara, inputGaleria]) {
+    input.addEventListener('change', e => { const l = [...e.target.files]; e.target.value = ''; agregarFotos(l); });
+  }
   cajaFoto.append(
-    el('div', { class: 'fila' }, [
-      el('button', { class: 'btn', text: '📷 Tomar foto', onclick: () => inputCamara.click() }),
-      el('button', { class: 'btn', text: '🖼 Elegir del dispositivo', onclick: () => inputGaleria.click() }),
-      quitarFoto
-    ]),
-    inputCamara, inputGaleria, previa, pesoFoto);
+    el('div', { class: 'fila' }, [btnCamara, btnGaleria]),
+    inputCamara, inputGaleria, galeriaFotos, pesoFoto);
 
   /* ---- un bloque de campos por cada lectura del punto ---- */
   const campos = [];        // { v, doble, valor, mwh, kwh, banda, yaHay, valorActual() }
@@ -858,7 +904,7 @@ async function abrirCaptura(entrada) {
     zonaExistente.append(el('p', { class: 'ayuda', text: 'Fotos ya guardadas de este punto:' }), fotos);
     if (navigator.onLine) {
       (async () => {
-        for (const l of conFoto) for (const f of l.fotos) {
+        for (const l of conFoto) for (const f of fotosOrdenadas(l)) {
           const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
           if (data?.signedUrl) fotos.append(el('img', { src: data.signedUrl,
             alt: 'Foto guardada de esta lectura' }));
@@ -914,7 +960,7 @@ async function abrirCaptura(entrada) {
       return toast(`Falta ${obligatoriasVacias.map(c => c.v.nombre).join(' y ')}`, true);
     }
     const algunDato = conValor.some(c => !c.sinDato.checked);
-    if (punto.foto_obligatoria && !blobFoto && !conFoto.length && algunDato) {
+    if (punto.foto_obligatoria && !nuevasFotos.length && !conFoto.length && algunDato) {
       return toast('Este punto exige foto', true);
     }
 
@@ -955,18 +1001,23 @@ async function abrirCaptura(entrada) {
       }
     }
 
-    // La foto de una lectura que ya existe se sube sola; la de una nueva viaja
-    // con la captura y se cuelga cuando el servidor devuelve el id.
+    // Las fotos de una lectura que ya existe se suben solas, una tras otra y en
+    // orden; las de una nueva viajan con la captura y se cuelgan cuando el servidor
+    // devuelve el id.
     const yaGuardada = campos.find(c => c.yaHay);
-    if (blobFoto && !nuevas.length && yaGuardada) {
+    if (nuevasFotos.length && !nuevas.length && yaGuardada) {
       const datos = { lectura_id: yaGuardada.yaHay.id, periodo: S.periodo, variable_id: yaGuardada.v.id };
-      if (navigator.onLine) {
-        try { await DB.subirFotoALectura({ ...datos, blob: blobFoto }); }
-        catch (e) { return toast('No se pudo subir la foto: ' + e.message, true); }
-      } else {
-        await DB.encolar({ tipo: 'foto', ...datos }, blobFoto);
+      // Cada foto que sube sale de la lista: si la segunda falla, al reintentar no se repite la primera.
+      while (nuevasFotos.length) {
+        const f = nuevasFotos[0];
+        if (navigator.onLine) {
+          try { await DB.subirFotoALectura({ ...datos, blob: f.blob }); }
+          catch (e) { pintarFotos(); return toast('No se pudo subir la foto: ' + e.message, true); }
+        } else {
+          await DB.encolar({ tipo: 'foto', ...datos }, f.blob);
+        }
+        quitarFoto(0);
       }
-      blobFoto = null;
     }
 
     if (nuevas.length || avisos.length) {
@@ -979,7 +1030,7 @@ async function abrirCaptura(entrada) {
         avisos: avisos.map(a => ({ categoria_id: a.categoria_id, descripcion: a.descripcion })),
         observacion: obs.value.trim() || null,
         dispositivo: navigator.userAgent.slice(0, 120)
-      }, blobFoto);
+      }, nuevasFotos.map(f => f.blob));
     }
 
     cerrarModal();
@@ -995,6 +1046,7 @@ async function abrirCaptura(entrada) {
     if (navigator.onLine) sincronizar(true);
   }
 
+  pintarFotos();
   modal(punto.nombre, cuerpo);
   setTimeout(() => (campos[0].doble ? campos[0].mwh : campos[0].valor)?.focus(), 100);
 }
@@ -1247,7 +1299,7 @@ async function revisarLectura(l, v, alertas) {
 
   // foto
   if (l.fotos && l.fotos.length) {
-    for (const f of l.fotos) {
+    for (const f of fotosOrdenadas(l)) {
       const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
       if (data?.signedUrl) cuerpo.append(el('img', { src: data.signedUrl, alt: 'Foto del medidor' }));
     }
@@ -1531,7 +1583,7 @@ async function bloqueDuplicados(periodo) {
 
 async function resolverDuplicado(d) {
   const { data: lects } = await sb.from('lecturas')
-    .select('id, valor, fecha_lectura, observacion, estado, tomada_por, sin_dato, fotos(id, storage_path)')
+    .select('id, valor, fecha_lectura, observacion, estado, tomada_por, sin_dato, fotos(id, storage_path, orden)')
     .in('id', d.lecturas).order('fecha_lectura');
   const v = S.catalogo.variables.find(x => x.id === d.variable_id);
   const u = v ? (UNIDAD[v.unidad_reporte] || v.unidad_reporte) : '';
@@ -1541,8 +1593,10 @@ async function resolverDuplicado(d) {
   for (const l of (lects || [])) {
     const foto = el('div');
     if (l.fotos?.length) {
-      const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(l.fotos[0].storage_path, 600);
-      if (url?.signedUrl) foto.append(el('img', { src: url.signedUrl, alt: 'Foto del medidor' }));
+      for (const ft of fotosOrdenadas(l)) {
+        const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 600);
+        if (url?.signedUrl) foto.append(el('img', { src: url.signedUrl, alt: 'Foto del medidor' }));
+      }
     } else {
       foto.append(el('p', { class: 'ayuda', text: 'Sin foto' }));
     }
@@ -2105,7 +2159,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const lect = await traerTodo(() => {
     let q = sb.from('v_respaldo').select('*')
              .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
-             .order('periodo');
+             .order('periodo').order('lectura_id').order('foto_n');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
     return q;
@@ -2211,13 +2265,14 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   hojas.push({ nombre: nombreHoja('Lecturas', usados), filas: [
     ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable',
      'Unidad', 'Valor', 'Sin dato', 'Reinicio', 'Consumo declarado', 'Estado', 'Origen',
-     'Observación', 'Obs. validación', 'Foto'],
-    ...lect.map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
+     'Observación', 'Obs. validación', 'Fotos'],
+    // v_respaldo trae una fila por foto: acá basta una por lectura.
+    ...[...new Map(lect.map(f => [f.lectura_id, f])).values()].map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
       f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable,
       f.unidad, f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
       f.es_reset ? (f.tipo_reset || 'sí') : 'no',
       f.consumo_manual === null || f.consumo_manual === undefined ? '' : Number(f.consumo_manual),
-      f.estado, f.origen, f.observacion || '', f.obs_validacion || '', f.storage_path ? 'sí' : 'no'])
+      f.estado, f.origen, f.observacion || '', f.obs_validacion || '', Number(f.foto_total) || 0])
   ]});
   hojas.push({ nombre: nombreHoja('Consumos', usados), filas: [
     ['Mes', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
@@ -3282,10 +3337,10 @@ async function vistaRespaldo(c) {
       // es peor que no tenerlo.
       const filas = await traerTodo(() => {
         let q = sb.from('v_respaldo').select('*');
-        if (tipo === 'nuevo') q = q.is('respaldado_en', null);
+        if (tipo === 'nuevo') q = q.or('respaldado_en.is.null,and(foto_id.not.is.null,foto_respaldado_en.is.null)');
         if (desde) q = q.gte('periodo', desde);
         if (hasta) q = q.lte('periodo', hasta);
-        return q.order('periodo').order('sitio').order('punto');
+        return q.order('periodo').order('sitio').order('punto').order('lectura_id').order('foto_n');
       });
       if (!filas.length) { paso(''); progreso.hidden = true; return toast('No hay nada que respaldar con ese criterio'); }
 
@@ -3316,10 +3371,12 @@ async function vistaRespaldo(c) {
       zip.file(nombreXlsx, xlsx);
 
       // ---- fotos, en Año / Mes / Grupo ----
-      const conFoto = filas.filter(f => f.storage_path);
+      // En un respaldo "nuevo" no se repiten las fotos que ya se descargaron antes.
+      const conFoto = filas.filter(f => f.storage_path && !(tipo === 'nuevo' && f.foto_respaldado_en));
       const idsFoto = [];
+      const nombresUsados = new Set();
       const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Sitio', 'Punto', 'TAG',
-                       'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por']];
+                       'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
       for (let i = 0; i < conFoto.length; i++) {
         const f = conFoto[i];
         paso(`Descargando fotos… ${i + 1} de ${conFoto.length}`);
@@ -3336,14 +3393,20 @@ async function vistaRespaldo(c) {
         ].join('/');
         const varias = (f.variable && !/^energ[ií]a activa importada$/i.test(f.variable))
           ? '_' + R.limpio(f.variable) : '';
-        const nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.punto)}${varias}_${f.valor ?? 'sd'}.jpg`;
+        // Varias fotos de una misma lectura se distinguen por su número, en el orden en
+        // que se sacaron: ..._foto1.jpg, ..._foto2.jpg. Con una sola, el nombre no cambia.
+        const sufijo = Number(f.foto_total) > 1 ? `_foto${f.foto_n}` : '';
+        let nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.punto)}${varias}_${f.valor ?? 'sd'}${sufijo}.jpg`;
+        // Dos lecturas distintas con el mismo punto, fecha y valor no deben pisarse en el zip.
+        if (nombresUsados.has(`${carpeta}/${nombre}`)) nombre = nombre.replace(/\.jpg$/, `_l${f.lectura_id}.jpg`);
+        nombresUsados.add(`${carpeta}/${nombre}`);
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
         indice.push([`${carpeta}/${nombre}`, d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()],
           f.grupo || 'Sin grupo', f.sitio, f.punto, f.tag || '', f.variable, f.unidad,
           String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
           f.valor === null ? '' : Number(f.valor), f.estado,
-          S.catalogo.gente?.[f.tomada_por] || '']);
+          S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
       }
 
       // Buscar una foto abriendo carpeta por carpeta es lento. El índice permite
@@ -3360,7 +3423,8 @@ async function vistaRespaldo(c) {
         tipo, periodo_desde: rangoDesde, periodo_hasta: rangoHasta,
         lecturas: idsLectura.length, fotos: idsFoto.length,
         excel: nombreXlsx,
-        estructura: 'Año / Mes / Grupo / fecha_Punto_lectura.jpg',
+        estructura: 'Año / Mes / Grupo / fecha_Punto_lectura[_fotoN].jpg',
+        fotos_por_lectura: 'Hasta 3. Se numeran en el orden en que se sacaron (_foto1, _foto2, _foto3); una lectura con una sola foto no lleva sufijo.',
         indice: 'indice_fotos.xlsx · una fila por foto, con su ruta, el punto y quién la tomó',
         aviso_grupos: 'Las carpetas usan el grupo que el punto tiene HOY. Si un punto cambia de ' +
                       'grupo, los respaldos nuevos lo guardan en la carpeta nueva; los ya ' +
@@ -3442,14 +3506,15 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
     { nombre: 'Lecturas', filas: [
       ['ID','Periodo','Fecha de lectura','Fecha estimada','Sitio','Grupo','Punto','TAG','Variable','Unidad',
        'Valor','Sin dato','Reinicio','Consumo declarado','Estado','Origen','Tomada por','Validada por',
-       'Observación','Obs. validación','Foto'],
-      ...filas.map(f => [f.lectura_id, f.periodo, String(f.fecha_lectura).slice(0,19).replace('T',' '),
+       'Observación','Obs. validación','Fotos'],
+      // una fila por lectura (la vista trae una por foto)
+      ...[...new Map(filas.map(f => [f.lectura_id, f])).values()].map(f => [f.lectura_id, f.periodo, String(f.fecha_lectura).slice(0,19).replace('T',' '),
         f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable, f.unidad,
         f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
         f.es_reset ? (f.tipo_reset || 'sí') : 'no',
         f.consumo_manual === null ? '' : Number(f.consumo_manual),
         f.estado, f.origen, f.tomada_por || '', f.validada_por || '',
-        f.observacion || '', f.obs_validacion || '', f.storage_path || ''])
+        f.observacion || '', f.obs_validacion || '', Number(f.foto_total) || 0])
     ]},
     { nombre: 'Consumos', filas: [
       ['Mes','Sitio','Grupo','Punto','TAG','Variable','Unidad','Consumo','Días','Método','Estado'],

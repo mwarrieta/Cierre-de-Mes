@@ -163,7 +163,7 @@
       .select(`id, variable_id, periodo, fecha_lectura, valor, valor_display, valor_mwh, valor_kwh,
                sin_dato, es_reset, tipo_reset, consumo_manual, observacion, estado, obs_validacion,
                tomada_por, validada_por, validada_en, origen,
-               fotos ( id, storage_path )`)
+               fotos ( id, storage_path, orden )`)
       .eq('periodo', periodo);
     if (error) throw error;
     await idb.guardar('catalogo', { clave: 'lecturas:' + periodo, datos: data });
@@ -188,10 +188,17 @@
   }
 
   // ---------------- Cola offline ----------------
-  async function encolar(registro, blobFoto) {
-    let fotoId = null;
-    if (blobFoto) fotoId = await idb.agregar('fotos', { blob: blobFoto, creado: Date.now() });
-    await idb.agregar('cola', { ...registro, fotoId, creado: Date.now(), intentos: 0 });
+  // `fotos` puede ser un Blob o una lista de Blobs, en el orden en que se sacaron.
+  // La cola guarda ese orden (fotoIds) y el servidor lo respeta al numerar las fotos.
+  async function encolar(registro, fotos) {
+    const lista = (Array.isArray(fotos) ? fotos : (fotos ? [fotos] : [])).filter(Boolean);
+    const fotoIds = [];
+    for (let i = 0; i < lista.length; i++) {
+      fotoIds.push(await idb.agregar('fotos', { blob: lista[i], creado: Date.now() + i }));
+    }
+    // fotoId (la primera) se mantiene por compatibilidad con registros de versiones anteriores.
+    await idb.agregar('cola', { ...registro, fotoIds, fotoId: fotoIds[0] ?? null,
+                                creado: Date.now(), intentos: 0 });
     return true;
   }
 
@@ -232,18 +239,34 @@
       // con su error a la vista. Reintentar en bucle esconde el problema.
       if (!forzado && (item.intentos || 0) >= 5) { fallidos++; continue; }
       try {
-        const { fotoId, id: idLocal, creado, intentos, _foto, tipo, ...fila } = item;
+        const { fotoId, fotoIds, id: idLocal, creado, intentos, _foto, tipo,
+                rpcHecho, principalId, principalVar, ...fila } = item;
+
+        // Los registros viejos llevan una sola foto (fotoId); los nuevos, hasta tres (fotoIds).
+        const ids = (fotoIds && fotoIds.length) ? [...fotoIds] : (fotoId ? [fotoId] : []);
+        // Cada foto que sube se saca de la lista guardada: si la segunda falla, al
+        // reintentar no se vuelve a subir la primera.
+        const hechas = new Set();
+        const fotoSubida = async id => {
+          hechas.add(id);
+          await idb.borrar('fotos', id);
+          item.fotoIds = ids.filter(x => !hechas.has(x));
+          item.fotoId = item.fotoIds[0] ?? null;
+          await idb.guardar('cola', item);
+        };
 
         // La cola lleva dos clases de registro: lecturas del cierre de mes y
         // recargas de combustible de Casa de Fuerza. Las recargas no llevan foto.
         if (tipo === 'foto') {
-          const f = await idb.leer('fotos', fotoId);
-          if (f && f.blob) {
-            await subirFotoALectura({
-              lectura_id: fila.lectura_id, periodo: fila.periodo,
-              variable_id: fila.variable_id, blob: f.blob,
-              tomada_en: new Date(f.creado).toISOString() });
-            await idb.borrar('fotos', fotoId);
+          for (const id of ids) {
+            const f = await idb.leer('fotos', id);
+            if (f && f.blob) {
+              await subirFotoALectura({
+                lectura_id: fila.lectura_id, periodo: fila.periodo,
+                variable_id: fila.variable_id, blob: f.blob,
+                tomada_en: new Date(f.creado).toISOString() });
+            }
+            await fotoSubida(id);
           }
           await idb.borrar('cola', idLocal);
           enviados++;
@@ -275,27 +298,37 @@
         // La captura de un punto: varias lecturas del mismo display, sus avisos
         // y UNA foto, todo en una sola llamada y una sola transacción.
         if (tipo === 'captura') {
-          const { data, error: e5 } = await sb.rpc('guardar_captura', {
-            p_punto_id: fila.punto_id,
-            p_periodo: fila.periodo,
-            p_fecha_lectura: fila.fecha_lectura,
-            p_lecturas: fila.lecturas || [],
-            p_avisos: fila.avisos || [],
-            p_observacion: fila.observacion ?? null,
-            p_dispositivo: fila.dispositivo ?? null
-          });
-          if (e5) throw e5;
-
-          const idPrincipal = data && data.principal;
-          if (fotoId && idPrincipal) {
-            const f = await idb.leer('fotos', fotoId);
-            if (f && f.blob) {
-              const varPrincipal = (data.lecturas || []).find(x => x.lectura_id === idPrincipal);
-              await subirFotoALectura({
-                lectura_id: idPrincipal, periodo: fila.periodo,
-                variable_id: varPrincipal ? varPrincipal.variable_id : null,
-                blob: f.blob, tomada_en: new Date(creado).toISOString() });
-              await idb.borrar('fotos', fotoId);
+          // Si la captura ya llegó al servidor y falló una foto, el reintento solo
+          // sube las que faltan: guardar_captura no se repite.
+          let idPrincipal = principalId, variablePrincipal = principalVar;
+          if (!rpcHecho) {
+            const { data, error: e5 } = await sb.rpc('guardar_captura', {
+              p_punto_id: fila.punto_id,
+              p_periodo: fila.periodo,
+              p_fecha_lectura: fila.fecha_lectura,
+              p_lecturas: fila.lecturas || [],
+              p_avisos: fila.avisos || [],
+              p_observacion: fila.observacion ?? null,
+              p_dispositivo: fila.dispositivo ?? null
+            });
+            if (e5) throw e5;
+            idPrincipal = data && data.principal;
+            const vp = idPrincipal ? (data.lecturas || []).find(x => x.lectura_id === idPrincipal) : null;
+            variablePrincipal = vp ? vp.variable_id : null;
+            item.rpcHecho = true; item.principalId = idPrincipal; item.principalVar = variablePrincipal;
+            await idb.guardar('cola', item);
+          }
+          if (idPrincipal) {
+            // En el orden en que se sacaron: el servidor las numera por orden de llegada.
+            for (const id of ids) {
+              const f = await idb.leer('fotos', id);
+              if (f && f.blob) {
+                await subirFotoALectura({
+                  lectura_id: idPrincipal, periodo: fila.periodo,
+                  variable_id: variablePrincipal,
+                  blob: f.blob, tomada_en: new Date(f.creado || creado).toISOString() });
+              }
+              await fotoSubida(id);
             }
           }
           await idb.borrar('cola', idLocal);

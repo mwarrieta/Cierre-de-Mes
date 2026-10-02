@@ -19,7 +19,7 @@ const S = {
   vista: 'terreno',
   filtro: '',
   soloPendientes: false,   // en terreno, ver solo lo que falta
-  agrupar: 'grupo'         // 'grupo' | 'sitio'
+  agrupar: 'grupo'         // los puntos se agrupan solo por grupo (el sitio se eliminó)
 };
 
 // ------------------------------------------------------------------ utilidades
@@ -27,14 +27,19 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, props = {}, hijos = []) => {
   const n = document.createElement(tag);
+  let valor;
   for (const [k, v] of Object.entries(props)) {
     if (k === 'class') n.className = v;
     else if (k === 'html') n.innerHTML = v;
     else if (k === 'text') n.textContent = v;
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    // Un <textarea> ignora el atributo value: hay que asignar la propiedad. Sin esto,
+    // al editar un aviso o un punto el texto guardado aparecía vacío y se borraba al guardar.
+    else if (k === 'value' && (tag === 'textarea' || tag === 'select')) valor = v;
     else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v);
   }
   for (const h of [].concat(hijos)) if (h) n.append(h);
+  if (valor !== undefined && valor !== null) n.value = valor;
   return n;
 };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -150,6 +155,10 @@ function ordenGrupo(nombre) {
 function compararGrupos(a, b) {
   return ordenGrupo(a) - ordenGrupo(b) || String(a || '').localeCompare(String(b || ''));
 }
+
+// El sitio se eliminó: un punto se describe por sus grupos de reporte.
+const gruposDe = p => (p?.grupos && p.grupos.length ? [...p.grupos].sort(compararGrupos) : []);
+const gruposTexto = p => gruposDe(p).join(' · ') || 'Sin grupo';
 
 const esSupervisor = () => ['admin', 'supervisor'].includes(S.usuario?.rol);
 const esAdmin = () => S.usuario?.rol === 'admin';
@@ -395,7 +404,7 @@ const TITULOS = {
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
   usuarios: 'Usuarios', auditoria: 'Auditoría',
   generadores: 'Casa de Fuerza · Generadores', recargas: 'Casa de Fuerza · Recargas',
-  etiquetas: 'Etiquetas QR'
+  etiquetas: 'Etiquetas QR', instalaciones: 'Instalaciones · punto y equipo'
 };
 
 // replaceChildren(...) convierte cualquier argumento que no sea un nodo en texto:
@@ -436,7 +445,7 @@ const fotosOrdenadas = l => [...(l.fotos || [])]
 function render() {
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
+    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','instalaciones'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
       : ['terreno','tablero','validacion'].includes(S.vista) ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -452,7 +461,7 @@ function render() {
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
     usuarios: vistaUsuarios, auditoria: vistaAuditoria,
     generadores: vistaGeneradores, recargas: vistaRecargas,
-    etiquetas: vistaEtiquetas
+    etiquetas: vistaEtiquetas, instalaciones: vistaInstalaciones
   }[S.vista] || vistaTerreno)(c);
 }
 
@@ -486,7 +495,7 @@ function selectorPeriodo(campo = 'periodo', alCambiar = null) {
 function vistaTerreno(c) {
   const buscador = el('div', { class: 'buscador' }, [
     el('input', {
-      type: 'search', placeholder: 'Buscar por TAG, punto o sitio…', value: S.filtro,
+      type: 'search', placeholder: 'Buscar por TAG, punto o grupo…', value: S.filtro,
       oninput: e => { S.filtro = e.target.value.toLowerCase(); pintarLista(); }
     })
   ]);
@@ -570,7 +579,7 @@ async function pintarLista() {
   const f = S.filtro;
   if (f) puntos = puntos.filter(p => {
     const eq = p.punto.equipo?.tag || '';
-    return `${p.punto.nombre} ${p.punto.sitio.nombre} ${eq} ${p.vars.map(v => v.nombre).join(' ')}`
+    return `${p.punto.nombre} ${gruposTexto(p.punto)} ${eq} ${p.vars.map(v => v.nombre).join(' ')}`
       .toLowerCase().includes(f);
   });
 
@@ -629,9 +638,6 @@ async function pintarLista() {
       () => toggleFiltro('opcionales')) : null,
     chip(`Sin foto · ${nSinFoto}`, S.filtrosEstados.has('sinfoto'),
       () => toggleFiltro('sinfoto')),
-    el('span', { class: 'crece' }),
-    chip('Por grupo', S.agrupar === 'grupo', () => { S.agrupar = 'grupo'; pintarLista(); }),
-    chip('Por sitio', S.agrupar === 'sitio', () => { S.agrupar = 'sitio'; pintarLista(); })
   ].filter(Boolean)));
 
   if (!items.length) {
@@ -646,12 +652,10 @@ async function pintarLista() {
   const secciones = {};
   for (const p of items) {
     const gs = p.punto.grupos && p.punto.grupos.length ? p.punto.grupos : ['Sin grupo'];
-    const clave = S.agrupar === 'sitio' ? p.punto.sitio.nombre
-                : [...gs].sort(compararGrupos)[0];
+    const clave = [...gs].sort(compararGrupos)[0];
     (secciones[clave] ||= []).push(p);
   }
-  const orden = Object.keys(secciones).sort(
-    S.agrupar === 'sitio' ? (a, b) => a.localeCompare(b) : compararGrupos);
+  const orden = Object.keys(secciones).sort(compararGrupos);
 
   for (const seccion of orden) {
     const lista = secciones[seccion];
@@ -1174,7 +1178,7 @@ async function abrirCaptura(entrada) {
 
   modal(punto.nombre, cuerpo, {
     completo: true,
-    subtitulo: punto.sitio.nombre + (equipo.tag ? ' · ' + equipo.tag : '') +
+    subtitulo: [equipo.tag, gruposDe(punto)[0]].filter(Boolean).join(' · ') +
       (vars.length > 1 ? ` · ${vars.length} lecturas en el mismo display` : ''),
     alPedirCerrar: salir
   });
@@ -1268,9 +1272,9 @@ function tablaFaltantes() {
   const faltan = S.catalogo.variables.filter(v => !hechas.has(v.id));
   if (!faltan.length) return el('p', { class: 'vacio', text: 'Están todas las lecturas del mes.' });
   return tabla(
-    ['Sitio', 'Punto', 'TAG', 'Variable', 'Unidad'],
+    ['Grupo', 'Punto', 'TAG', 'Variable', 'Unidad'],
     faltan.slice(0, 300).map(v => [
-      v.punto.sitio.nombre, v.punto.nombre,
+      gruposTexto(v.punto), v.punto.nombre,
       v.punto.equipo?.tag || '—',
       v.nombre, UNIDAD[v.unidad_reporte] || v.unidad_reporte
     ])
@@ -1305,7 +1309,7 @@ async function vistaValidacion(c) {
   
   const buscador = el('div', { class: 'buscador' }, [
     el('input', {
-      type: 'search', placeholder: 'Buscar punto o sitio…', value: S.filtroValidacion,
+      type: 'search', placeholder: 'Buscar punto o grupo…', value: S.filtroValidacion,
       oninput: e => { S.filtroValidacion = e.target.value.toLowerCase(); renderListaValidacion(); }
     })
   ]);
@@ -1340,7 +1344,7 @@ async function renderListaValidacion() {
     const v = S.catalogo.variables.find(x => x.id === l.variable_id);
     if (!v) return null;
     
-    const txt = `${v.punto.sitio.nombre} ${v.punto.nombre} ${v.nombre}`.toLowerCase();
+    const txt = `${gruposTexto(v.punto)} ${v.punto.nombre} ${v.nombre}`.toLowerCase();
     if (S.filtroValidacion && !txt.includes(S.filtroValidacion)) return null;
 
     const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
@@ -1354,7 +1358,7 @@ async function renderListaValidacion() {
         onclick: () => revisarLectura(l, v, al) 
       }, [
       el('div', { class: 'info-principal' }, [
-        el('strong', { text: v.punto.sitio.nombre + ' / ' + v.punto.nombre }),
+        el('strong', { text: v.punto.nombre }),
         el('span', { class: 'texto-secundario', text: ' — ' + v.nombre })
       ]),
       el('div', { class: 'info-secundaria' }, [
@@ -1657,7 +1661,7 @@ async function vistaDispositivo(c) {
                   valor = x.horometro != null ? num(x.horometro) + ' h' : '—';
                 } else {
                   const v = S.catalogo.variables.find(vv => vv.id === x.variable_id);
-                  que = v ? `${v.punto.sitio.nombre} · ${v.punto.nombre}` : 'variable ' + x.variable_id;
+                  que = v ? `${v.punto.nombre} · ${v.nombre}` : 'variable ' + x.variable_id;
                   valor = x.sin_dato ? 'sin dato' : num(x.valor_display ?? (x.valor_mwh || 0) * 1000 + (x.valor_kwh || 0));
                 }
                 return [que, valor, fechaHora(new Date(x.creado).toISOString()),
@@ -1702,12 +1706,12 @@ async function bloqueDuplicados(periodo) {
     el('p', { class: 'ayuda', text:
       'Dos personas registraron el mismo punto en este mes. Elige cuál vale: la otra queda descartada, ' +
       'con tu motivo y en la auditoría. Ninguna se borra.' }),
-    tabla(['Sitio', 'Punto', 'Variable', 'Lecturas', ''],
+    tabla(['Punto', 'Variable', 'Lecturas', ''],
       data.map(d => [
-        d.sitio, d.punto, d.variable,
+        d.punto, d.variable,
         el('span', { class: 'pill warn', text: d.n_lecturas + ' lecturas' }),
         el('button', { class: 'btn chico', text: 'Resolver', onclick: () => resolverDuplicado(d) })
-      ]), { num: [3] })
+      ]), { num: [2] })
   ]);
 }
 
@@ -1768,7 +1772,7 @@ async function vistaConsumos(c) {
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
-    grupo: '', sitio: '', secundarias: false
+    grupo: '', secundarias: false
   };
   const R = S.rep;
 
@@ -1783,12 +1787,6 @@ async function vistaConsumos(c) {
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
-  const sitiosVisibles = [...new Set(S.catalogo.variables.map(v => v.punto.sitio.nombre))].sort();
-  const selSitio = el('select', { onchange: e => { R.sitio = e.target.value; cargar(); } });
-  selSitio.append(el('option', { value: '', text: 'Todos los sitios' }));
-  for (const s of sitiosVisibles)
-    selSitio.append(el('option', { value: s, selected: R.sitio === s || null, text: s }));
-
   // Un punto puede tener importada y exportada: si las dos entraran al informe,
   // el mismo medidor aparecería dos veces y la suma del grupo lo contaría doble.
   const chkSec = el('input', { type: 'checkbox', checked: R.secundarias || null,
@@ -1798,7 +1796,6 @@ async function vistaConsumos(c) {
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
     el('label', { text: 'Grupo' }, [selGrupo]),
-    el('label', { text: 'Sitio' }, [selSitio]),
     el('label', { class: 'fila' }, [chkSec, el('span', { text: 'Incluir lecturas secundarias' })])
   ]);
   const acciones = el('div', { class: 'fila entre seccion' }, [
@@ -1807,7 +1804,7 @@ async function vistaConsumos(c) {
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo, sitio: R.sitio, secundarias: R.secundarias }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo, secundarias: R.secundarias }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1817,7 +1814,7 @@ async function vistaConsumos(c) {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
         await descargarPlanilla(primero, primerDiaDelMes(new Date()),
-          { grupo: R.grupo, sitio: R.sitio, secundarias: R.secundarias });
+          { grupo: R.grupo, secundarias: R.secundarias });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1863,9 +1860,8 @@ async function vistaConsumos(c) {
     zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando consumos…' }));
     const [desde, hasta] = limites();
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
-              .order('sitio').order('punto');
+              .order('punto');
     if (R.grupo) q = q.contains('grupos', [R.grupo]);
-    if (R.sitio) q = q.eq('sitio', R.sitio);
     // Sin esto, un punto con importada y exportada aparecería dos veces y la
     // suma del grupo contaría el mismo medidor dos veces.
     if (!R.secundarias) q = q.eq('principal', true);
@@ -1875,8 +1871,7 @@ async function vistaConsumos(c) {
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
       (R.secundarias || v.principal !== false) &&
-      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
-      (!R.sitio || v.punto.sitio.nombre === R.sitio));
+      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)));
     const conDato = new Set(data.map(f => f.variable_id));
     // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
     // fue: el primero tiene una explicación y el segundo es una tarea sin hacer.
@@ -1977,14 +1972,14 @@ function armarInforme(data, desde, hasta, extra = {}) {
   // ---- tabla ----
   if (meses.length === 1) {
     partes.push(tabla(
-      ['Sitio', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'],
+      ['Grupo', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'],
       data.map(f => {
         const j = juicios.get(f.variable_id + '|' + f.mes);
         const marcas = [];
         if (j) marcas.push(el('span', { class: 'pill ' + j.nivel, text: j.texto }));
         if (conAviso.has(f.punto_id)) marcas.push(el('span', { class: 'pill warn', text: 'aviso' }));
         return [
-          f.sitio, f.punto, f.tag || '—', f.variable,
+          f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
           num(f.consumo), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
           marcas.length ? el('div', { class: 'fila' }, marcas) : el('span', { class: 'pill ok', text: 'ok' }),
           el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })
@@ -1998,11 +1993,11 @@ function armarInforme(data, desde, hasta, extra = {}) {
       if (!claves.has(k)) claves.set(k, { f, meses: {} });
       claves.get(k).meses[f.mes] = Number(f.consumo);
     }
-    const cab = ['Sitio', 'Punto', 'TAG', 'Variable', 'Un.',
+    const cab = ['Grupo', 'Punto', 'TAG', 'Variable', 'Un.',
                  ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total', 'Revisar'];
     const filas = [...claves.values()]
       .sort((a, b) => compararGrupos(a.f.grupo, b.f.grupo) ||
-                      `${a.f.sitio}${a.f.punto}`.localeCompare(`${b.f.sitio}${b.f.punto}`))
+                      `${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.punto}${b.f.variable}`))
       .map(({ f, meses: mm }) => {
         const vals = meses.map(m => mm[m]);
         const total = vals.reduce((a, v) => a + (v || 0), 0);
@@ -2012,7 +2007,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
                     : tibios ? el('span', { class: 'pill warn', text: `${tibios} para revisar` })
                     : conAviso.has(f.punto_id) ? el('span', { class: 'pill warn', text: 'aviso' })
                     : el('span', { class: 'pill ok', text: 'ok' });
-        return [f.sitio, f.punto, f.tag || '—', f.variable,
+        return [f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
                 UNIDAD[f.unidad_reporte] || f.unidad_reporte,
                 ...vals.map(v => v === undefined ? '—' : num(v)), num(total), marca];
       });
@@ -2026,9 +2021,9 @@ function armarInforme(data, desde, hasta, extra = {}) {
       el('p', { class: 'ayuda', text:
         'Alguien fue al punto y dejó constancia de que no se pudo tomar la lectura: display ' +
         'apagado, tablero cerrado, equipo retirado. No es lo mismo que un punto sin visitar.' }),
-      tabla(['Sitio', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
         noLeidos.slice(0, 300).map(v => [
-          v.punto.sitio.nombre, v.punto.nombre, v.nombre,
+          gruposTexto(v.punto), v.punto.nombre, v.nombre,
           UNIDAD[v.unidad_reporte] || v.unidad_reporte,
           conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
     ]));
@@ -2041,9 +2036,9 @@ function armarInforme(data, desde, hasta, extra = {}) {
       el('p', { class: 'ayuda', text:
         'No hay ninguna lectura de estos puntos en el periodo. Puede ser que no se hayan tomado ' +
         'o que falte la lectura del mes siguiente para poder calcular su consumo.' }),
-      tabla(['Sitio', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
         faltantes.slice(0, 300).map(v => [
-          v.punto.sitio.nombre, v.punto.nombre, v.nombre,
+          gruposTexto(v.punto), v.punto.nombre, v.nombre,
           UNIDAD[v.unidad_reporte] || v.unidad_reporte,
           conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
     ]));
@@ -2079,7 +2074,7 @@ async function imprimirInforme() {
   const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
   const cabMes = m => variosAnios ? `${nMes(m)}-${m.slice(2, 4)}` : nMes(m);
 
-  const titulo = R.grupo || R.sitio || 'Todos los puntos';
+  const titulo = R.grupo || 'Todos los grupos';
   const periodo = desde === hasta ? nombrePeriodo(desde)
                                   : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
 
@@ -2091,7 +2086,7 @@ async function imprimirInforme() {
   }
   const orden = [...porVar.values()].sort((a, b) =>
     compararGrupos(a.f.grupo, b.f.grupo) ||
-    `${a.f.sitio}${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.sitio}${b.f.punto}${b.f.variable}`));
+    `${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.punto}${b.f.variable}`));
 
   // tabla, con separadores de grupo y suma referencial por unidad
   const cuerpo = [];
@@ -2157,10 +2152,10 @@ async function imprimirInforme() {
       el('h2', { text: `No se pudo leer (${noLeidos.length})` }),
       el('table', { class: 'planilla' }, [
         el('thead', {}, [el('tr', {}, [
-          el('th', { text: 'Sitio' }), el('th', { text: 'Punto' }),
+          el('th', { text: 'Grupo' }), el('th', { text: 'Punto' }),
           el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
         el('tbody', {}, noLeidos.slice(0, 200).map(v => el('tr', {}, [
-          el('td', { text: v.punto.sitio.nombre }), el('td', { text: v.punto.nombre }),
+          el('td', { text: gruposTexto(v.punto) }), el('td', { text: v.punto.nombre }),
           el('td', { text: v.nombre }),
           el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
       ])
@@ -2170,10 +2165,10 @@ async function imprimirInforme() {
       el('h2', { text: `Puntos sin visitar en el periodo (${faltantes.length})` }),
       el('table', { class: 'planilla' }, [
         el('thead', {}, [el('tr', {}, [
-          el('th', { text: 'Sitio' }), el('th', { text: 'Punto' }),
+          el('th', { text: 'Grupo' }), el('th', { text: 'Punto' }),
           el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
         el('tbody', {}, faltantes.slice(0, 200).map(v => el('tr', {}, [
-          el('td', { text: v.punto.sitio.nombre }), el('td', { text: v.punto.nombre }),
+          el('td', { text: gruposTexto(v.punto) }), el('td', { text: v.punto.nombre }),
           el('td', { text: v.nombre }),
           el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
       ])
@@ -2274,9 +2269,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   paso('Consultando consumos…');
   const cons = await traerTodo(() => {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
-              .order('mes').order('sitio').order('punto');
+              .order('mes').order('punto');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
     // La secundaria (la exportada, por ejemplo) no entra al informe salvo que se pida.
     if (!filtros.secundarias) q = q.eq('principal', true);
     return q;
@@ -2291,7 +2285,6 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
              .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
              .order('periodo').order('lectura_id').order('foto_n');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    if (filtros.sitio) q = q.eq('sitio', filtros.sitio);
     return q;
   });
 
@@ -2304,7 +2297,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const porVar = new Map();
   for (const c of cons) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
-      tag: c.tag || '', sitio: c.sitio, grupo: c.grupo || 'Sin grupo', punto: c.punto,
+      tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
       variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
       principal: c.principal !== false, cons: {}, estado: {}, metodo: {}, lect: {}
     });
@@ -2319,12 +2312,12 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   }
   const filasVar = [...porVar.values()].sort((a, b) =>
     compararGrupos(a.grupo, b.grupo) ||
-    (a.sitio + a.punto).localeCompare(b.sitio + b.punto));
+    (a.punto + a.variable).localeCompare(b.punto + b.variable));
 
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
 
   // ---- 1 · Resumen anual: bloques por grupo y unidad, con subtotal ----
-  const resumen = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
+  const resumen = [['TAG', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
   // Sumar kWh con m3 no significa nada: cada grupo cierra con una suma POR UNIDAD.
   // Y no hay TOTAL GENERAL a propósito: los puntos tienen naturalezas distintas
   // (unos en serie, otros en paralelo del mismo circuito), así que un gran total
@@ -2333,7 +2326,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const cerrarGrupo = () => {
     if (grupoActual === null) return;
     for (const [u, acum] of Object.entries(acumGrupo)) {
-      resumen.push(['', '', 'Suma del grupo (referencial)', '', u, '',
+      resumen.push(['', 'Suma del grupo (referencial)', '', u, '',
         ...meses.map(m => redondear(acum[m])),
         redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     }
@@ -2347,25 +2340,25 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     }
     (acumGrupo[v.unidad] ||= {});
     meses.forEach(m => { acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0); });
-    resumen.push([v.tag, v.sitio, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
+    resumen.push([v.tag, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
       ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
   }
   cerrarGrupo();
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
-  const detalle = [['TAG', 'Sitio', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
+  const detalle = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
   for (const v of filasVar) {
-    detalle.push([v.tag, v.sitio, v.grupo, v.punto, v.variable, v.unidad, 'Totalizador',
+    detalle.push([v.tag, v.grupo, v.punto, v.variable, v.unidad, 'Totalizador',
       ...meses.map(m => redondear(v.lect[mesSiguiente(m)]))]);
-    detalle.push(['', '', '', '', '', '', 'Consumo del mes',
+    detalle.push(['', '', '', '', '', 'Consumo del mes',
       ...meses.map(m => redondear(v.cons[m]))]);
-    detalle.push(['', '', '', '', '', '', 'Var. % vs mes anterior', ...meses.map((m, i) => {
+    detalle.push(['', '', '', '', '', 'Var. % vs mes anterior', ...meses.map((m, i) => {
       if (i === 0) return '';
       const a = v.cons[meses[i - 1]], b = v.cons[m];
       // en puntos porcentuales: -62,8 se lee solo; -0,628 obliga a formatear la celda
       return (a && b) ? Number((100 * (b - a) / a).toFixed(1)) : '';
     })]);
-    detalle.push(['', '', '', '', '', '', 'Estado', ...meses.map(m => v.estado[m] || '')]);
+    detalle.push(['', '', '', '', '', 'Estado', ...meses.map(m => v.estado[m] || '')]);
   }
 
   // ---- 3 · una hoja por grupo ----
@@ -2378,35 +2371,35 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
                    .sort(compararGrupos);
   for (const g of grupos) {
     const suyas = filasVar.filter(v => (v.grupos.length ? v.grupos : ['Sin grupo']).includes(g));
-    const f = [[`GRUPO: ${g}`], [], ['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
+    const f = [[`GRUPO: ${g}`], [], ['TAG', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
     for (const v of suyas)
-      f.push([v.tag, v.sitio, v.punto, v.variable, v.unidad,
+      f.push([v.tag, v.punto, v.variable, v.unidad,
         ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
     const porUnidad = {};
     for (const v of suyas) { (porUnidad[v.unidad] ||= {}); meses.forEach(m => porUnidad[v.unidad][m] = (porUnidad[v.unidad][m] || 0) + (v.cons[m] || 0)); }
     f.push([]);
     for (const [u, acum] of Object.entries(porUnidad))
-      f.push(['', '', `Suma del grupo (referencial) · ${u}`, '', u,
+      f.push(['', `Suma del grupo (referencial) · ${u}`, '', u,
         ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     hojas.push({ nombre: nombreHoja(g, usados), filas: f });
   }
 
   // ---- 4 · lecturas y 5 · consumos en formato largo ----
   hojas.push({ nombre: nombreHoja('Lecturas', usados), filas: [
-    ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable',
+    ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Grupo', 'Punto', 'TAG', 'Variable',
      'Unidad', 'Valor', 'Sin dato', 'Reinicio', 'Consumo declarado', 'Estado', 'Origen',
      'Observación', 'Obs. validación', 'Fotos'],
     // v_respaldo trae una fila por foto: acá basta una por lectura.
     ...[...new Map(lect.map(f => [f.lectura_id, f])).values()].map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
-      f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable,
+      f.fecha_estimada ? 'sí' : 'no', f.grupo || '', f.punto, f.tag || '', f.variable,
       f.unidad, f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
       f.es_reset ? (f.tipo_reset || 'sí') : 'no',
       f.consumo_manual === null || f.consumo_manual === undefined ? '' : Number(f.consumo_manual),
       f.estado, f.origen, f.observacion || '', f.obs_validacion || '', Number(f.foto_total) || 0])
   ]});
   hojas.push({ nombre: nombreHoja('Consumos', usados), filas: [
-    ['Mes', 'Sitio', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
-    ...cons.map(c => [c.mes, c.sitio, c.grupo || '', c.punto, c.tag || '', c.variable,
+    ['Mes', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
+    ...cons.map(c => [c.mes, c.grupo || '', c.punto, c.tag || '', c.variable,
       c.unidad_reporte, Number(c.consumo), c.dias_asignados, c.metodo,
       c.completo ? 'cerrado' : 'provisional'])
   ]});
@@ -2421,7 +2414,6 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     ['Generado', new Date().toLocaleString('es-CL')],
     ['Generado por', S.usuario.nombre],
     ['Filtro de grupo', filtros.grupo || 'todos'],
-    ['Filtro de sitio', filtros.sitio || 'todos'],
     ['Lecturas secundarias', filtros.secundarias ? 'incluidas' : 'excluidas (solo las principales)'],
     ['Puntos', new Set(cons.map(c => c.punto_id)).size],
     ['Valores de consumo', cons.length],
@@ -2443,8 +2435,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
 
   paso('Escribiendo el archivo…');
   const blob = await window.RESPALDO.construirExcel(hojas);
-  const alcance = filtros.grupo ? '_' + window.RESPALDO.limpio(filtros.grupo)
-                : filtros.sitio ? '_' + window.RESPALDO.limpio(filtros.sitio) : '';
+  const alcance = filtros.grupo ? '_' + window.RESPALDO.limpio(filtros.grupo) : '';
   descargar(blob, `Consumos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}${alcance}.xlsx`);
   paso('');
   toast(`Planilla lista: ${filasVar.length} puntos, ${meses.length} meses`);
@@ -2499,7 +2490,7 @@ async function vistaAvisos(c) {
         .order('fecha_lectura', { ascending: false }).limit(1000);
       if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
       const filas = (data || []).filter(o =>
-        !q || `${o.punto} ${o.sitio} ${o.variable} ${o.observacion}`.toLowerCase().includes(q));
+        !q || `${o.punto} ${gruposTexto(o)} ${o.variable} ${o.observacion}`.toLowerCase().includes(q));
       if (!filas.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay observaciones.' }));
 
       const listaObs = el('div', { class: 'lista-compacta' },
@@ -2509,7 +2500,7 @@ async function vistaAvisos(c) {
         }, [
           el('div', { class: 'info-principal' }, [
             el('div', { class: 'fila-titulo' }, [
-              el('strong', { text: `${o.sitio} / ${o.punto}` }),
+              el('strong', { text: o.punto }),
               el('span', { class: 'categoria-tag', text: o.variable })
             ]),
             el('p', { class: 'descripcion-corta', text: o.observacion || 'Sin texto de observación' }),
@@ -2535,7 +2526,7 @@ async function vistaAvisos(c) {
     if (selEstado.value === 'resuelto') avisos = avisos.filter(a => a.estado === 'resuelto');
     if (selGrupo.value) avisos = avisos.filter(a => (a.grupos || []).includes(selGrupo.value));
     if (q) avisos = avisos.filter(a =>
-      `${a.punto} ${a.sitio} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
+      `${a.punto} ${gruposTexto(a)} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
 
     if (selVista.value === 'informe') return informeAvisos(zona, avisos, selGrupo.value);
 
@@ -2560,7 +2551,7 @@ async function vistaAvisos(c) {
             // Si la descripción solo repite la categoría, no se escribe dos veces.
             descripcionUtil(a) ? el('p', { class: 'descripcion-corta', text: descripcionUtil(a) }) : null,
             el('span', { class: 'texto-secundario', text:
-              `${a.sitio} · ${a.estado === 'resuelto' ? 'resuelto ' + fechaCorta(a.resuelto_en) : haceDias(a)}` +
+              `${gruposTexto(a)} · ${a.estado === 'resuelto' ? 'resuelto ' + fechaCorta(a.resuelto_en) : haceDias(a)}` +
               ` · ${a.abierto_por_nombre || '—'}` })
           ]),
           el('div', { class: 'info-secundaria' }, [
@@ -2624,7 +2615,7 @@ async function pdfAvisosPendientes(grupo = '') {
         a.descripcion.trim().replace(/[.\s]+$/, '').toLowerCase() === a.categoria.toLowerCase();
       filas.push(el('tr', {}, [
         el('td', { class: 'num', text: '#' + a.id }),
-        el('td', {}, [el('b', { text: a.punto }), el('br'), el('span', { class: 'tenue', text: a.sitio })]),
+        el('td', {}, [el('b', { text: a.punto }), a.tag ? el('br') : null, a.tag ? el('span', { class: 'tenue', text: a.tag }) : null]),
         el('td', {}, [
           otro ? null : el('b', { text: a.categoria || 'Aviso' }),
           otro || repite || !a.descripcion ? null : el('br'),
@@ -2702,7 +2693,7 @@ function verDetalleAviso(a, alGuardar) {
 
   const contenido = el('div', {}, [
     el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
-      el('span', { html: `<b>${esc(a.sitio)} / ${esc(a.punto)}</b><br><small>${esc(esOtroAviso(a.categoria) ? 'Aviso general' : (a.categoria || 'Aviso'))}</small>` }),
+      el('span', { html: `<b>${esc(a.punto)}</b><br><small>${esc(esOtroAviso(a.categoria) ? 'Aviso general' : (a.categoria || 'Aviso'))}</small>` }),
       el('span', { html: `<span class="pill ${sevClase}">${esc(a.severidad)}</span> <span class="pill ${estClase}">${esc(a.estado)}</span>` })
     ]),
     el('p', { class: 'ayuda', text: `Abierto por ${a.abierto_por_nombre || '—'} el ${fechaHora(a.abierto_en)}` }),
@@ -2728,7 +2719,7 @@ function verDetalleAviso(a, alGuardar) {
 function verDetalleObservacion(o) {
   const contenido = el('div', {}, [
     el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
-      el('span', { html: `<b>${esc(o.sitio)} / ${esc(o.punto)}</b><br><small>${esc(o.variable)}</small>` }),
+      el('span', { html: `<b>${esc(o.punto)}</b><br><small>${esc(o.variable)}</small>` }),
       el('span', { html: `<b>${o.sin_dato ? 'Sin dato' : num(o.valor_display)}</b><br><small>${nombrePeriodo(o.periodo)}</small>` })
     ]),
     el('p', { class: 'ayuda', text: `Registrado por ${o.tomada_por_nombre || '—'} el ${fechaHora(o.fecha_lectura)}` }),
@@ -2769,13 +2760,16 @@ function informeAvisos(zona, avisos, grupo = '') {
       contar(abiertos, 'categoria').map(([k, n]) =>
         [k, String(n), String(avisos.filter(a => (a.categoria || '—') === k).length)])),
 
-    el('h3', { text: 'Por sitio', style: 'margin-top:22px' }),
-    tabla(['Sitio', 'Abiertos'], contar(abiertos, 'sitio').map(([k, n]) => [k, String(n)])),
+    el('h3', { text: 'Por grupo', style: 'margin-top:22px' }),
+    // un aviso cuenta en cada grupo de su punto (un punto puede estar en varios)
+    tabla(['Grupo', 'Abiertos'], contar(abiertos.flatMap(a =>
+      (gruposDe(a).length ? gruposDe(a) : ['Sin grupo']).map(g => ({ g }))), 'g')
+      .sort((x, y) => compararGrupos(x[0], y[0])).map(([k, n]) => [k, String(n)])),
 
     el('h3', { text: 'Puntos con más avisos abiertos', style: 'margin-top:22px' }),
-    tabla(['Punto', 'Sitio', 'Abiertos'],
+    tabla(['Punto', 'Grupos', 'Abiertos'],
       contar(abiertos, 'punto').slice(0, 15).map(([k, n]) =>
-        [k, abiertos.find(a => a.punto === k)?.sitio || '—', String(n)])),
+        [k, gruposTexto(abiertos.find(a => a.punto === k)), String(n)])),
 
     viejos.length ? el('h3', { text: 'Los que llevan más tiempo abiertos', style: 'margin-top:22px' }) : null,
     viejos.length ? tabla(['Días', 'Punto', 'Categoría', 'Severidad', 'Descripción'],
@@ -2882,7 +2876,7 @@ async function vistaEquipos(c) {
     const f = S.filtro, est = selEstado.value;
     const lista = equipos.filter(e =>
       (!est || e.estado === est) &&
-      (!f || `${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.punto_actual} ${e.sitio}`.toLowerCase().includes(f)));
+      (!f || `${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.punto_actual}`.toLowerCase().includes(f)));
 
     const filas = lista.map(e => [
       e.tag || el('span', { class: 'pill warn', text: 'sin TAG' }),
@@ -2890,7 +2884,6 @@ async function vistaEquipos(c) {
       e.modelo || '—',
       e.n_serie || el('span', { class: 'pill warn', text: 'falta' }),
       e.tipo || '—',
-      e.sitio || '—',
       e.punto_actual || el('span', { class: 'pill neutro', text: 'sin instalar' }),
       el('span', { class: 'pill ' + (ESTADO_EQUIPO[e.estado]?.[0] || 'neutro'),
                    text: ESTADO_EQUIPO[e.estado]?.[1] || e.estado }),
@@ -2904,7 +2897,7 @@ async function vistaEquipos(c) {
       el('p', { class: 'ayuda', text:
         `${lista.length} equipos · ${equipos.filter(e => !e.punto_actual_id).length} sin instalar · ` +
         `${equipos.filter(e => e.certificado_vencido).length} con certificado vencido` }),
-      tabla(['TAG', 'Marca', 'Modelo', 'Serie', 'Tipo', 'Sitio', 'Instalado en', 'Estado', 'Cert.', ''],
+      tabla(['TAG', 'Marca', 'Modelo', 'Serie', 'Tipo', 'Instalado en', 'Estado', 'Cert.', ''],
             filas, { etiquetas: true }));
   }
   pintar();
@@ -2918,15 +2911,11 @@ async function editarEquipo(eq) {
     modelo: el('input', { value: eq?.modelo || '' }),
     serie: el('input', { value: eq?.n_serie || '' }),
     desc:  el('input', { value: eq?.descripcion || '' }),
-    sitio: el('select'),
     tipo:  el('select'),
     cert:  el('input', { type: 'checkbox', checked: eq?.certificado || null }),
     ncert: el('input', { value: eq?.n_certificado || '' }),
     vence: el('input', { type: 'date', value: eq?.vence_certificado || '' })
   };
-  f.sitio.append(el('option', { value: '', text: '— sin sitio —' }));
-  for (const s of S.catalogo.sitios)
-    f.sitio.append(el('option', { value: s.id, selected: eq?.sitio_id === s.id || null, text: s.nombre }));
   const tipos = {};
   for (const v of S.catalogo.variables) tipos[v.punto.tipo.id] = v.punto.tipo.nombre;
   f.tipo.append(el('option', { value: '', text: '— sin tipo —' }));
@@ -2939,7 +2928,6 @@ async function editarEquipo(eq) {
     el('label', { text: 'Modelo' }, [f.modelo]),
     el('label', { text: 'N° de serie' }, [f.serie]),
     el('label', { text: 'Descripción' }, [f.desc]),
-    el('label', { text: 'Sitio al que pertenece' }, [f.sitio]),
     el('label', { text: 'Tipo de equipo' }, [f.tipo]),
     el('label', { class: 'fila' }, [f.cert, el('span', { text: 'Certificado' })]),
     el('label', { text: 'N° de certificado' }, [f.ncert]),
@@ -2953,15 +2941,16 @@ async function editarEquipo(eq) {
     cuerpo.append(el('h3', { text: 'Dónde está instalado', style: 'margin-top:26px' }), zonaHist);
 
     const { data: hist } = await sb.from('asignaciones')
-      .select('id, desde, hasta, motivo, punto:puntos(id, nombre, sitio:sitios(nombre))')
+      .select('id, desde, hasta, motivo, punto:puntos(id, nombre)')
       .eq('equipo_id', eq.id).order('desde', { ascending: false });
 
     const selPunto = el('select');
     selPunto.append(el('option', { value: '', text: '— elegir punto —' }));
     const puntosOrdenados = [...new Map(S.catalogo.variables.map(v => [v.punto.id, v.punto])).values()]
-      .sort((a, b) => `${a.sitio.nombre}${a.nombre}`.localeCompare(`${b.sitio.nombre}${b.nombre}`));
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
     for (const p of puntosOrdenados)
-      selPunto.append(el('option', { value: p.id, text: `${p.sitio.nombre} · ${p.nombre}` }));
+      selPunto.append(el('option', { value: p.id,
+        text: p.nombre + (p.equipo?.tag ? ` (hoy: ${p.equipo.tag})` : ' (sin equipo)') }));
     const fechaMov = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
     const motivoMov = el('input', { placeholder: 'Motivo del movimiento' });
 
@@ -2999,7 +2988,7 @@ async function editarEquipo(eq) {
         ? el('div', {}, [
             el('h4', { text: 'Historial' }),
             tabla(['Punto', 'Desde', 'Hasta', 'Motivo'], hist.map(a => [
-              `${a.punto?.sitio?.nombre || ''} · ${a.punto?.nombre || ''}`,
+              a.punto?.nombre || '—',
               fechaCorta(a.desde),
               a.hasta ? fechaCorta(a.hasta) : el('span', { class: 'pill ok', text: 'instalado' }),
               a.motivo || '—'
@@ -3014,7 +3003,6 @@ async function editarEquipo(eq) {
       tag: f.tag.value.trim() || null, marca: f.marca.value.trim() || null,
       modelo: f.modelo.value.trim() || null, n_serie: f.serie.value.trim() || null,
       descripcion: f.desc.value.trim() || null,
-      sitio_id: f.sitio.value ? Number(f.sitio.value) : null,
       tipo_equipo_id: f.tipo.value ? Number(f.tipo.value) : null,
       certificado: f.cert.checked,
       n_certificado: f.ncert.value.trim() || null,
@@ -3047,22 +3035,27 @@ async function vistaPuntos(c) {
       el('button', { class: 'btn', text: '+ Punto nuevo', onclick: () => editarPunto(null) })
     ]),
     el('div', { class: 'buscador' }, [
-      el('input', { type: 'search', placeholder: 'Buscar punto, sitio o TAG…',
+      el('input', { type: 'search', placeholder: 'Buscar punto, grupo o TAG…',
         oninput: e => { S.filtro = e.target.value.toLowerCase(); pintar(); } })
     ])
   );
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando puntos…' })]);
   c.append(zona);
 
-  const { data, error } = await sb.from('v_puntos').select('*').order('sitio').order('nombre');
+  const [{ data, error }, { data: gp }] = await Promise.all([
+    sb.from('v_puntos').select('*').order('nombre'),
+    sb.from('v_grupos_punto').select('punto_id, grupos')
+  ]);
   if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
+  const gruposPorPunto = Object.fromEntries((gp || []).map(x => [x.punto_id, x.grupos || []]));
+  for (const p of data) p.grupos = gruposPorPunto[p.id] || [];
 
   function pintar() {
     const f = S.filtro;
     const lista = data.filter(p => !f ||
-      `${p.nombre} ${p.sitio} ${p.tag} ${p.area}`.toLowerCase().includes(f));
+      `${p.nombre} ${gruposTexto(p)} ${p.tag || ''}`.toLowerCase().includes(f));
     const filas = lista.map(p => [
-      p.sitio, p.nombre, p.area || '—', p.tipo,
+      p.nombre, gruposTexto(p), p.tipo,
       p.tag || el('span', { class: 'pill neutro', text: 'sin equipo' }),
       p.n_variables,
       p.n_equipos_historicos > 1
@@ -3074,211 +3067,334 @@ async function vistaPuntos(c) {
     poner(zona,
       el('p', { class: 'ayuda', text:
         `${lista.length} puntos · ${data.filter(p => !p.equipo_id).length} sin equipo instalado` }),
-      tabla(['Sitio', 'Punto', 'Área', 'Tipo', 'Equipo', 'Variables', 'Historial', 'Foto', ''],
-            filas, { num: [5], etiquetas: true }));
+      tabla(['Punto', 'Grupos', 'Tipo', 'Equipo', 'Lecturas', 'Historial', 'Foto', ''],
+            filas, { num: [4], etiquetas: true }));
   }
   pintar();
 }
 
-async function editarPunto(punto) {
-  const nuevo = !punto;
+/* Formulario del punto. Orden: lo que define el punto (nombre, tipo, foto, grupos,
+   instrucción) y se guarda con un botón; después, ya con el punto creado, sus
+   lecturas y el equipo instalado, que tienen sus propias acciones.
+   Se lee la fila completa de `puntos`: v_puntos no trae la instrucción de lectura,
+   y guardar desde ahí la borraba sin aviso. */
+async function editarPunto(puntoLista) {
+  const nuevo = !puntoLista;
+  let punto = puntoLista;
+  const [{ data: fila }, { data: tiposDb }, { data: misGrupos }] = await Promise.all([
+    nuevo ? Promise.resolve({ data: null }) : sb.from('puntos').select('*').eq('id', puntoLista.id).single(),
+    sb.from('tipos_equipo').select('id, nombre').order('nombre'),
+    nuevo ? Promise.resolve({ data: [] }) : sb.from('grupo_puntos').select('grupo_id').eq('punto_id', puntoLista.id)
+  ]);
+  if (fila) punto = { ...puntoLista, ...fila };
+
   const f = {
-    nombre: el('input', { value: punto?.nombre || '' }),
-    sitio:  el('select'),
-    area:   el('input', { value: punto?.area || '' }),
+    nombre: el('input', { value: punto?.nombre || '', placeholder: 'Ej.: Agua Mar 1' }),
     tipo:   el('select'),
     foto:   el('input', { type: 'checkbox', checked: punto?.foto_obligatoria || null }),
     calidad: el('select'),
-    obs:    el('textarea', { value: punto?.observaciones || '' }),
     instruccion: el('textarea', { rows: 2, value: punto?.instruccion_lectura || '',
       placeholder: 'Horas de marcha: menú 730 · Energía: menú 732' })
   };
-  for (const s of S.catalogo.sitios)
-    f.sitio.append(el('option', { value: s.id, selected: punto?.sitio_id === s.id || null, text: s.nombre }));
-  const tipos = {};
-  for (const v of S.catalogo.variables) tipos[v.punto.tipo.id] = v.punto.tipo.nombre;
-  for (const [id, nombre] of Object.entries(tipos))
-    f.tipo.append(el('option', { value: id, selected: punto?.tipo_equipo_id == id || null, text: nombre }));
+  const tipos = (tiposDb && tiposDb.length) ? tiposDb
+    : [...new Map(S.catalogo.variables.map(v => [v.punto.tipo.id, v.punto.tipo])).values()];
+  for (const t of tipos)
+    f.tipo.append(el('option', { value: t.id, selected: punto?.tipo_equipo_id == t.id || null, text: t.nombre }));
   for (const [v_, t] of [['normal', 'Normal · ~300 KB'], ['alta', 'Alta · ~500 KB']])
     f.calidad.append(el('option', { value: v_, selected: (punto?.foto_calidad || 'normal') === v_ || null, text: t }));
 
-  const cuerpo = el('div', {}, [
+  // Grupos de reporte: también al crear. Un punto puede estar en varios grupos.
+  const enGrupo = new Set((misGrupos || []).map(x => x.grupo_id));
+  const zonaGrupos = el('div', { class: 'grupos-check' });
+  for (const g of [...S.catalogo.grupos].sort((a, b) => compararGrupos(a.nombre, b.nombre))) {
+    const chk = el('input', { type: 'checkbox', checked: enGrupo.has(g.id) || null,
+      onchange: e => { e.target.checked ? enGrupo.add(g.id) : enGrupo.delete(g.id); } });
+    zonaGrupos.append(el('label', { class: 'fila' }, [chk, el('span', { text: g.nombre })]));
+  }
+
+  const cuerpo = el('div', { class: 'form-punto' }, [
     el('label', { text: 'Nombre del punto' }, [f.nombre]),
-    el('label', { text: 'Sitio' }, [f.sitio]),
-    el('label', { text: 'Área / zona' }, [f.area]),
     el('label', { text: 'Tipo de equipo que va acá' }, [f.tipo]),
     el('label', { class: 'fila' }, [f.foto, el('span', { text: 'La foto es obligatoria en este punto' })]),
     el('label', { text: 'Calidad de la foto' }, [f.calidad]),
-    el('p', { class: 'ayuda', text: 'Normal pesa ~300 KB y alcanza para leer un display. Alta pesa ~500 KB: úsala solo en los puntos que van a facturación o al reporte de la Ley 21.305.' }),
-    el('label', { text: 'Cómo se toma la lectura acá' }, [f.instruccion]),
-    el('p', { class: 'ayuda', text:
-      'Este texto aparece arriba de todo al abrir el punto en terreno. Es donde se escribe de qué ' +
-      'menú se saca cada valor, para que no dependa de quién vaya.' }),
-    el('label', { text: 'Observaciones' }, [f.obs]),
-    el('button', { class: 'btn guardar grande', style: 'margin-top:14px', text: 'Guardar', onclick: guardar })
+    el('p', { class: 'ayuda', text: 'Normal (~300 KB) alcanza para leer un display. Alta (~500 KB): solo para puntos de facturación o del reporte de la Ley 21.305.' }),
+    el('h3', { class: 'sub-form', text: 'Grupos de reporte' }),
+    el('p', { class: 'ayuda', text: 'El punto sale en el informe de cada grupo que marques. Puede estar en varios.' }),
+    zonaGrupos,
+    el('label', { text: 'Cómo se toma la lectura acá (opcional)', style: 'margin-top:14px' }, [f.instruccion]),
+    el('p', { class: 'ayuda', text: 'Aparece arriba al abrir el punto en terreno: de qué menú sale cada valor.' }),
+    el('button', { class: 'btn guardar grande', style: 'margin-top:14px',
+      text: nuevo ? 'Crear el punto' : 'Guardar', onclick: guardar })
   ]);
 
-  if (!nuevo) {
-    // Un punto puede estar en varios grupos: todos son grupos de reporte, así que
-    // el mismo punto puede salir en el informe de su sector y en uno transversal.
-    const enGrupo = new Set();
-    const cajas = [];
-    const zonaGrupos = el('div', { class: 'fila', style: 'flex-wrap:wrap;gap:10px 18px' });
-    for (const g of [...S.catalogo.grupos].sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))) {
-      const chk = el('input', { type: 'checkbox',
-        onchange: e => { e.target.checked ? enGrupo.add(g.id) : enGrupo.delete(g.id); } });
-      cajas.push({ id: g.id, chk });
-      zonaGrupos.append(el('label', { class: 'fila', style: 'margin:0' },
-        [chk, el('span', { text: g.nombre })]));
+  async function guardarGrupos(idPunto) {
+    const del = await sb.from('grupo_puntos').delete().eq('punto_id', idPunto);
+    if (del.error) throw del.error;
+    if (enGrupo.size) {
+      const ins = await sb.from('grupo_puntos')
+        .insert([...enGrupo].map(grupo_id => ({ grupo_id, punto_id: idPunto })));
+      if (ins.error) throw ins.error;
     }
-    sb.from('grupo_puntos').select('grupo_id').eq('punto_id', punto.id).then(({ data }) => {
-      for (const x of (data || [])) enGrupo.add(x.grupo_id);
-      for (const c of cajas) c.chk.checked = enGrupo.has(c.id);
-    });
-    cuerpo.append(
-      el('h3', { text: 'Grupos de reporte', style: 'margin-top:26px' }),
-      el('p', { class: 'ayuda', text:
-        'El punto aparece en el informe de cada grupo que marques. Ningún total lo suma dos veces: ' +
-        'los grupos son vistas de reporte, no cajones excluyentes.' }),
-      zonaGrupos,
-      el('button', { class: 'btn', style: 'margin-top:12px', text: 'Guardar los grupos', onclick: async () => {
-        const del = await sb.from('grupo_puntos').delete().eq('punto_id', punto.id);
-        if (del.error) return toast(del.error.message, true);
-        if (enGrupo.size) {
-          const ins = await sb.from('grupo_puntos')
-            .insert([...enGrupo].map(grupo_id => ({ grupo_id, punto_id: punto.id })));
-          if (ins.error) return toast(ins.error.message, true);
-        }
-        await DB.descargarCatalogo().catch(() => {});
-        S.catalogo = await DB.catalogo();
-        toast('Grupos actualizados');
-      } })
-    );
+  }
 
-    // Las lecturas del punto: acá se define en qué unidad viene el display y en
-    // cuál se informa (un medidor que muestra MWh se informa en kWh), y cuál es
-    // la principal cuando el equipo entrega importada y exportada.
+  async function guardar(e) {
+    const datos = {
+      nombre: f.nombre.value.trim(),
+      tipo_equipo_id: Number(f.tipo.value),
+      foto_obligatoria: f.foto.checked,
+      foto_calidad: f.calidad.value,
+      instruccion_lectura: f.instruccion.value.trim() || null
+    };
+    if (!datos.nombre) return toast('El punto necesita un nombre', true);
+    if (!enGrupo.size && !confirm('El punto no está en ningún grupo: no va a salir en los informes por grupo. ¿Guardar igual?')) return;
+    const b = e?.target; if (b) b.disabled = true;
+    try {
+      const r = nuevo
+        ? await sb.from('puntos').insert(datos).select('id').single()
+        : await sb.from('puntos').update(datos).eq('id', punto.id);
+      if (r.error) throw r.error;
+      const idPunto = nuevo ? r.data.id : punto.id;
+      await guardarGrupos(idPunto);
+      S.catalogo = await DB.descargarCatalogo();
+      if (nuevo) {
+        // Sin lecturas el punto no aparece en terreno: se abre de nuevo para agregarlas.
+        const { data: creado } = await sb.from('v_puntos').select('*').eq('id', idPunto).single();
+        toast('Punto creado. Ahora agrega sus lecturas.');
+        render();
+        return editarPunto(creado || { id: idPunto, nombre: datos.nombre });
+      }
+      cerrarModal(); toast('Guardado'); render();
+    } catch (err) {
+      toast(err.message || String(err), true);
+    } finally { if (b) b.disabled = false; }
+  }
+
+  if (!nuevo) {
+    // ---- lecturas del punto ----
     const zonaVars = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
     cuerpo.append(
-      el('h3', { text: 'Lecturas de este punto', style: 'margin-top:26px' }),
+      el('h3', { class: 'sub-form', text: 'Lecturas de este punto' }),
       el('p', { class: 'ayuda', text:
-        'La principal es la que va al consumo del informe. La secundaria se toma y se guarda ' +
-        'igual — sirve, por ejemplo, para saber en qué sentido circuló la energía — pero no suma. ' +
-        'Una lectura opcional aparece en terreno pero no cuenta como pendiente del mes.' }),
+        'La principal va al consumo del informe; la secundaria se toma y se guarda pero no suma. ' +
+        'Una opcional aparece en terreno pero no cuenta como pendiente.' }),
       zonaVars);
-    pintarVariables();
-
     async function pintarVariables() {
       const { data, error } = await sb.from('variables')
         .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
         .eq('punto_id', punto.id).order('id');
       if (error) { poner(zonaVars, el('p', { class: 'error', text: error.message })); return; }
       poner(zonaVars,
-        tabla(['Lectura', 'En el display', 'En el informe', 'Decimales', 'Rol', ''],
-          (data || []).map(x => [
+        (data && data.length) ? tabla(['Lectura', 'Display', 'Informe', 'Rol', ''],
+          [...data].sort(ordenVariables).map(x => [
             x.nombre,
             UNIDAD[x.unidad_display] || x.unidad_display,
             UNIDAD[x.unidad_reporte] || x.unidad_reporte,
-            String(x.decimales_display ?? 0),
             el('div', { class: 'fila' }, [
               el('span', { class: 'pill ' + (x.principal ? 'ok' : 'neutro'),
                            text: x.principal ? 'principal' : 'secundaria' }),
-              x.opcional ? el('span', { class: 'pill neutro', text: 'opcional' }) : null
-            ].filter(Boolean)),
-            el('div', { class: 'fila' }, [
-              el('button', { class: 'btn chico', text: 'Editar',
-                onclick: () => editarVariable(x, punto, pintarVariables) }),
+              x.opcional ? el('span', { class: 'pill neutro', text: 'opcional' }) : null,
               x.activo ? null : el('span', { class: 'pill warn', text: 'inactiva' })
-            ].filter(Boolean))
-          ])),
+            ].filter(Boolean)),
+            el('button', { class: 'btn chico', text: 'Editar',
+              onclick: () => editarVariable(x, punto, pintarVariables) })
+          ]))
+          : el('p', { class: 'banda warn', text: 'Sin lecturas: este punto no aparece en terreno hasta que agregues al menos una.' }),
         el('button', { class: 'btn', style: 'margin-top:10px', text: '+ Agregar una lectura',
           onclick: () => editarVariable(null, punto, pintarVariables) }));
     }
+    pintarVariables();
 
-    const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
-    cuerpo.append(el('h3', { text: 'Equipo instalado', style: 'margin-top:26px' }), zona);
+    // ---- equipo instalado ----
+    const zonaEq = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
+    cuerpo.append(el('h3', { class: 'sub-form', text: 'Equipo instalado' }), zonaEq);
+    pintarEquipoDelPunto(punto, zonaEq);
 
-    const [{ data: hist }, { data: vars }, { data: libres }] = await Promise.all([
-      sb.from('asignaciones').select('id, desde, hasta, motivo, equipo:equipos(id, tag, marca, modelo)')
-        .eq('punto_id', punto.id).order('desde', { ascending: false }),
-      sb.from('variables').select('id, nombre, unidad_display, unidad_reporte, formato_lectura, activo')
-        .eq('punto_id', punto.id).order('nombre'),
-      sb.from('v_equipos').select('id, tag, marca, punto_actual').is('punto_actual_id', null)
-        .eq('activo', true).order('tag')
+    if (S.usuario.rol !== 'colaborador') cuerpo.append(
+      el('button', { class: 'btn peligro', style: 'margin-top:26px', text: 'Eliminar este punto de medición',
+        onclick: () => eliminarCosa({
+          rpc: 'eliminar_punto', id: { p_id: punto.id }, nombre: punto.nombre, que: 'el punto',
+          desactivar: async () => (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error
+        }) }));
+  }
+  modal(nuevo ? 'Punto nuevo' : punto.nombre, cuerpo);
+}
+
+/* El cruce punto ↔ equipo, en un solo lugar: lo usan la ficha del punto y la
+   pantalla Instalaciones. Muestra el equipo vigente, permite instalar otro (lo
+   que retira el anterior), retirarlo a bodega, y el historial completo. */
+async function pintarEquipoDelPunto(punto, zona, alCambiar) {
+  const [{ data: hist }, { data: libres }, { data: actual }] = await Promise.all([
+    sb.from('asignaciones').select('id, desde, hasta, motivo, equipo:equipos(id, tag, marca, modelo, n_serie)')
+      .eq('punto_id', punto.id).order('desde', { ascending: false }),
+    sb.from('v_equipos').select('id, tag, marca, modelo, tipo, tipo_equipo_id, estado')
+      .is('punto_actual_id', null).eq('activo', true).order('tag'),
+    sb.from('v_puntos').select('equipo_id, tag, marca, modelo, n_serie, certificado, vence_certificado, equipo_desde, tipo_equipo_id')
+      .eq('id', punto.id).maybeSingle()
+  ]);
+  const a = actual || {};
+  const despues = async (msg) => {
+    toast(msg);
+    S.catalogo = await DB.descargarCatalogo().catch(() => S.catalogo);
+    pintarEquipoDelPunto(punto, zona, alCambiar);
+    alCambiar && alCambiar();
+  };
+
+  // Los equipos del mismo tipo que el punto, primero.
+  const libresOrd = [...(libres || [])].sort((x, y) =>
+    (y.tipo_equipo_id === a.tipo_equipo_id) - (x.tipo_equipo_id === a.tipo_equipo_id) ||
+    String(x.tag || '').localeCompare(String(y.tag || '')));
+  const selEquipo = el('select');
+  selEquipo.append(el('option', { value: '', text: libresOrd.length ? '— elegir equipo en bodega —' : 'No hay equipos sin instalar' }));
+  for (const e of libresOrd)
+    selEquipo.append(el('option', { value: e.id,
+      text: [e.tag || 'sin TAG', e.marca, e.modelo, e.tipo].filter(Boolean).join(' · ') }));
+  const fecha = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
+  const motivo = el('input', { placeholder: 'Motivo: instalación, reemplazo por daño…' });
+  const vencido = a.certificado && a.vence_certificado && a.vence_certificado < new Date().toISOString().slice(0, 10);
+
+  poner(zona,
+    a.equipo_id
+      ? el('div', { class: 'equipo-actual' }, [
+          el('div', {}, [
+            el('b', { text: a.tag || 'sin TAG' }),
+            el('small', { text: [a.marca, a.modelo, a.n_serie ? 'serie ' + a.n_serie : null].filter(Boolean).join(' · ') || '—' })
+          ]),
+          el('div', { class: 'der' }, [
+            el('small', { text: 'instalado desde' }), el('b', { text: fechaCorta(a.equipo_desde) }),
+            a.certificado ? el('span', { class: 'pill ' + (vencido ? 'bad' : 'ok'),
+              text: vencido ? 'certificado vencido' : 'certificado al ' + fechaCorta(a.vence_certificado) }) : null
+          ])
+        ])
+      : el('p', { class: 'banda warn', text: 'Este punto no tiene equipo instalado.' }),
+    el('details', { class: 'plegable' }, [
+      el('summary', { text: a.equipo_id ? 'Cambiar o retirar el equipo' : 'Instalar un equipo' }),
+      el('label', { text: a.equipo_id ? 'Reemplazar por' : 'Equipo' }, [selEquipo]),
+      el('div', { class: 'fila' }, [
+        el('label', { class: 'crece', text: 'Fecha' }, [fecha]),
+        el('label', { class: 'crece', text: 'Motivo' }, [motivo])
+      ]),
+      el('div', { class: 'fila' }, [
+        el('button', { class: 'btn guardar', text: a.equipo_id ? 'Reemplazar' : 'Instalar', onclick: async () => {
+          if (!selEquipo.value) return toast('Elige un equipo', true);
+          const r = await sb.rpc('asignar_equipo', {
+            p_equipo_id: Number(selEquipo.value), p_punto_id: punto.id,
+            p_desde: fecha.value, p_motivo: motivo.value.trim() || null });
+          if (r.error) return toast(r.error.message, true);
+          despues(a.equipo_id ? 'Equipo reemplazado; el anterior quedó en bodega' : 'Equipo instalado');
+        } }),
+        a.equipo_id ? el('button', { class: 'btn cancelar', text: 'Retirar a bodega', onclick: async () => {
+          if (!motivo.value.trim()) return toast('Escribe el motivo del retiro', true);
+          if (!confirm(`¿Retirar ${a.tag || 'el equipo'} de este punto? El punto queda sin equipo.`)) return;
+          const r = await sb.rpc('retirar_equipo', {
+            p_equipo_id: a.equipo_id, p_hasta: fecha.value, p_estado: 'bodega', p_motivo: motivo.value.trim() });
+          if (r.error) return toast(r.error.message, true);
+          despues('Equipo retirado a bodega');
+        } }) : null
+      ].filter(Boolean)),
+      el('p', { class: 'ayuda', text: 'Solo aparecen equipos sin instalar (primero los del mismo tipo). Para mover uno que está en otro punto, retíralo primero allá o ábrelo desde Equipos.' })
+    ]),
+    (hist && hist.length) ? el('div', {}, [
+      el('h4', { text: 'Historial de equipos en este punto', style: 'margin:14px 0 6px' }),
+      tabla(['Equipo', 'Desde', 'Hasta', 'Motivo'], hist.map(h => [
+        [h.equipo?.tag || 'sin TAG', h.equipo?.marca].filter(Boolean).join(' · '),
+        fechaCorta(h.desde),
+        h.hasta ? fechaCorta(h.hasta) : el('span', { class: 'pill ok', text: 'instalado' }),
+        h.motivo || '—'
+      ]))
+    ]) : null
+  );
+}
+
+/* ===================================================================
+   CONFIGURACIÓN · INSTALACIONES (punto ↔ equipo)
+   Una fila por punto con su equipo vigente, y aparte los equipos que no están
+   en ningún punto. Sirve para responder rápido "¿qué medidor está en X?",
+   "¿qué puntos no tienen equipo?" y "¿qué certificados vencen?".
+   =================================================================== */
+async function vistaInstalaciones(c) {
+  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando instalaciones…' })]);
+  const buscar = el('input', { type: 'search', placeholder: 'Buscar punto, TAG, marca o serie…',
+    oninput: () => pintar() });
+  c.append(el('div', { class: 'buscador' }, [buscar]), zona);
+
+  const [{ data: puntos, error }, { data: equipos }, { data: gp }] = await Promise.all([
+    sb.from('v_puntos').select('*').eq('activo', true).order('nombre'),
+    sb.from('v_equipos').select('*').eq('activo', true).order('tag'),
+    sb.from('v_grupos_punto').select('punto_id, grupos')
+  ]);
+  if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
+  const gruposPorPunto = Object.fromEntries((gp || []).map(x => [x.punto_id, x.grupos || []]));
+  for (const p of puntos) p.grupos = gruposPorPunto[p.id] || [];
+  const hoy = new Date().toISOString().slice(0, 10);
+  const en60 = new Date(Date.now() + 60 * 86400e3).toISOString().slice(0, 10);
+  const vencido = p => p.certificado && p.vence_certificado && p.vence_certificado < hoy;
+  const porVencer = p => p.certificado && p.vence_certificado && p.vence_certificado >= hoy && p.vence_certificado <= en60;
+  const enBodega = (equipos || []).filter(e => !e.punto_actual_id);
+
+  let filtro = 'todos';
+  function pintar() {
+    const q = (buscar.value || '').toLowerCase();
+    const n = {
+      todos: puntos.length,
+      sin: puntos.filter(p => !p.equipo_id).length,
+      venc: puntos.filter(p => vencido(p) || porVencer(p)).length,
+      bodega: enBodega.length
+    };
+    const chip = (k, txt) => el('button', { class: 'chip-filtro' + (filtro === k ? ' sel' : ''),
+      text: `${txt} · ${n[k]}`, onclick: () => { filtro = k; pintar(); } });
+    const chips = el('div', { class: 'filtros-terreno' }, [
+      chip('todos', 'Todos los puntos'), chip('sin', 'Sin equipo'),
+      chip('venc', 'Certificado vencido o por vencer'), chip('bodega', 'Equipos sin instalar')
     ]);
 
-    const selEquipo = el('select');
-    selEquipo.append(el('option', { value: '', text: '— elegir equipo disponible —' }));
-    for (const e of (libres || []))
-      selEquipo.append(el('option', { value: e.id, text: `${e.tag || 'sin TAG'} · ${e.marca || ''}` }));
-    const fecha = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
-    const motivo = el('input', { placeholder: 'Motivo: instalación, reemplazo por daño…' });
+    if (filtro === 'bodega') {
+      const lista = enBodega.filter(e => !q || `${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.tipo}`.toLowerCase().includes(q));
+      return poner(zona, chips,
+        lista.length ? tabla(['TAG', 'Tipo', 'Marca · modelo', 'Serie', 'Estado', ''], lista.map(e => [
+          e.tag || el('span', { class: 'pill warn', text: 'sin TAG' }), e.tipo || '—',
+          [e.marca, e.modelo].filter(Boolean).join(' · ') || '—', e.n_serie || '—',
+          el('span', { class: 'pill ' + (ESTADO_EQUIPO[e.estado]?.[0] || 'neutro'), text: ESTADO_EQUIPO[e.estado]?.[1] || e.estado }),
+          el('button', { class: 'btn chico', text: 'Abrir', onclick: () => editarEquipo(e) })
+        ]), { etiquetas: true }) : el('p', { class: 'vacio', text: 'Todos los equipos están instalados.' }));
+    }
 
-    poner(zona,
-      punto.tag
-        ? el('div', { class: 'anterior' }, [
-            el('span', { html: `<b>${esc(punto.tag)}</b><br><small>${esc(punto.marca || '')} ${esc(punto.modelo || '')}</small>` }),
-            el('span', { html: `instalado desde<br><b>${fechaCorta(punto.equipo_desde)}</b>` })
-          ])
-        : el('p', { class: 'banda warn', text: 'Este punto no tiene equipo instalado.' }),
-      el('label', { text: 'Instalar un equipo' }, [selEquipo]),
-      (libres && !libres.length) ? el('p', { class: 'ayuda', text: 'No hay equipos disponibles. Retira uno primero o crea uno nuevo en la sección Equipos.' }) : null,
-      el('label', { text: 'Fecha' }, [fecha]),
-      el('label', { text: 'Motivo' }, [motivo]),
-      el('button', { class: 'btn', text: 'Instalar en este punto', onclick: async () => {
-        if (!selEquipo.value) return toast('Elige un equipo', true);
-        const r = await sb.rpc('asignar_equipo', {
-          p_equipo_id: Number(selEquipo.value), p_punto_id: punto.id,
-          p_desde: fecha.value, p_motivo: motivo.value.trim() || null });
-        if (r.error) return toast(r.error.message, true);
-        cerrarModal(); toast('Equipo instalado');
-        S.catalogo = await DB.descargarCatalogo(); render();
-      } }),
-      (hist && hist.length) ? el('div', {}, [
-        el('h4', { text: 'Equipos que pasaron por acá' }),
-        tabla(['Equipo', 'Desde', 'Hasta', 'Motivo'], hist.map(a => [
-          `${a.equipo?.tag || 'sin TAG'} · ${a.equipo?.marca || ''}`,
-          fechaCorta(a.desde),
-          a.hasta ? fechaCorta(a.hasta) : el('span', { class: 'pill ok', text: 'instalado' }),
-          a.motivo || '—'
-        ]))
-      ]) : null,
-      el('h3', { text: 'Variables que se leen', style: 'margin-top:26px' }),
-      (vars && vars.length)
-        ? tabla(['Variable', 'Display', 'Informe', 'Formato'], vars.map(v => [
-            v.nombre, UNIDAD[v.unidad_display] || v.unidad_display,
-            UNIDAD[v.unidad_reporte] || v.unidad_reporte, v.formato_lectura]))
-        : el('p', { class: 'ayuda', text: 'Sin variables. Un punto sin variables no aparece en terreno.' })
-    );
+    const lista = puntos.filter(p =>
+      (filtro !== 'sin' || !p.equipo_id) &&
+      (filtro !== 'venc' || vencido(p) || porVencer(p)) &&
+      (!q || `${p.nombre} ${gruposTexto(p)} ${p.tag || ''} ${p.marca || ''} ${p.modelo || ''} ${p.n_serie || ''}`.toLowerCase().includes(q)));
+    poner(zona, chips,
+      el('p', { class: 'ayuda', text: `${lista.length} punto(s) · toca uno para cambiar su equipo o ver el historial.` }),
+      tabla(['Punto', 'Grupos', 'Equipo instalado', 'Desde', 'Certificado', ''], lista.map(p => [
+        p.nombre, gruposTexto(p),
+        p.equipo_id
+          ? el('span', {}, [el('b', { text: p.tag || 'sin TAG' }),
+              el('small', { class: 'tenue-b', text: ' ' + [p.marca, p.modelo].filter(Boolean).join(' · ') })])
+          : el('span', { class: 'pill warn', text: 'sin equipo' }),
+        p.equipo_id ? fechaCorta(p.equipo_desde) : '—',
+        !p.certificado ? '—'
+          : el('span', { class: 'pill ' + (vencido(p) ? 'bad' : porVencer(p) ? 'warn' : 'ok'),
+              text: (vencido(p) ? 'vencido ' : 'vence ') + fechaCorta(p.vence_certificado) }),
+        el('button', { class: 'btn chico', text: p.equipo_id ? 'Cambiar' : 'Instalar', onclick: () => {
+          const z = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
+          modal(p.nombre, el('div', {}, [
+            el('p', { class: 'ayuda', text: gruposTexto(p) }), z,
+            el('button', { class: 'btn', style: 'margin-top:14px', text: 'Abrir la ficha completa del punto',
+              onclick: () => editarPunto(p) })
+          ]));
+          pintarEquipoDelPunto(p, z, () => { recargar(); });
+        } })
+      ]), { etiquetas: true }));
   }
-
-  async function guardar() {
-    const datos = {
-      nombre: f.nombre.value.trim(),
-      sitio_id: Number(f.sitio.value),
-      area: f.area.value.trim() || null,
-      tipo_equipo_id: Number(f.tipo.value),
-      foto_obligatoria: f.foto.checked,
-      foto_calidad: f.calidad.value,
-      observaciones: f.obs.value.trim() || null,
-      instruccion_lectura: f.instruccion.value.trim() || null
-    };
-    if (!datos.nombre) return toast('El punto necesita un nombre', true);
-    const r = nuevo
-      ? await sb.from('puntos').insert(datos)
-      : await sb.from('puntos').update(datos).eq('id', punto.id);
-    if (r.error) return toast(r.error.message, true);
-    cerrarModal(); toast('Guardado');
-    S.catalogo = await DB.descargarCatalogo(); render();
+  async function recargar() {
+    const [{ data: p2 }, { data: e2 }] = await Promise.all([
+      sb.from('v_puntos').select('*').eq('activo', true).order('nombre'),
+      sb.from('v_equipos').select('*').eq('activo', true).order('tag')
+    ]);
+    if (p2) { puntos.splice(0, puntos.length, ...p2); for (const p of puntos) p.grupos = gruposPorPunto[p.id] || []; }
+    if (e2) { enBodega.splice(0, enBodega.length, ...e2.filter(e => !e.punto_actual_id)); }
+    pintar();
   }
-
-  if (!nuevo && S.usuario.rol !== 'colaborador') cuerpo.append(
-    el('button', { class: 'btn peligro', style: 'margin-top:18px', text: 'Eliminar este punto de medición',
-      onclick: () => eliminarCosa({
-        rpc: 'eliminar_punto', id: { p_id: punto.id }, nombre: punto.nombre, que: 'el punto',
-        desactivar: async () => (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error
-      }) }));
-  modal(nuevo ? 'Punto nuevo' : punto.nombre, cuerpo);
+  pintar();
 }
 
 // Un medidor puede mostrar MWh y el informe necesita kWh: eso se declara acá,
@@ -3429,7 +3545,7 @@ async function editarGrupo(g) {
     const { data: gp } = await sb.from('grupo_puntos').select('punto_id').eq('grupo_id', g.id);
     const dentro = new Set((gp || []).map(x => x.punto_id));
     const puntos = [...new Map(S.catalogo.variables.map(v => [v.punto.id, v.punto])).values()]
-      .sort((a, b) => `${a.sitio.nombre}${a.nombre}`.localeCompare(`${b.sitio.nombre}${b.nombre}`));
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
     const lista = el('div', { style: 'max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px' });
     const contador = el('p', { class: 'ayuda' });
@@ -3439,11 +3555,12 @@ async function editarGrupo(g) {
       const q = buscar.value.toLowerCase();
       lista.replaceChildren();
       for (const p of puntos) {
-        if (q && !`${p.nombre} ${p.sitio.nombre}`.toLowerCase().includes(q)) continue;
+        if (q && !`${p.nombre} ${gruposTexto(p)}`.toLowerCase().includes(q)) continue;
         const chk = el('input', { type: 'checkbox', checked: dentro.has(p.id) || null,
           onchange: e => { e.target.checked ? dentro.add(p.id) : dentro.delete(p.id); actualizar(); } });
         lista.append(el('label', { class: 'fila', style: 'margin-bottom:6px' },
-          [chk, el('span', { text: `${p.sitio.nombre} · ${p.nombre}` })]));
+          [chk, el('span', {}, [el('span', { text: p.nombre }),
+            el('small', { class: 'tenue-b', text: (p.grupos || []).length ? '  · ' + gruposTexto(p) : '' })])]));
       }
       actualizar();
     }
@@ -3595,7 +3712,7 @@ async function vistaRespaldo(c) {
         if (tipo === 'nuevo') q = q.or('respaldado_en.is.null,and(foto_id.not.is.null,foto_respaldado_en.is.null)');
         if (desde) q = q.gte('periodo', desde);
         if (hasta) q = q.lte('periodo', hasta);
-        return q.order('periodo').order('sitio').order('punto').order('lectura_id').order('foto_n');
+        return q.order('periodo').order('punto').order('lectura_id').order('foto_n');
       });
       if (!filas.length) { paso(''); progreso.hidden = true; return toast('No hay nada que respaldar con ese criterio'); }
 
@@ -3609,7 +3726,7 @@ async function vistaRespaldo(c) {
       paso('Trayendo inventario, avisos y auditoría…');
       const [inv, avs, aud, rec, mov] = await Promise.all([
         sb.from('v_puntos').select('*'),
-        sb.from('avisos').select('id, descripcion, severidad, estado, abierto_en, resuelto_en, obs_resolucion, punto:puntos(nombre, sitio:sitios(nombre)), categoria:catalogo_avisos(categoria)'),
+        sb.from('avisos').select('id, descripcion, severidad, estado, abierto_en, resuelto_en, obs_resolucion, punto:puntos(nombre), categoria:catalogo_avisos(categoria)'),
         sb.from('auditoria').select('*').gte('ocurrido_en', rangoDesde).order('ocurrido_en').limit(5000),
         sb.from('v_recargas').select('*').gte('periodo', rangoDesde).lte('periodo', rangoHasta).order('fecha_hora'),
         sb.from('generador_movimientos').select('*, generador:generadores(n_equipo)').order('fecha')
@@ -3630,7 +3747,7 @@ async function vistaRespaldo(c) {
       const conFoto = filas.filter(f => f.storage_path && !(tipo === 'nuevo' && f.foto_respaldado_en));
       const idsFoto = [];
       const nombresUsados = new Set();
-      const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Sitio', 'Punto', 'TAG',
+      const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Punto', 'TAG',
                        'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
       for (let i = 0; i < conFoto.length; i++) {
         const f = conFoto[i];
@@ -3644,7 +3761,7 @@ async function vistaRespaldo(c) {
         const carpeta = [
           d.getUTCFullYear(),
           R.MESES_N[d.getUTCMonth()],
-          R.limpio(f.grupo || f.sitio)
+          R.limpio(f.grupo || 'Sin grupo')
         ].join('/');
         const varias = (f.variable && !/^energ[ií]a activa importada\b/i.test(f.variable))
           ? '_' + R.limpio(f.variable) : '';
@@ -3658,7 +3775,7 @@ async function vistaRespaldo(c) {
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
         indice.push([`${carpeta}/${nombre}`, d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()],
-          f.grupo || 'Sin grupo', f.sitio, f.punto, f.tag || '', f.variable, f.unidad,
+          f.grupo || 'Sin grupo', f.punto, f.tag || '', f.variable, f.unidad,
           String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
           f.valor === null ? '' : Number(f.valor), f.estado,
           S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
@@ -3742,9 +3859,9 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
   const sigMes = m => { const d = new Date(m + 'T00:00:00Z');
                         d.setUTCMonth(d.getUTCMonth() + 1);
                         return d.toISOString().slice(0, 10); };
-  const planilla = [['TAG', 'Sitio', 'Punto', 'Variable', 'Unidad', 'Fila', ...mesesC.map(nMes)]];
+  const planilla = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...mesesC.map(nMes)]];
   for (const { f, lect, cons } of porVar.values()) {
-    planilla.push([f.tag || '', f.sitio, f.punto, f.variable, f.unidad, 'Totalizador',
+    planilla.push([f.tag || '', f.grupo || 'Sin grupo', f.punto, f.variable, f.unidad, 'Totalizador',
       ...mesesC.map(m => lect[sigMes(m)] ?? '')]);
     planilla.push(['', '', '', '', '', 'Consumo del mes',
       ...mesesC.map(m => cons[m] ?? '')]);
@@ -3759,12 +3876,12 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
   return [
     { nombre: 'Formato planilla', filas: planilla },
     { nombre: 'Lecturas', filas: [
-      ['ID','Periodo','Fecha de lectura','Fecha estimada','Sitio','Grupo','Punto','TAG','Variable','Unidad',
+      ['ID','Periodo','Fecha de lectura','Fecha estimada','Grupo','Punto','TAG','Variable','Unidad',
        'Valor','Sin dato','Reinicio','Consumo declarado','Estado','Origen','Tomada por','Validada por',
        'Observación','Obs. validación','Fotos'],
       // una fila por lectura (la vista trae una por foto)
       ...[...new Map(filas.map(f => [f.lectura_id, f])).values()].map(f => [f.lectura_id, f.periodo, String(f.fecha_lectura).slice(0,19).replace('T',' '),
-        f.fecha_estimada ? 'sí' : 'no', f.sitio, f.grupo || '', f.punto, f.tag || '', f.variable, f.unidad,
+        f.fecha_estimada ? 'sí' : 'no', f.grupo || '', f.punto, f.tag || '', f.variable, f.unidad,
         f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
         f.es_reset ? (f.tipo_reset || 'sí') : 'no',
         f.consumo_manual === null ? '' : Number(f.consumo_manual),
@@ -3772,20 +3889,20 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
         f.observacion || '', f.obs_validacion || '', Number(f.foto_total) || 0])
     ]},
     { nombre: 'Consumos', filas: [
-      ['Mes','Sitio','Grupo','Punto','TAG','Variable','Unidad','Consumo','Días','Método','Estado'],
-      ...consumos.map(c => [c.mes, c.sitio, c.grupo || '', c.punto, c.tag || '', c.variable,
+      ['Mes','Grupo','Punto','TAG','Variable','Unidad','Consumo','Días','Método','Estado'],
+      ...consumos.map(c => [c.mes, c.grupo || '', c.punto, c.tag || '', c.variable,
         c.unidad_reporte, Number(c.consumo), c.dias_asignados, c.metodo,
         c.completo ? 'cerrado' : 'provisional'])
     ]},
     { nombre: 'Inventario', filas: [
-      ['Sitio','Punto','Área','Tipo','TAG','Marca','Modelo','Serie','Certificado','Vence','Variables','Equipos históricos'],
-      ...inventario.map(p => [p.sitio, p.nombre, p.area || '', p.tipo, p.tag || '', p.marca || '',
+      ['Punto','Tipo','TAG','Marca','Modelo','Serie','Certificado','Vence','Variables','Equipos históricos'],
+      ...inventario.map(p => [p.nombre, p.tipo, p.tag || '', p.marca || '',
         p.modelo || '', p.n_serie || '', p.certificado ? 'sí' : 'no', p.vence_certificado || '',
         p.n_variables, p.n_equipos_historicos])
     ]},
     { nombre: 'Avisos', filas: [
-      ['Sitio','Punto','Categoría','Severidad','Estado','Abierto','Resuelto','Descripción','Solución'],
-      ...avisos.map(a => [a.punto?.sitio?.nombre || '', a.punto?.nombre || '',
+      ['Punto','Categoría','Severidad','Estado','Abierto','Resuelto','Descripción','Solución'],
+      ...avisos.map(a => [a.punto?.nombre || '',
         a.categoria?.categoria || '', a.severidad, a.estado,
         String(a.abierto_en || '').slice(0,10), String(a.resuelto_en || '').slice(0,10),
         a.descripcion || '', a.obs_resolucion || ''])
@@ -4035,7 +4152,6 @@ function editarGenerador(g) {
   const f = {
     n_equipo: el('input', { value: g.n_equipo || '', placeholder: 'XCES 442' }),
     n_interno: el('input', { value: g.n_interno || '', placeholder: 'G-10' }),
-    sitio: el('select'),
     propiedad: el('select'),
     proveedor: el('input', { value: g.proveedor || '', placeholder: 'Aggreko, Enerfrost…' }),
     modelo: el('input', { value: g.modelo || '' }),
@@ -4049,8 +4165,6 @@ function editarGenerador(g) {
     obs: el('textarea', { value: g.observaciones || '' }),
     activo: el('input', { type: 'checkbox', checked: (nuevo ? true : g.activo) || null })
   };
-  for (const s_ of S.catalogo.sitios)
-    f.sitio.append(el('option', { value: s_.id, selected: s_.id === g.sitio_id || null, text: s_.nombre }));
   for (const p of PROPIEDAD_GEN)
     f.propiedad.append(el('option', { value: p, selected: p === (g.propiedad || 'Arriendo') || null, text: p }));
   for (const e_ of ESTADOS_GEN)
@@ -4061,7 +4175,6 @@ function editarGenerador(g) {
   const cuerpo = el('div', {}, [
     el('label', { text: 'Número de equipo' }, [f.n_equipo]),
     el('label', { text: 'Número interno' }, [f.n_interno]),
-    el('label', { text: 'Sitio' }, [f.sitio]),
     el('label', { text: 'Propiedad' }, [f.propiedad]),
     el('label', { text: 'Proveedor' }, [f.proveedor]),
     el('label', { text: 'Modelo' }, [f.modelo]),
@@ -4076,7 +4189,7 @@ function editarGenerador(g) {
     el('p', { class: 'ayuda', text:
       'El estado que se ve en el parque lo manda el último movimiento registrado. ' +
       'Acá se corrige la ficha del equipo, no su historia.' }),
-    el('button', { class: 'btn primario grande', style: 'margin-top:14px',
+    el('button', { class: 'btn guardar grande', style: 'margin-top:14px',
       text: nuevo ? 'Crear el generador' : 'Guardar', onclick: async e => {
         if (!f.n_equipo.value.trim()) return toast('Ponle el número de equipo', true);
         e.target.disabled = true;
@@ -4084,7 +4197,6 @@ function editarGenerador(g) {
           p_id: g.id ?? null,
           p_n_equipo: f.n_equipo.value.trim(),
           p_n_interno: f.n_interno.value.trim() || null,
-          p_sitio_id: Number(f.sitio.value),
           p_propiedad: f.propiedad.value,
           p_proveedor: f.proveedor.value.trim() || null,
           p_modelo: f.modelo.value.trim() || null,
@@ -4634,9 +4746,6 @@ async function reasignarMedidor(v, equipoId, zona) {
 
 /* ---------------- hoja de etiquetas imprimible ---------------- */
 async function vistaEtiquetas(c) {
-  const sitios = S.catalogo.sitios;
-  const selSitio = el('select', {}, [el('option', { value: '', text: 'Todos los sitios' }),
-    ...sitios.map(s => el('option', { value: s.id, text: s.nombre }))]);
   const selGrupo = el('select', {}, [el('option', { value: '', text: 'Todos los grupos' }),
     ...[...S.catalogo.grupos].sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))
         .map(g => el('option', { value: g.nombre, text: g.nombre }))]);
@@ -4650,7 +4759,6 @@ async function vistaEtiquetas(c) {
   const refrescar = () => {
     const puntos = new Map();
     for (const v of S.catalogo.variables) {
-      if (selSitio.value && String(v.punto.sitio.id) !== selSitio.value) continue;
       if (selGrupo.value && !(v.punto.grupos || []).includes(selGrupo.value)) continue;
       puntos.set(v.punto.id, v.punto);
     }
@@ -4661,7 +4769,7 @@ async function vistaEtiquetas(c) {
       // etiqueta quedaría mintiendo pegada en la estructura durante años.
       if (cuales.value !== 'equipo')
         etiquetas.push({ codigo: codigoPunto(p.id), titulo: p.nombre,
-                         pie: p.sitio.nombre, clase: 'punto' });
+                         pie: 'Punto de medición', clase: 'punto' });
       // Y la del EQUIPO no menciona al punto, por lo mismo al revés: el equipo
       // se traslada y se lleva su etiqueta puesta.
       if (cuales.value !== 'punto' && p.equipo?.equipo_id)
@@ -4686,7 +4794,7 @@ async function vistaEtiquetas(c) {
         `Vista previa de 12 de ${etiquetas.length}; se imprimen todas, 24 por hoja.` }) : null
     );
   };
-  for (const s of [selSitio, selGrupo, cuales]) s.addEventListener('change', refrescar);
+  for (const s of [selGrupo, cuales]) s.addEventListener('change', refrescar);
 
   c.append(
     el('p', { class: 'ayuda', text:
@@ -4694,7 +4802,6 @@ async function vistaEtiquetas(c) {
       'Se escanean por separado, así que si mañana cambian el medidor solo se reemplaza su etiqueta. ' +
       'Imprímelas en papel adhesivo y protégelas con cinta transparente: en la pampa el sol borra la tinta.' }),
     el('div', { class: 'fila seccion' }, [
-      el('label', { class: 'crece', text: 'Sitio' }, [selSitio]),
       el('label', { class: 'crece', text: 'Grupo' }, [selGrupo]),
       el('label', { class: 'crece', text: 'Qué imprimir' }, [cuales])
     ]),

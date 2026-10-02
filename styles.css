@@ -663,3 +663,15 @@ body.con-modal{overflow:hidden}
 .acciones-fijas.dos .btn{min-height:46px;font-size:16px;width:100%}
 .captura .campo-num .dato-grande{padding-left:76px}
 .captura .doble .campo-num .dato-grande{padding-left:66px}
+
+/* formulario del punto e instalaciones */
+.form-punto .sub-form{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);
+  margin:22px 0 6px;padding-top:14px;border-top:1px solid var(--line)}
+.grupos-check{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px 14px}
+.grupos-check label.fila{margin:0;font-weight:500;min-height:36px}
+.equipo-actual{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;
+  background:var(--surface-2);border-radius:var(--radio);padding:12px 14px;margin-bottom:8px}
+.equipo-actual > div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.equipo-actual .der{align-items:flex-end;text-align:right}
+.equipo-actual small{color:var(--ink-3);font-size:12.5px}
+.tenue-b{color:var(--ink-3)}

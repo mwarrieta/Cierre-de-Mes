@@ -84,12 +84,12 @@
       sb.from('variables').select(`
           id, nombre, unidad_display, unidad_reporte, decimales_display,
           formato_lectura, activo, principal, opcional,
-          punto:puntos!inner ( id, nombre, area, foto_obligatoria, foto_calidad, activo,
+          punto:puntos!inner ( id, nombre, foto_obligatoria, foto_calidad, activo,
             instruccion_lectura,
-            sitio:sitios!inner ( id, nombre ),
             tipo:tipos_equipo!inner ( id, nombre )
           )`).eq('activo', true),
-      sb.from('sitios').select('*').order('nombre'),
+      // El sitio ya no se usa: los puntos se ordenan y filtran solo por grupo.
+      Promise.resolve({ data: [], error: null }),
       sb.from('grupos').select('*').order('orden').order('nombre'),
       sb.from('catalogo_avisos').select('*').eq('activo', true).order('categoria'),
       sb.from('generadores').select('*').eq('activo', true).order('n_equipo'),

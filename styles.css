@@ -690,3 +690,4 @@ body.con-modal{overflow:hidden}
 .tipo-extra label.fila.mini{font-weight:500}
 .tipo-extra label.fila.mini{flex-wrap:nowrap;gap:8px}
 .tipo-extra label.fila.mini span{white-space:normal}
+.chips-medir{margin-top:0}

@@ -161,6 +161,11 @@ El punto es lo permanente: la serie histórica cuelga del punto, no del medidor.
   cuadra con la historia del punto.
 - **Validación:** fotos y dato lado a lado, corrección con motivo, auditoría completa.
 - **Consumos e informes:** mes, año o rango por grupo; vista para imprimir y descarga en Excel.
+  **Qué incluir**: *Lo principal* (una lectura por punto, la que va al consumo) o las mediciones
+  que se elijan, varias a la vez: kWh+, kWh-, horas, agua, gas, litros, otras. Por ejemplo
+  kWh+ y horas para variadores y partidores suaves. Las sumas de grupo se hacen **por
+  medición** (nunca se suma kWh+ con kWh- ni energía con horas) y el Excel deja anotado en
+  *Calidad del dato* qué mediciones incluyó.
 - **Avisos:** lista por grupo y **PDF de avisos pendientes** en blanco y negro para adjuntar a
   los informes (lo genera el navegador con *Guardar como PDF*).
 - **Casa de Fuerza:** generadores (con ubicación en texto libre) y recargas de combustible.

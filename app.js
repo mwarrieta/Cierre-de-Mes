@@ -1772,9 +1772,10 @@ async function vistaConsumos(c) {
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
-    grupo: '', secundarias: false
+    grupo: '', medir: 'principales'
   };
   const R = S.rep;
+  if (!R.medir) R.medir = 'principales';
 
   const selModo = el('select', { onchange: e => { R.modo = e.target.value; pintarFiltros(); cargar(); } });
   for (const [k, v] of Object.entries(MODOS))
@@ -1787,24 +1788,39 @@ async function vistaConsumos(c) {
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
-  // Un punto puede tener importada y exportada: si las dos entraran al informe,
-  // el mismo medidor aparecería dos veces y la suma del grupo lo contaría doble.
-  const chkSec = el('input', { type: 'checkbox', checked: R.secundarias || null,
-    onchange: e => { R.secundarias = e.target.checked; cargar(); } });
+  // Qué mediciones entran: "Lo principal" (una por punto) o las que se elijan.
+  const hayMedicion = new Set(S.catalogo.variables.map(v => medicionDe(v.nombre, v.unidad_reporte)));
+  const zonaMedir = el('div', { class: 'filtros-terreno chips-medir' });
+  function pintarMedir() {
+    const esPpal = R.medir === 'principales';
+    const chip = (txt, sel, fn, titulo) => el('button', { class: 'chip-filtro' + (sel ? ' sel' : ''), text: txt, title: titulo || '', onclick: fn });
+    poner(zonaMedir,
+      chip('Lo principal', esPpal, () => { R.medir = 'principales'; pintarMedir(); cargar(); },
+        'Una lectura por punto: la que va al consumo'),
+      ...MEDICIONES.filter(m => hayMedicion.has(m.k)).map(m =>
+        chip(m.corto, !esPpal && R.medir.includes(m.k), () => {
+          let sel = esPpal ? [] : [...R.medir];
+          sel = sel.includes(m.k) ? sel.filter(x => x !== m.k) : [...sel, m.k];
+          R.medir = sel.length ? MEDICIONES.map(x => x.k).filter(k => sel.includes(k)) : 'principales';
+          pintarMedir(); cargar();
+        }, m.etiqueta)));
+  }
+  pintarMedir();
   const zonaFiltros = el('div', { class: 'fila crece' });
   const barra = el('div', { class: 'fila seccion' }, [
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
-    el('label', { text: 'Grupo' }, [selGrupo]),
-    el('label', { class: 'fila' }, [chkSec, el('span', { text: 'Incluir lecturas secundarias' })])
+    el('label', { text: 'Grupo' }, [selGrupo])
   ]);
+  const barraMedir = el('div', { class: 'seccion' }, [
+    el('p', { class: 'ayuda', style: 'margin:0 0 4px', text: 'Qué incluir en el informe (puedes elegir varias):' }), zonaMedir]);
   const acciones = el('div', { class: 'fila entre seccion' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
     el('span', { class: 'ayuda', id: 'planilla-paso' }),
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo, secundarias: R.secundarias }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo, medir: R.medir }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -1814,14 +1830,14 @@ async function vistaConsumos(c) {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
         await descargarPlanilla(primero, primerDiaDelMes(new Date()),
-          { grupo: R.grupo, secundarias: R.secundarias });
+          { grupo: R.grupo, medir: R.medir });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
     el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => imprimirInforme() })
   ]);
   const zona = el('div');
-  c.append(barra, acciones, zona);
+  c.append(barra, barraMedir, acciones, zona);
 
   function opcionesMes(valorActual, alCambiar) {
     const hoy = new Date(); const sel = el('select', { onchange: e => { alCambiar(e.target.value); cargar(); } });
@@ -1862,15 +1878,16 @@ async function vistaConsumos(c) {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('punto');
     if (R.grupo) q = q.contains('grupos', [R.grupo]);
-    // Sin esto, un punto con importada y exportada aparecería dos veces y la
-    // suma del grupo contaría el mismo medidor dos veces.
-    if (!R.secundarias) q = q.eq('principal', true);
-    const { data, error } = await q;
-    if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
+    // Con "lo principal" se filtra en el servidor; si se eligen mediciones, acá.
+    if (R.medir === 'principales') q = q.eq('principal', true);
+    const r0 = await q;
+    if (r0.error) { zona.replaceChildren(el('p', { class: 'error', text: r0.error.message })); return; }
+    const data = r0.data.filter(f => incluyeMedicion(R.medir, f.variable, f.unidad_reporte, f.principal))
+                        .sort(ordenFilaInforme);
 
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
-      (R.secundarias || v.principal !== false) &&
+      incluyeMedicion(R.medir, v.nombre, v.unidad_reporte, v.principal) &&
       (!R.grupo || (v.punto.grupos || []).includes(R.grupo)));
     const conDato = new Set(data.map(f => f.variable_id));
     // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
@@ -1894,7 +1911,7 @@ async function vistaConsumos(c) {
     } catch { /* sin avisos, el informe igual sirve */ }
 
     const bandas = await DB.bandasCache().catch(() => ({}));
-    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas };
+    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, medir: R.medir };
     poner(zona, ...armarInforme(data, desde, hasta, { faltantes, noLeidos, avisos, bandas }));
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
@@ -1905,6 +1922,43 @@ async function vistaConsumos(c) {
   pintarFiltros();
   cargar();
 }
+
+/* ---------- qué mediciones entran al informe ----------
+   "Lo principal" = una lectura por punto (la que va al consumo), como siempre.
+   O bien se eligen mediciones: kWh+, kWh-, horas, agua, gas, litros, otras; por
+   ejemplo kWh+ y horas para un variador o un partidor suave.
+   Las sumas de grupo se hacen POR MEDICIÓN: sumar kWh+ con kWh- (o kWh con horas)
+   daría un número sin significado. */
+const MEDICIONES = [
+  { k: 'imp',   etiqueta: 'Energía importada (kWh+)', corto: 'kWh+' },
+  { k: 'exp',   etiqueta: 'Energía exportada (kWh-)', corto: 'kWh-' },
+  { k: 'hrs',   etiqueta: 'Horas de marcha',          corto: 'Horas' },
+  { k: 'agua',  etiqueta: 'Volumen de agua (m³)',     corto: 'Agua m³' },
+  { k: 'gas',   etiqueta: 'Volumen de gas (m³)',      corto: 'Gas m³' },
+  { k: 'lt',    etiqueta: 'Litros (L)',               corto: 'Litros' },
+  { k: 'otras', etiqueta: 'Otras lecturas',           corto: 'Otras' }
+];
+function medicionDe(nombre, unidad) {
+  const v = { nombre: nombre || '', unidad_reporte: unidad };
+  const t = TIPOS_LECTURA.find(x => x.es(v));
+  return t ? t.k : 'otras';
+}
+// Nombre del bloque de suma: la medición, o la variable con su unidad si es "otra".
+function claveSuma(variable, unidad) {
+  const k = medicionDe(variable, unidad);
+  return k === 'otras' ? `${variable} · ${UNIDAD[unidad] || unidad}` : MEDICIONES.find(m => m.k === k).etiqueta;
+}
+function incluyeMedicion(medir, nombre, unidad, principal) {
+  if (!medir || medir === 'principales') return principal !== false;
+  return medir.includes(medicionDe(nombre, unidad));
+}
+const textoMedir = medir => (!medir || medir === 'principales') ? 'lo principal de cada punto'
+  : medir.map(k => MEDICIONES.find(m => m.k === k)?.corto || k).join(' + ');
+// Orden dentro de un punto: importada, exportada, el resto.
+const rangoNombre = nombre => rangoVar({ nombre });
+const ordenFilaInforme = (a, b) => compararGrupos(a.grupo, b.grupo) ||
+  String(a.punto).localeCompare(String(b.punto)) ||
+  rangoNombre(a.variable) - rangoNombre(b.variable) || String(a.variable).localeCompare(String(b.variable));
 
 /* ---------- armado del informe (se reutiliza en pantalla y al imprimir) ---------- */
 // Fuera de rango: se compara contra la banda EWMA que ya está en el dispositivo.
@@ -1929,7 +1983,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
   }
 
   const meses = [...new Set(data.map(f => f.mes))].sort();
-  const unidades = [...new Set(data.map(f => f.unidad_reporte))];
+  const bloques = [...new Set(data.map(f => claveSuma(f.variable, f.unidad_reporte)))];
   const partes = [];
 
   const { faltantes = [], noLeidos = [], avisos = [], bandas = {} } = extra;
@@ -1956,16 +2010,17 @@ function armarInforme(data, desde, hasta, extra = {}) {
   if (provisionales) kpis.push(kpi(provisionales, 'valores provisionales', 'aviso'));
   partes.push(el('div', { class: 'kpis seccion' }, kpis));
 
-  // ---- gráfico por unidad: totales mensuales ----
-  for (const u of unidades) {
+  // ---- gráfico por medición: totales mensuales ----
+  for (const b of bloques) {
+    const deB = data.filter(f => claveSuma(f.variable, f.unidad_reporte) === b);
+    const u = deB[0].unidad_reporte;
     const serie = meses.map(m => ({
       etiqueta: nombrePeriodo(m).split(' ')[0].slice(0, 3),
-      valor: data.filter(f => f.mes === m && f.unidad_reporte === u)
-                 .reduce((a, f) => a + Number(f.consumo), 0)
+      valor: deB.filter(f => f.mes === m).reduce((a, f) => a + Number(f.consumo), 0)
     })).filter(d => d.valor > 0);
     if (serie.length > 1) {
       partes.push(graficoBarras(serie,
-        { titulo: 'Suma mensual de los puntos mostrados (referencial)', unidad: UNIDAD[u] || u }));
+        { titulo: `${b} · suma mensual de los puntos mostrados (referencial)`, unidad: UNIDAD[u] || u }));
     }
   }
 
@@ -1996,8 +2051,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
     const cab = ['Grupo', 'Punto', 'TAG', 'Variable', 'Un.',
                  ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total', 'Revisar'];
     const filas = [...claves.values()]
-      .sort((a, b) => compararGrupos(a.f.grupo, b.f.grupo) ||
-                      `${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.punto}${b.f.variable}`))
+      .sort((a, b) => ordenFilaInforme(a.f, b.f))
       .map(({ f, meses: mm }) => {
         const vals = meses.map(m => mm[m]);
         const total = vals.reduce((a, v) => a + (v || 0), 0);
@@ -2066,7 +2120,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
    archiva, y tiene que leerse como una tabla, no como una foto de la pantalla. */
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
-  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {} } = S.repDatos;
+  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {}, medir } = S.repDatos;
   const R = S.rep;
 
   const meses = [...new Set(filas.map(f => f.mes))].sort();
@@ -2084,18 +2138,16 @@ async function imprimirInforme() {
     if (!porVar.has(f.variable_id)) porVar.set(f.variable_id, { f, m: {} });
     porVar.get(f.variable_id).m[f.mes] = Number(f.consumo);
   }
-  const orden = [...porVar.values()].sort((a, b) =>
-    compararGrupos(a.f.grupo, b.f.grupo) ||
-    `${a.f.punto}${a.f.variable}`.localeCompare(`${b.f.punto}${b.f.variable}`));
+  const orden = [...porVar.values()].sort((a, b) => ordenFilaInforme(a.f, b.f));
 
-  // tabla, con separadores de grupo y suma referencial por unidad
+  // tabla, con separadores de grupo y suma referencial por medición
   const cuerpo = [];
   let grupoActual = null, acum = {};
   const cerrar = () => {
     if (grupoActual === null) return;
     for (const [u, a] of Object.entries(acum)) {
       cuerpo.push(el('tr', { class: 'suma' }, [
-        el('td', { colspan: 3, text: `Suma de ${grupoActual} · ${UNIDAD[u] || u} (referencial)` }),
+        el('td', { colspan: 3, text: `Suma de ${grupoActual} · ${u} (referencial)` }),
         ...meses.map(m => el('td', { class: 'num', text: num(a[m] || 0) })),
         el('td', { class: 'num', text: num(meses.reduce((s2, m) => s2 + (a[m] || 0), 0)) })
       ]));
@@ -2109,8 +2161,9 @@ async function imprimirInforme() {
         el('td', { colspan: meses.length + 4, text: (grupoActual || 'Sin grupo').toUpperCase() })
       ]));
     }
-    (acum[f.unidad_reporte] ||= {});
-    meses.forEach(x => { acum[f.unidad_reporte][x] = (acum[f.unidad_reporte][x] || 0) + (m[x] || 0); });
+    const kb = claveSuma(f.variable, f.unidad_reporte);
+    (acum[kb] ||= {});
+    meses.forEach(x => { acum[kb][x] = (acum[kb][x] || 0) + (m[x] || 0); });
     const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
     const j = meses.map(x => juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas))
                    .some(x => x && x.nivel === 'bad');
@@ -2140,7 +2193,7 @@ async function imprimirInforme() {
     el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
       el('td', {}, [
         el('h1', { text: 'Consumos · ' + titulo }),
-        el('p', { text: periodo })
+        el('p', { text: `${periodo} · ${textoMedir(medir)}` })
       ]),
       el('td', { class: 'num', html:
         `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
@@ -2271,10 +2324,9 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
               .order('mes').order('punto');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
-    // La secundaria (la exportada, por ejemplo) no entra al informe salvo que se pida.
-    if (!filtros.secundarias) q = q.eq('principal', true);
+    if (!filtros.medir || filtros.medir === 'principales') q = q.eq('principal', true);
     return q;
-  });
+  }).then(rows => rows.filter(c => incluyeMedicion(filtros.medir, c.variable, c.unidad_reporte, c.principal)));
   if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
 
   paso('Consultando lecturas…');
@@ -2299,6 +2351,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
       tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
       variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
+      bloque: claveSuma(c.variable, c.unidad_reporte),
       principal: c.principal !== false, cons: {}, estado: {}, metodo: {}, lect: {}
     });
     const v = porVar.get(c.variable_id);
@@ -2310,9 +2363,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     const v = porVar.get(f.variable_id);
     if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
   }
-  const filasVar = [...porVar.values()].sort((a, b) =>
-    compararGrupos(a.grupo, b.grupo) ||
-    (a.punto + a.variable).localeCompare(b.punto + b.variable));
+  const filasVar = [...porVar.values()].sort(ordenFilaInforme);
 
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
 
@@ -2325,8 +2376,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   let grupoActual = null, acumGrupo = {};
   const cerrarGrupo = () => {
     if (grupoActual === null) return;
-    for (const [u, acum] of Object.entries(acumGrupo)) {
-      resumen.push(['', 'Suma del grupo (referencial)', '', u, '',
+    for (const [b, acum] of Object.entries(acumGrupo)) {
+      resumen.push(['', 'Suma del grupo (referencial)', b, acum.__u, '',
         ...meses.map(m => redondear(acum[m])),
         redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     }
@@ -2338,8 +2389,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       grupoActual = v.grupo; acumGrupo = {};
       resumen.push([`GRUPO: ${grupoActual}`]);
     }
-    (acumGrupo[v.unidad] ||= {});
-    meses.forEach(m => { acumGrupo[v.unidad][m] = (acumGrupo[v.unidad][m] || 0) + (v.cons[m] || 0); });
+    (acumGrupo[v.bloque] ||= { __u: v.unidad });
+    meses.forEach(m => { acumGrupo[v.bloque][m] = (acumGrupo[v.bloque][m] || 0) + (v.cons[m] || 0); });
     resumen.push([v.tag, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
       ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
   }
@@ -2376,10 +2427,10 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       f.push([v.tag, v.punto, v.variable, v.unidad,
         ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
     const porUnidad = {};
-    for (const v of suyas) { (porUnidad[v.unidad] ||= {}); meses.forEach(m => porUnidad[v.unidad][m] = (porUnidad[v.unidad][m] || 0) + (v.cons[m] || 0)); }
+    for (const v of suyas) { (porUnidad[v.bloque] ||= { __u: v.unidad }); meses.forEach(m => porUnidad[v.bloque][m] = (porUnidad[v.bloque][m] || 0) + (v.cons[m] || 0)); }
     f.push([]);
-    for (const [u, acum] of Object.entries(porUnidad))
-      f.push(['', `Suma del grupo (referencial) · ${u}`, '', u,
+    for (const [b, acum] of Object.entries(porUnidad))
+      f.push(['', 'Suma del grupo (referencial)', b, acum.__u,
         ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
     hojas.push({ nombre: nombreHoja(g, usados), filas: f });
   }
@@ -2414,7 +2465,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     ['Generado', new Date().toLocaleString('es-CL')],
     ['Generado por', S.usuario.nombre],
     ['Filtro de grupo', filtros.grupo || 'todos'],
-    ['Lecturas secundarias', filtros.secundarias ? 'incluidas' : 'excluidas (solo las principales)'],
+    ['Mediciones incluidas', textoMedir(filtros.medir)],
     ['Puntos', new Set(cons.map(c => c.punto_id)).size],
     ['Valores de consumo', cons.length],
     ['Lecturas incluidas', lect.length],

@@ -621,3 +621,19 @@ body.con-modal{overflow:hidden}
 .explica-periodo > summary::-webkit-details-marker{display:none}
 .explica-periodo > summary::after{content:' · ¿por qué?';color:var(--acento-ink)}
 .explica-periodo[open] > summary::after{content:''}
+
+/* ---------- Avisos: filtros y PDF de pendientes ---------- */
+.filtros-avisos select{flex:1 1 150px;max-width:none;margin-top:0}
+.hoja-informe{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.hoja-avisos table.planilla td{vertical-align:top}
+.hoja-avisos table.planilla td.num{white-space:pre-line}
+.hoja-avisos .tenue{color:#555}
+.hoja-avisos table.planilla th:nth-child(1){width:7%}
+.hoja-avisos table.planilla th:nth-child(2){width:22%}
+.hoja-avisos table.planilla th:nth-child(4){width:7%}
+.hoja-avisos table.planilla th:nth-child(5){width:10%}
+.hoja-avisos table.planilla th:nth-child(6){width:13%}
+/* fila de grupo sin fondo negro: si la impresora omite fondos, el texto blanco desaparece */
+.hoja-avisos tr.grupo-av td{font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  border:none;border-bottom:1.5px solid #000;padding:10px 2px 3px}
+@media print{ .impresion .hoja-avisos tr.grupo-av{break-after:avoid} }

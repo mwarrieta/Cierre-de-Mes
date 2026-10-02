@@ -2444,13 +2444,18 @@ async function vistaAvisos(c) {
   ]);
   const buscar = el('input', { type: 'search', placeholder: 'Buscar punto, categoría o texto…',
     oninput: () => pintar() });
+  // El grupo filtra la lista y define de qué grupo sale el PDF (para adjuntarlo a su informe).
+  const selGrupo = el('select', { onchange: pintar }, [el('option', { value: '', text: 'Todos los grupos' })]);
+  for (const g of [...(S.catalogo.grupos || [])].sort((a, b) => compararGrupos(a.nombre, b.nombre)))
+    selGrupo.append(el('option', { value: g.nombre, text: g.nombre }));
 
   c.append(
-    el('div', { class: 'fila entre seccion' }, [
-      el('p', { class: 'ayuda crece', text:
-        'Todo lo que se anotó en terreno: los avisos y también las observaciones ' +
-        'sueltas que antes se guardaban y no se veían en ninguna parte.' }),
-      selVista, selEstado
+    el('div', { class: 'fila seccion filtros-avisos' }, [selVista, selEstado, selGrupo]),
+    el('div', { class: 'fila entre', style: 'margin-bottom:10px' }, [
+      el('p', { class: 'ayuda crece', style: 'margin:0', text:
+        'El PDF lista los avisos sin resolver del grupo elegido, en blanco y negro, para adjuntarlo al informe.' }),
+      el('button', { class: 'btn primario', text: '📄 PDF de avisos pendientes',
+        onclick: () => pdfAvisosPendientes(selGrupo.value) })
     ]),
     buscar, zona);
   pintar();
@@ -2458,6 +2463,7 @@ async function vistaAvisos(c) {
   async function pintar() {
     poner(zona, el('p', { class: 'cargando', text: 'Cargando…' }));
     selEstado.hidden = selVista.value === 'observaciones';
+    selGrupo.hidden = selVista.value === 'observaciones';
     const q = (buscar.value || '').toLowerCase();
 
     if (selVista.value === 'observaciones') {
@@ -2499,10 +2505,11 @@ async function vistaAvisos(c) {
     let avisos = data || [];
     if (selEstado.value === 'abiertos') avisos = avisos.filter(a => a.estado !== 'resuelto');
     if (selEstado.value === 'resuelto') avisos = avisos.filter(a => a.estado === 'resuelto');
+    if (selGrupo.value) avisos = avisos.filter(a => (a.grupos || []).includes(selGrupo.value));
     if (q) avisos = avisos.filter(a =>
       `${a.punto} ${a.sitio} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
 
-    if (selVista.value === 'informe') return informeAvisos(zona, avisos);
+    if (selVista.value === 'informe') return informeAvisos(zona, avisos, selGrupo.value);
 
     if (!avisos.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay avisos con este filtro.' }));
 
@@ -2518,15 +2525,18 @@ async function vistaAvisos(c) {
         }, [
           el('div', { class: 'info-principal' }, [
             el('div', { class: 'fila-titulo' }, [
-              el('strong', { text: `${a.sitio} / ${a.punto}` }),
-              el('span', { class: 'categoria-tag', text: a.categoria || 'Aviso' })
+              el('strong', { text: `${a.punto}` }),
+              // "Otro" no dice nada: en ese caso manda la descripción.
+              esOtroAviso(a.categoria) ? null : el('span', { class: 'categoria-tag', text: a.categoria || 'Aviso' })
             ]),
-            el('p', { class: 'descripcion-corta', text: a.descripcion || 'Sin descripción adicional' }),
-            el('span', { class: 'texto-secundario', text: `Abierto por ${a.abierto_por_nombre || '—'} · ${fechaCorta(a.abierto_en)}` })
+            el('p', { class: 'descripcion-corta', text: a.descripcion || a.categoria || 'Sin descripción' }),
+            el('span', { class: 'texto-secundario', text:
+              `${a.sitio} · ${a.estado === 'resuelto' ? 'resuelto ' + fechaCorta(a.resuelto_en)
+                : 'hace ' + diasAbierto(a) + ' día' + (diasAbierto(a) === 1 ? '' : 's')} · ${a.abierto_por_nombre || '—'}` })
           ]),
           el('div', { class: 'info-secundaria' }, [
             el('span', { class: 'pill ' + sevClase, text: a.severidad }),
-            el('span', { class: 'pill ' + estClase, text: a.estado })
+            el('span', { class: 'pill ' + estClase, text: a.estado.replace('_', ' ') })
           ])
         ]);
       })
@@ -2534,9 +2544,106 @@ async function vistaAvisos(c) {
 
     poner(zona,
       el('p', { class: 'ayuda', text:
-        `${avisos.filter(a => a.estado !== 'resuelto').length} abiertos de ${avisos.length} mostrados.` }),
+        `${avisos.filter(a => a.estado !== 'resuelto').length} sin resolver de ${avisos.length} mostrados.` }),
       listaAvisos);
   }
+}
+
+const esOtroAviso = cat => /^Otro/i.test(cat || '');
+const diasAbierto = a => Math.max(0, Math.floor((Date.now() - new Date(a.abierto_en)) / 86400e3));
+
+/* ---------------- PDF de avisos pendientes ----------------
+   Blanco y negro, A4, para adjuntar a los informes por grupo. Lo arma el navegador
+   con "Guardar como PDF" (igual que el informe de consumos). Pendiente = abierto o en
+   gestión. Orden: grupo → severidad (alta primero) → antigüedad (el más viejo primero).
+   El N.º es el id del aviso: sirve para referirse a él en el seguimiento. */
+async function pdfAvisosPendientes(grupo = '') {
+  if (!navigator.onLine) return toast('El PDF necesita señal para traer los avisos', true);
+  const { data, error } = await sb.from('v_avisos').select('*').neq('estado', 'resuelto')
+    .order('abierto_en').limit(2000);
+  if (error) return toast(error.message, true);
+  let avisos = data || [];
+  if (grupo) avisos = avisos.filter(a => (a.grupos || []).includes(grupo));
+  if (!avisos.length) return toast('No hay avisos pendientes' + (grupo ? ` en ${grupo}` : ''));
+
+  const SEV = { alta: 0, media: 1, baja: 2 };
+  const secciones = new Map();
+  for (const a of avisos) {
+    // Un punto puede estar en varios grupos: en "Todos" se lista una vez, en su primer grupo.
+    const g = grupo || ((a.grupos && a.grupos.length) ? [...a.grupos].sort(compararGrupos)[0] : 'Sin grupo');
+    if (!secciones.has(g)) secciones.set(g, []);
+    secciones.get(g).push(a);
+  }
+  const filas = [];
+  for (const g of [...secciones.keys()].sort(compararGrupos)) {
+    const lista = secciones.get(g).sort((x, y) =>
+      (SEV[x.severidad] ?? 3) - (SEV[y.severidad] ?? 3) ||
+      new Date(x.abierto_en) - new Date(y.abierto_en) ||
+      String(x.punto).localeCompare(String(y.punto)));
+    if (!grupo) filas.push(el('tr', { class: 'grupo-av' }, [
+      el('td', { colspan: '6', text: `${g} · ${lista.length} pendiente${lista.length === 1 ? '' : 's'}` })]));
+    for (const a of lista) {
+      const otro = esOtroAviso(a.categoria);
+      // "Sin equipo instalado" + "Sin equipo instalado." no se repite dos veces.
+      const repite = !otro && a.descripcion && a.categoria &&
+        a.descripcion.trim().replace(/[.\s]+$/, '').toLowerCase() === a.categoria.toLowerCase();
+      filas.push(el('tr', {}, [
+        el('td', { class: 'num', text: '#' + a.id }),
+        el('td', {}, [el('b', { text: a.punto }), el('br'), el('span', { class: 'tenue', text: a.sitio })]),
+        el('td', {}, [
+          otro ? null : el('b', { text: a.categoria || 'Aviso' }),
+          otro || repite || !a.descripcion ? null : el('br'),
+          repite ? null : el('span', { text: a.descripcion || (otro ? 'Sin descripción' : '') }),
+          a.estado === 'en_gestion' ? el('span', { class: 'tenue', text: ' (en gestión)' }) : null
+        ]),
+        el('td', { text: a.severidad === 'alta' ? 'ALTA' : a.severidad }),
+        el('td', { class: 'num', text: `${fechaCorta(a.abierto_en)}\n${diasAbierto(a)} d` }),
+        el('td', { text: a.abierto_por_nombre || '—' })
+      ]));
+    }
+  }
+
+  const altas = avisos.filter(a => a.severidad === 'alta').length;
+  const masViejo = Math.max(...avisos.map(diasAbierto));
+  const titulo = grupo || 'Todos los grupos';
+  const hoy = new Date();
+  const hoja = el('div', { class: 'hoja hoja-informe hoja-avisos' }, [
+    el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
+      el('td', {}, [
+        el('h1', { text: 'Avisos pendientes · ' + titulo }),
+        el('p', { text: `${avisos.length} sin resolver · ${altas} de severidad alta · ` +
+          `${new Set(avisos.map(a => a.punto_id)).size} punto(s) · el más antiguo lleva ${masViejo} día(s) abierto` })
+      ]),
+      el('td', { class: 'num', html:
+        `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(hoy.toISOString())}` })
+    ])])]),
+    el('table', { class: 'planilla' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { class: 'num', text: 'N.º' }), el('th', { text: 'Punto' }),
+        el('th', { text: 'Aviso' }), el('th', { text: 'Sev.' }),
+        el('th', { class: 'num', text: 'Abierto' }), el('th', { text: 'Reportó' })])]),
+      el('tbody', {}, filas)
+    ]),
+    el('div', { class: 'pie-informe' }, [
+      el('p', { text: 'Avisos sin resolver (abiertos o en gestión) a la fecha de emisión, ordenados por ' +
+        'severidad y antigüedad. El N.º identifica el aviso en la app Cierre de Mes.' })
+    ])
+  ]);
+
+  // El nombre del PDF lo toma el navegador del título de la página.
+  const tituloPrevio = document.title;
+  document.title = `Avisos pendientes - ${titulo} - ${hoy.toISOString().slice(0, 10)}`;
+  const cont = document.getElementById('impresion');
+  cont.replaceChildren(hoja);
+  document.body.classList.add('imprimiendo');
+  const limpiar = () => {
+    document.body.classList.remove('imprimiendo');
+    cont.replaceChildren();
+    document.title = tituloPrevio;
+    window.removeEventListener('afterprint', limpiar);
+  };
+  window.addEventListener('afterprint', limpiar);
+  setTimeout(() => window.print(), 120);
 }
 
 function verDetalleAviso(a, alGuardar) {
@@ -2560,7 +2667,7 @@ function verDetalleAviso(a, alGuardar) {
 
   const contenido = el('div', {}, [
     el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
-      el('span', { html: `<b>${esc(a.sitio)} / ${esc(a.punto)}</b><br><small>${esc(a.categoria || 'Aviso')}</small>` }),
+      el('span', { html: `<b>${esc(a.sitio)} / ${esc(a.punto)}</b><br><small>${esc(esOtroAviso(a.categoria) ? 'Aviso general' : (a.categoria || 'Aviso'))}</small>` }),
       el('span', { html: `<span class="pill ${sevClase}">${esc(a.severidad)}</span> <span class="pill ${estClase}">${esc(a.estado)}</span>` })
     ]),
     el('p', { class: 'ayuda', text: `Abierto por ${a.abierto_por_nombre || '—'} el ${fechaHora(a.abierto_en)}` }),
@@ -2601,7 +2708,7 @@ function verDetalleObservacion(o) {
 
 // Lo que un jefe quiere ver de un vistazo: dónde se concentran y qué lleva
 // abierto demasiado tiempo.
-function informeAvisos(zona, avisos) {
+function informeAvisos(zona, avisos, grupo = '') {
   if (!avisos.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay avisos con este filtro.' }));
   const abiertos = avisos.filter(a => a.estado !== 'resuelto');
   const dias = a => Math.floor((Date.now() - new Date(a.abierto_en)) / 86400e3);
@@ -2643,11 +2750,9 @@ function informeAvisos(zona, avisos) {
                      text: a.severidad }),
         a.descripcion || '—'])) : null,
 
+    // (El botón "Imprimir" de antes mandaba una hoja en blanco: imprimía #impresion vacío.)
     el('div', { class: 'fila', style: 'margin-top:20px' }, [
-      el('button', { class: 'btn', text: '🖨 Imprimir este informe', onclick: () => {
-        document.body.classList.add('imprimiendo');
-        setTimeout(() => { window.print(); document.body.classList.remove('imprimiendo'); }, 60);
-      } })
+      el('button', { class: 'btn', text: '📄 PDF de avisos pendientes', onclick: () => pdfAvisosPendientes(grupo) })
     ]));
 }
 

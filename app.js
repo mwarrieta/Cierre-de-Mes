@@ -418,6 +418,17 @@ const ICONO = (() => {
 })();
 const conIcono = (ico, texto) => `${ico}<span>${esc(texto)}</span>`;
 
+/* Energía: importada = kWh+ (lo que entra), exportada = kWh- (lo que sale).
+   El signo va en el nombre de la variable (base de datos), así aparece en todos los
+   informes, y además junto a la unidad en el campo de captura. */
+const signoEnergia = v => /importada/i.test(v?.nombre || '') ? '+'
+                        : /exportada/i.test(v?.nombre || '') ? '-' : '';
+// En terreno siempre se carga en el mismo orden, aunque la principal sea la exportada:
+// importada primero, exportada después, el resto al final (la principal antes).
+const rangoVar = v => /importada/i.test(v.nombre || '') ? 0 : /exportada/i.test(v.nombre || '') ? 1 : 2;
+const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
+  (b.principal === true) - (a.principal === true) || a.id - b.id;
+
 // Las fotos de una lectura, en el orden en que se sacaron (Foto 1, 2, 3).
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
@@ -539,7 +550,7 @@ async function pintarLista() {
   }
   let puntos = [...porPunto.values()];
   for (const p of puntos) {
-    p.vars.sort((a, b) => (b.principal === true) - (a.principal === true) || a.id - b.id);
+    p.vars.sort(ordenVariables);
     p.obligatorias = p.vars.filter(v => !v.opcional);
     p.faltan = p.obligatorias.filter(v => !tomada(v));
     p.sinDato = p.vars.filter(sinDato);
@@ -737,7 +748,7 @@ async function abrirCaptura(entrada) {
   const punto = entrada.punto || entrada;
   const vars = S.catalogo.variables
     .filter(x => x.punto.id === punto.id)
-    .sort((a, b) => (b.principal === true) - (a.principal === true) || a.id - b.id);
+    .sort(ordenVariables);
   if (!vars.length) return toast('Este punto no tiene lecturas configuradas', true);
   const equipo = punto.equipo || {};
 
@@ -900,8 +911,8 @@ async function abrirCaptura(entrada) {
         (yaHay.tomada_por === S.usuario.id ? ' Si cambias el número, se corrige.'
                                            : ' La tomó otra persona; cambiarla pide motivo.') }) : null,
       doble
-        ? el('div', { class: 'doble' }, [conUnidad(c.mwh, 'MWh'), conUnidad(c.kwh, 'kWh')])
-        : conUnidad(c.valor, ud),
+        ? el('div', { class: 'doble' }, [conUnidad(c.mwh, 'MWh' + signoEnergia(v)), conUnidad(c.kwh, 'kWh' + signoEnergia(v))])
+        : conUnidad(c.valor, ud + signoEnergia(v)),
       avisoBanda,
       el('label', { class: 'fila sin-dato' },
         [c.sinDato, el('span', { text: 'No se pudo leer · dejar sin dato' })])
@@ -3276,7 +3287,7 @@ const UNIDADES = ['kWh', 'MWh', 'm3', 'L', 'Hrs'];
 function editarVariable(x, punto, alGuardar) {
   const nuevo = !x;
   const f = {
-    nombre: el('input', { value: x?.nombre || '', placeholder: 'Energía activa exportada' }),
+    nombre: el('input', { value: x?.nombre || '', placeholder: 'Energía activa exportada (kWh-)' }),
     display: el('select'), reporte: el('select'),
     dec: el('input', { type: 'number', min: '0', max: '3', value: String(x?.decimales_display ?? 0) }),
     formato: el('select'),
@@ -3635,7 +3646,7 @@ async function vistaRespaldo(c) {
           R.MESES_N[d.getUTCMonth()],
           R.limpio(f.grupo || f.sitio)
         ].join('/');
-        const varias = (f.variable && !/^energ[ií]a activa importada$/i.test(f.variable))
+        const varias = (f.variable && !/^energ[ií]a activa importada\b/i.test(f.variable))
           ? '_' + R.limpio(f.variable) : '';
         // Varias fotos de una misma lectura se distinguen por su número, en el orden en
         // que se sacaron: ..._foto1.jpg, ..._foto2.jpg. Con una sola, el nombre no cambia.

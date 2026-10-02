@@ -661,3 +661,5 @@ body.con-modal{overflow:hidden}
 .btn.cancelar:hover{background:var(--bad);color:#fff}
 /* barra inferior más baja */
 .acciones-fijas.dos .btn{min-height:46px;font-size:16px;width:100%}
+.captura .campo-num .dato-grande{padding-left:76px}
+.captura .doble .campo-num .dato-grande{padding-left:66px}

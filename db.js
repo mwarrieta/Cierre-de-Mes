@@ -219,6 +219,21 @@
     return ruta;
   }
 
+  // Fotos de un aviso que se abrió SIN lectura (no había nada que leer, solo el problema).
+  // Misma carpeta de almacenamiento, pero colgadas de aviso_id en vez de lectura_id.
+  async function subirFotoAAviso({ aviso_id, periodo, blob, tomada_en }) {
+    const ruta = `${periodo}/aviso-${aviso_id}/${crypto.randomUUID()}.jpg`;
+    const up = await sb.storage.from(C.BUCKET)
+      .upload(ruta, blob, { contentType: 'image/jpeg', upsert: false });
+    if (up.error) throw up.error;
+    const ins = await sb.from('fotos').insert({
+      aviso_id, storage_path: ruta, bytes: blob.size,
+      tomada_en: tomada_en || new Date().toISOString()
+    });
+    if (ins.error) throw ins.error;
+    return ruta;
+  }
+
   // Dos sincronizaciones al mismo tiempo mandaban el mismo registro dos veces
   // y la segunda volvía con error de duplicado, dejándolo trabado en la cola.
   let sincronizando = null;
@@ -240,7 +255,7 @@
       if (!forzado && (item.intentos || 0) >= 5) { fallidos++; continue; }
       try {
         const { fotoId, fotoIds, id: idLocal, creado, intentos, _foto, tipo,
-                rpcHecho, principalId, principalVar, ...fila } = item;
+                rpcHecho, principalId, principalVar, avisoId, ...fila } = item;
 
         // Los registros viejos llevan una sola foto (fotoId); los nuevos, hasta tres (fotoIds).
         const ids = (fotoIds && fotoIds.length) ? [...fotoIds] : (fotoId ? [fotoId] : []);
@@ -300,7 +315,7 @@
         if (tipo === 'captura') {
           // Si la captura ya llegó al servidor y falló una foto, el reintento solo
           // sube las que faltan: guardar_captura no se repite.
-          let idPrincipal = principalId, variablePrincipal = principalVar;
+          let idPrincipal = principalId, variablePrincipal = principalVar, idAviso = avisoId;
           if (!rpcHecho) {
             const { data, error: e5 } = await sb.rpc('guardar_captura', {
               p_punto_id: fila.punto_id,
@@ -315,8 +330,27 @@
             idPrincipal = data && data.principal;
             const vp = idPrincipal ? (data.lecturas || []).find(x => x.lectura_id === idPrincipal) : null;
             variablePrincipal = vp ? vp.variable_id : null;
+            // Sin lectura (solo un aviso), las fotos se cuelgan del primer aviso abierto.
+            idAviso = (data && data.avisos && data.avisos[0]) || null;
             item.rpcHecho = true; item.principalId = idPrincipal; item.principalVar = variablePrincipal;
+            item.avisoId = idAviso;
             await idb.guardar('cola', item);
+          }
+          if (!idPrincipal && ids.length && idAviso) {
+            for (const id of ids) {
+              const f = await idb.leer('fotos', id);
+              if (f && f.blob) {
+                await subirFotoAAviso({
+                  aviso_id: idAviso, periodo: fila.periodo,
+                  blob: f.blob, tomada_en: new Date(f.creado || creado).toISOString() });
+              }
+              await fotoSubida(id);
+            }
+          } else if (!idPrincipal && ids.length) {
+            // Ni lectura ni aviso donde colgarlas: se deja el registro en la cola, con su
+            // error a la vista, en vez de borrar las fotos en silencio.
+            throw new Error('Las fotos no tienen una lectura ni un aviso al que asociarse. ' +
+                            'Descarga los pendientes desde "Este dispositivo" para no perderlas.');
           }
           if (idPrincipal) {
             // En el orden en que se sacaron: el servidor las numera por orden de llegada.
@@ -456,7 +490,7 @@
   window.DB = {
     sb, idb, comprimirFoto, catalogo, descargarCatalogo,
     lecturasDelPeriodo, lecturasCache, ultimasLecturas, ultimasCache,
-    encolar, pendientes, sincronizar, exportarPendientes, subirFotoALectura,
+    encolar, pendientes, sincronizar, exportarPendientes, subirFotoALectura, subirFotoAAviso,
     descargarBandas, bandasCache, refrescarBandas,
     estadoAlmacenamiento, pedirPersistencia
   };

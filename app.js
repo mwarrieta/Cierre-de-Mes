@@ -2444,6 +2444,19 @@ function verDetalleAviso(a, alGuardar) {
   const sevClase = { alta: 'bad', media: 'warn', baja: 'neutro' }[a.severidad] || 'neutro';
   const estClase = a.estado === 'resuelto' ? 'ok' : 'warn';
 
+  // Fotos sacadas junto con este aviso (hasta 3), en el orden en que se sacaron.
+  const zonaFotosAviso = el('div', { class: 'fotos-aviso' });
+  if (navigator.onLine) {
+    (async () => {
+      const { data } = await sb.from('fotos').select('id, storage_path, orden')
+        .eq('aviso_id', a.id).order('orden');
+      for (const f of (data || [])) {
+        const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
+        if (url?.signedUrl) zonaFotosAviso.append(el('img', { src: url.signedUrl, alt: `Foto ${f.orden} del aviso` }));
+      }
+    })().catch(() => {});
+  }
+
   const contenido = el('div', {}, [
     el('div', { class: 'anterior', style: 'margin-bottom:12px' }, [
       el('span', { html: `<b>${esc(a.sitio)} / ${esc(a.punto)}</b><br><small>${esc(a.categoria || 'Aviso')}</small>` }),
@@ -2458,6 +2471,7 @@ function verDetalleAviso(a, alGuardar) {
       el('strong', { text: `Resuelto por ${a.resuelto_por_nombre || '—'} · ${fechaHora(a.resuelto_en)}` }),
       a.obs_resolucion ? el('p', { style: 'margin:6px 0 0', text: a.obs_resolucion }) : null
     ]) : null,
+    zonaFotosAviso,
     el('div', { class: 'fila', style: 'margin-top:16px; gap:8px; flex-wrap:wrap' }, [
       a.estado !== 'resuelto' ? el('button', { class: 'btn ok crece', text: 'Resolver aviso', onclick: () => { cerrarModal(); resolverAviso(a, alGuardar); } }) : null,
       puedo ? el('button', { class: 'btn chico', text: 'Editar', onclick: () => { cerrarModal(); editarAviso(a, alGuardar); } }) : null,

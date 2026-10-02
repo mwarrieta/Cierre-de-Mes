@@ -249,6 +249,9 @@ main{padding:14px;max-width:1280px;margin:0 auto;padding-bottom:48px;
 .foto-caja{display:grid;gap:10px;margin:14px 0}
 .foto-previa{width:100%;max-height:280px;object-fit:contain;background:var(--surface-2);
   border-radius:var(--radio);border:1px solid var(--line)}
+/* fotos de un aviso en su detalle */
+.fotos-aviso{display:grid;gap:8px;margin:12px 0}
+.fotos-aviso:empty{display:none}
 /* fotos múltiples en la captura (hasta 3) */
 .fotos-nuevas{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .fotos-nuevas:empty{display:none}

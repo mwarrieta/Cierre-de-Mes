@@ -404,6 +404,20 @@ function poner(cont, ...hijos) {
   cont.replaceChildren(...hijos.flat().filter(Boolean));
 }
 
+// Iconos de línea: heredan el color del botón y se ven igual en todos los teléfonos
+// (los emojis cambian de dibujo según el sistema).
+const ICONO = (() => {
+  const svg = d => `<svg class="ico" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ` +
+    `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  return {
+    camara: svg('<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>'),
+    galeria: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'),
+    qr: svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>' +
+            '<rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/>')
+  };
+})();
+const conIcono = (ico, texto) => `${ico}<span>${esc(texto)}</span>`;
+
 // Las fotos de una lectura, en el orden en que se sacaron (Foto 1, 2, 3).
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
@@ -740,8 +754,8 @@ async function abrirCaptura(entrada) {
   const cajaFoto = el('div', { class: 'foto-caja' });
   const galeriaFotos = el('div', { class: 'fotos-nuevas' });
   const textoFoto =
-    (punto.foto_obligatoria ? 'Al menos una foto es obligatoria en este punto.' : 'Las fotos son opcionales en este punto.') +
-    (punto.foto_calidad === 'alta' ? ' Se guardan en calidad alta.' : '');
+    (punto.foto_obligatoria ? 'Foto obligatoria' : 'Foto opcional') + ` · hasta ${C.FOTOS_MAX || 3}` +
+    (punto.foto_calidad === 'alta' ? ' · calidad alta' : '');
   const pesoFoto = el('p', { class: 'ayuda', text: textoFoto });
   // Las ya guardadas en la lectura que recibirá las nuevas también cuentan para el tope.
   const yaGuardadas = () => {
@@ -751,8 +765,10 @@ async function abrirCaptura(entrada) {
   const cupoFotos = () => Math.max(0, MAX_FOTOS - yaGuardadas() - nuevasFotos.length);
   const inputCamara = el('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   const inputGaleria = el('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
-  const btnCamara = el('button', { class: 'btn', text: '📷 Tomar foto', onclick: () => inputCamara.click() });
-  const btnGaleria = el('button', { class: 'btn', text: '🖼 Elegir del dispositivo', onclick: () => inputGaleria.click() });
+  const btnCamara = el('button', { class: 'btn primario', html: conIcono(ICONO.camara, 'Tomar foto'),
+    onclick: () => inputCamara.click() });
+  const btnGaleria = el('button', { class: 'btn', html: conIcono(ICONO.galeria, 'Galería'),
+    title: 'Elegir fotos guardadas en el teléfono', onclick: () => inputGaleria.click() });
 
   function pintarFotos() {
     const base = yaGuardadas();
@@ -766,11 +782,11 @@ async function abrirCaptura(entrada) {
       ])
     ])));
     const caben = cupoFotos();
-    btnCamara.textContent = nuevasFotos.length ? '📷 Tomar otra foto' : '📷 Tomar foto del display';
+    btnCamara.innerHTML = conIcono(ICONO.camara, nuevasFotos.length ? 'Tomar otra' : 'Tomar foto');
     btnCamara.disabled = btnGaleria.disabled = caben === 0;
     pesoFoto.textContent = nuevasFotos.length
-      ? `${base + nuevasFotos.length} de ${MAX_FOTOS} fotos · ${caben ? `puedes agregar ${caben} más` : 'llegaste al máximo'}.`
-      : textoFoto + (base ? ` Ya tiene ${base} guardada(s); caben ${caben} más.` : ` Hasta ${MAX_FOTOS} por lectura.`);
+      ? `${base + nuevasFotos.length} de ${MAX_FOTOS} fotos · ${caben ? `caben ${caben} más` : 'máximo alcanzado'}`
+      : textoFoto + (base ? ` · ya tiene ${base} guardada${base === 1 ? '' : 's'}` : '');
   }
   function quitarFoto(i) {
     URL.revokeObjectURL(nuevasFotos[i].url);
@@ -807,12 +823,10 @@ async function abrirCaptura(entrada) {
   for (const input of [inputCamara, inputGaleria]) {
     input.addEventListener('change', e => { const l = [...e.target.files]; e.target.value = ''; agregarFotos(l); });
   }
-  btnCamara.className = 'btn primario grande';
-  btnGaleria.className = 'btn chico';
+  // Cámara (lo normal en terreno) ancha; galería al lado, más chica. El texto de ayuda, abajo y en una línea.
   cajaFoto.append(
-    btnCamara,
-    inputCamara, inputGaleria, galeriaFotos,
-    el('div', { class: 'fila entre' }, [pesoFoto, btnGaleria]));
+    el('div', { class: 'foto-botones' }, [btnCamara, btnGaleria]),
+    inputCamara, inputGaleria, galeriaFotos, pesoFoto);
 
   /* ---- un bloque de campos por cada lectura del punto ---- */
   const campos = [];        // { v, doble, valor, mwh, kwh, banda, yaHay, valorActual() }
@@ -984,7 +998,7 @@ async function abrirCaptura(entrada) {
 
   /* ---- verificación del medidor por QR ---- */
   const zonaMedidor = el('div', { class: 'zona-medidor' });
-  poner(zonaMedidor, el('button', { class: 'btn chico', text: 'Verificar el medidor con el QR',
+  poner(zonaMedidor, el('button', { class: 'btn btn-qr', html: conIcono(ICONO.qr, 'Verificar medidor con QR'),
     onclick: () => verificarMedidor(vars[0], zonaMedidor) }));
 
   /* ---- orden en terreno: 1 foto · 2 lecturas · 3 (si hace falta) avisos ----

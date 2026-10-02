@@ -675,3 +675,18 @@ body.con-modal{overflow:hidden}
 .equipo-actual .der{align-items:flex-end;text-align:right}
 .equipo-actual small{color:var(--ink-3);font-size:12.5px}
 .tenue-b{color:var(--ink-3)}
+.lista-puntos-acceso{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px}
+.lista-puntos-acceso label.fila{margin:0 0 4px;font-weight:500}
+.grupos-check small{margin-left:auto}
+
+/* configurador de lecturas del punto */
+.config-lecturas{display:grid;gap:8px}
+.tipo-lectura{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface)}
+.tipo-lectura.sel{border-color:var(--acento);background:var(--acento-suave)}
+.tipo-lectura > label.fila{margin:0}
+.tipo-extra{display:flex;flex-wrap:wrap;gap:8px 18px;margin:8px 0 0 32px;align-items:center}
+.tipo-extra label.mini{margin:0;font-size:13px}
+.tipo-extra label.mini select{min-height:38px;margin-top:3px}
+.tipo-extra label.fila.mini{font-weight:500}
+.tipo-extra label.fila.mini{flex-wrap:nowrap;gap:8px}
+.tipo-extra label.fila.mini span{white-space:normal}

@@ -404,7 +404,7 @@ const TITULOS = {
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
   usuarios: 'Usuarios', auditoria: 'Auditoría',
   generadores: 'Casa de Fuerza · Generadores', recargas: 'Casa de Fuerza · Recargas',
-  etiquetas: 'Etiquetas QR', instalaciones: 'Instalaciones · punto y equipo'
+  etiquetas: 'Etiquetas QR'
 };
 
 // replaceChildren(...) convierte cualquier argumento que no sea un nodo en texto:
@@ -445,7 +445,7 @@ const fotosOrdenadas = l => [...(l.fotos || [])]
 function render() {
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','instalaciones'].includes(S.vista) ? ''
+    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
       : ['terreno','tablero','validacion'].includes(S.vista) ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -461,8 +461,8 @@ function render() {
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
     usuarios: vistaUsuarios, auditoria: vistaAuditoria,
     generadores: vistaGeneradores, recargas: vistaRecargas,
-    etiquetas: vistaEtiquetas, instalaciones: vistaInstalaciones
-  }[S.vista] || vistaTerreno)(c);
+    etiquetas: vistaEtiquetas
+  }[S.vista] || vistaPuntosSiInstalaciones())(c);
 }
 
 // ------------------------------------------------------------------ selector de periodo
@@ -3028,6 +3028,9 @@ async function editarEquipo(eq) {
 /* ===================================================================
    CONFIGURACIÓN · PUNTOS DE MEDICIÓN
    =================================================================== */
+// "Instalaciones" se unió a Puntos de medición: un enlace viejo cae en Puntos.
+function vistaPuntosSiInstalaciones() { return S.vista === 'instalaciones' ? vistaPuntos : vistaTerreno; }
+
 async function vistaPuntos(c) {
   c.append(
     el('div', { class: 'fila entre seccion' }, [
@@ -3050,14 +3053,34 @@ async function vistaPuntos(c) {
   const gruposPorPunto = Object.fromEntries((gp || []).map(x => [x.punto_id, x.grupos || []]));
   for (const p of data) p.grupos = gruposPorPunto[p.id] || [];
 
+  const hoy = new Date().toISOString().slice(0, 10);
+  const en60 = new Date(Date.now() + 60 * 86400e3).toISOString().slice(0, 10);
+  const vencido = p => p.certificado && p.vence_certificado && p.vence_certificado < hoy;
+  const porVencer = p => p.certificado && p.vence_certificado && p.vence_certificado >= hoy && p.vence_certificado <= en60;
+  const FILTROS = {
+    todos: ['Todos', () => true],
+    sin: ['Sin equipo', p => !p.equipo_id],
+    cert: ['Certificado vencido o por vencer', p => vencido(p) || porVencer(p)],
+    sinlect: ['Sin lecturas', p => !p.n_variables]
+  };
+  let filtroP = 'todos';
+  const zonaChips = el('div', { class: 'filtros-terreno' });
+  zona.before(zonaChips);
+
   function pintar() {
     const f = S.filtro;
-    const lista = data.filter(p => !f ||
-      `${p.nombre} ${gruposTexto(p)} ${p.tag || ''}`.toLowerCase().includes(f));
+    poner(zonaChips, Object.entries(FILTROS).map(([k, [txt, fn]]) =>
+      el('button', { class: 'chip-filtro' + (filtroP === k ? ' sel' : ''),
+        text: `${txt} · ${data.filter(fn).length}`, onclick: () => { filtroP = k; pintar(); } })));
+    const lista = data.filter(p => FILTROS[filtroP][1](p) && (!f ||
+      `${p.nombre} ${gruposTexto(p)} ${p.tag || ''} ${p.marca || ''} ${p.n_serie || ''}`.toLowerCase().includes(f)));
     const filas = lista.map(p => [
       p.nombre, gruposTexto(p), p.tipo,
-      p.tag || el('span', { class: 'pill neutro', text: 'sin equipo' }),
-      p.n_variables,
+      p.tag ? el('span', {}, [el('b', { text: p.tag }),
+                vencido(p) ? el('span', { class: 'pill bad', text: ' cert. vencido' })
+                : porVencer(p) ? el('span', { class: 'pill warn', text: ' cert. por vencer' }) : null].filter(Boolean))
+            : el('span', { class: 'pill neutro', text: 'sin equipo' }),
+      p.n_variables || el('span', { class: 'pill warn', text: '0' }),
       p.n_equipos_historicos > 1
         ? el('span', { class: 'pill acento', text: p.n_equipos_historicos + ' equipos' })
         : '—',
@@ -3078,15 +3101,159 @@ async function vistaPuntos(c) {
    lecturas y el equipo instalado, que tienen sus propias acciones.
    Se lee la fila completa de `puntos`: v_puntos no trae la instrucción de lectura,
    y guardar desde ahí la borraba sin aviso. */
+/* ---------------- Lecturas de un punto, con preguntas simples ----------------
+   En vez de "unidad del display / unidad de informe / formato / decimales", tres
+   preguntas: qué se lee, cómo lo muestra el display y cuál va al informe.
+   Una lectura que se desmarca no se borra (tiene historia): queda inactiva.
+   Las lecturas que no calzan con un tipo estándar quedan en "Otras" y se editan
+   con el formulario avanzado. */
+const TIPOS_LECTURA = [
+  { k: 'imp', etiqueta: 'Energía importada (kWh+)', nombre: 'Energía activa importada (kWh+)', reporte: 'kWh', energia: true,
+    es: v => /importada/i.test(v.nombre) },
+  { k: 'exp', etiqueta: 'Energía exportada (kWh-)', nombre: 'Energía activa exportada (kWh-)', reporte: 'kWh', energia: true,
+    es: v => /exportada/i.test(v.nombre), opcionalPorDefecto: true },
+  { k: 'hrs', etiqueta: 'Horas de marcha', nombre: 'Horas de marcha', reporte: 'Hrs', es: v => /^horas/i.test(v.nombre) },
+  { k: 'agua', etiqueta: 'Volumen de agua (m³)', nombre: 'Volumen', reporte: 'm3',
+    es: v => v.nombre === 'Volumen' && v.unidad_reporte === 'm3' },
+  { k: 'gas', etiqueta: 'Volumen de gas (m³)', nombre: 'Volumen gas', reporte: 'm3', es: v => /^volumen gas$/i.test(v.nombre) },
+  { k: 'lt', etiqueta: 'Litros (L)', nombre: 'Volumen', reporte: 'L',
+    es: v => v.nombre === 'Volumen' && v.unidad_reporte === 'L' }
+];
+const DISPLAY_ENERGIA = [['kWh', 'kWh'], ['MWh', 'MWh'], ['doble', 'MWh y kWh (dos campos)']];
+const displayDe = v => v.formato_lectura === 'doble_mwh_kwh' ? 'doble' : (v.unidad_display === 'MWh' ? 'MWh' : 'kWh');
+const displayA = d => d === 'doble' ? { unidad_display: 'MWh', formato_lectura: 'doble_mwh_kwh' }
+                    : { unidad_display: d, formato_lectura: 'simple' };
+
+function armarConfigLecturas(existentes, punto) {
+  existentes = existentes || [];
+  const usadas = new Set();
+  const filas = TIPOS_LECTURA.map(t => {
+    // Preferir la activa si hay varias que calzan.
+    const cand = existentes.filter(v => !usadas.has(v.id) && t.es(v)).sort((a, b) => b.activo - a.activo);
+    const ex = cand[0] || null;
+    if (ex) usadas.add(ex.id);
+    return {
+      t, ex,
+      quiere: !!(ex && ex.activo),
+      display: ex ? displayDe(ex) : 'kWh',
+      principal: ex ? !!ex.principal : !t.opcionalPorDefecto,
+      opcional: ex ? !!ex.opcional : !!t.opcionalPorDefecto
+    };
+  });
+  const otras = existentes.filter(v => !usadas.has(v.id));
+  const nuevo = !existentes.length;
+  // Punto nuevo: lo más común es un medidor de energía con importada.
+  if (nuevo) { filas[0].quiere = true; filas[0].principal = true; }
+
+  const zona = el('div', { class: 'config-lecturas' });
+  function pintar() {
+    const energiaMarcada = filas.filter(r => r.t.energia && r.quiere);
+    // Si solo una de energía está marcada, esa va al informe.
+    if (energiaMarcada.length === 1) energiaMarcada[0].principal = true;
+    poner(zona,
+      el('p', { class: 'ayuda', text: 'Marca lo que se lee en este punto. El informe siempre queda en kWh, m³, L u horas: si el display muestra MWh, la app convierte sola.' }),
+      ...filas.map(r => {
+        const chk = el('input', { type: 'checkbox', checked: r.quiere || null,
+          onchange: e => { r.quiere = e.target.checked; pintar(); } });
+        const extra = [];
+        if (r.quiere && r.t.energia) {
+          const sel = el('select', { onchange: e => { r.display = e.target.value; } });
+          for (const [v, txt] of DISPLAY_ENERGIA) sel.append(el('option', { value: v, selected: r.display === v || null, text: txt }));
+          extra.push(el('label', { class: 'mini', text: 'El display muestra' }, [sel]));
+          if (energiaMarcada.length > 1) {
+            extra.push(el('label', { class: 'fila mini' }, [
+              el('input', { type: 'radio', name: 'va-informe', checked: r.principal || null,
+                onchange: () => { for (const o of filas) if (o.t.energia) o.principal = (o === r); } }),
+              el('span', { text: 'Va al informe' })]));
+          }
+        }
+        if (r.quiere) extra.push(el('label', { class: 'fila mini' }, [
+          el('input', { type: 'checkbox', checked: r.opcional || null, onchange: e => { r.opcional = e.target.checked; } }),
+          el('span', { text: 'Opcional', title: 'No cuenta como pendiente del mes' })]));
+        return el('div', { class: 'tipo-lectura' + (r.quiere ? ' sel' : '') }, [
+          el('label', { class: 'fila' }, [chk, el('b', { text: r.t.etiqueta }),
+            r.ex && !r.ex.activo ? el('small', { class: 'tenue-b', text: ' (estaba desactivada)' }) : null]),
+          extra.length ? el('div', { class: 'tipo-extra' }, extra) : null
+        ]);
+      }),
+      (otras.length || punto) ? el('details', { class: 'plegable', open: otras.length ? '' : null }, [
+        el('summary', { text: `Otras lecturas (avanzado)${otras.length ? ' · ' + otras.length : ''}` }),
+        otras.length ? tabla(['Lectura', 'Display', 'Informe', ''], otras.map(x => [
+          x.nombre + (x.activo ? '' : ' (inactiva)'),
+          UNIDAD[x.unidad_display] || x.unidad_display, UNIDAD[x.unidad_reporte] || x.unidad_reporte,
+          punto ? el('button', { class: 'btn chico', text: 'Editar',
+            onclick: () => editarVariable(x, punto, () => editarPunto(punto)) }) : ''
+        ])) : el('p', { class: 'ayuda', text: 'Para algo que no está en la lista (otra unidad, otro nombre).' }),
+        punto ? el('button', { class: 'btn chico', style: 'margin-top:8px', text: '+ Otra lectura',
+          onclick: () => editarVariable(null, punto, () => editarPunto(punto)) }) : null
+      ]) : null
+    );
+  }
+  pintar();
+
+  return {
+    nodo: zona,
+    hayAlguna: () => filas.some(r => r.quiere) || otras.some(v => v.activo),
+    // Aplica los cambios en el orden que respeta "una principal por unidad":
+    // primero lo que se apaga o deja de ser principal, después el resto.
+    async aplicar(puntoId) {
+      const ops = [];
+      // Dos tipos marcados en la misma unidad (agua y gas en m³): solo uno puede ser principal.
+      const principalPorUnidad = {};
+      for (const r of filas) {
+        if (!r.quiere) continue;
+        const p = r.t.energia ? r.principal : !principalPorUnidad[r.t.reporte];
+        r.principalFinal = p && !principalPorUnidad[r.t.reporte];
+        if (r.principalFinal) principalPorUnidad[r.t.reporte] = true;
+      }
+      for (const r of filas) {
+        const d = r.t.energia ? displayA(r.display) : { unidad_display: r.t.reporte, formato_lectura: 'simple' };
+        if (!r.quiere) {
+          if (r.ex && r.ex.activo) ops.push({ orden: 0, args: { ...base(r.ex), p_principal: false, p_activo: false } });
+          continue;
+        }
+        const args = {
+          p_id: r.ex ? r.ex.id : null, p_punto_id: puntoId,
+          p_nombre: r.ex ? r.ex.nombre : r.t.nombre,
+          p_unidad_display: d.unidad_display, p_unidad_reporte: r.t.reporte,
+          p_decimales: r.ex ? (r.ex.decimales_display ?? 0) : 0, p_formato: d.formato_lectura,
+          p_principal: r.principalFinal, p_activo: true, p_opcional: r.opcional
+        };
+        if (r.ex) {
+          const igual = r.ex.activo && r.ex.unidad_display === d.unidad_display && r.ex.formato_lectura === d.formato_lectura &&
+            !!r.ex.principal === r.principalFinal && !!r.ex.opcional === r.opcional;
+          if (igual) continue;
+          ops.push({ orden: r.principalFinal ? 2 : 1, args });
+        } else ops.push({ orden: 3, args });
+      }
+      for (const o of ops.sort((a, b) => a.orden - b.orden)) {
+        const { error } = await sb.rpc('guardar_variable', o.args);
+        if (error) throw new Error(/variables_una_principal_por_unidad/.test(error.message)
+          ? 'Hay dos lecturas principales en la misma unidad. Revisa cuál va al informe.' : error.message);
+      }
+      return ops.length;
+      function base(v) {
+        return { p_id: v.id, p_punto_id: puntoId, p_nombre: v.nombre, p_unidad_display: v.unidad_display,
+                 p_unidad_reporte: v.unidad_reporte, p_decimales: v.decimales_display ?? 0,
+                 p_formato: v.formato_lectura, p_opcional: v.opcional };
+      }
+    }
+  };
+}
+
 async function editarPunto(puntoLista) {
   const nuevo = !puntoLista;
   let punto = puntoLista;
-  const [{ data: fila }, { data: tiposDb }, { data: misGrupos }] = await Promise.all([
+  const [{ data: fila }, { data: tiposDb }, { data: misGrupos }, { data: vars }] = await Promise.all([
     nuevo ? Promise.resolve({ data: null }) : sb.from('puntos').select('*').eq('id', puntoLista.id).single(),
     sb.from('tipos_equipo').select('id, nombre').order('nombre'),
-    nuevo ? Promise.resolve({ data: [] }) : sb.from('grupo_puntos').select('grupo_id').eq('punto_id', puntoLista.id)
+    nuevo ? Promise.resolve({ data: [] }) : sb.from('grupo_puntos').select('grupo_id').eq('punto_id', puntoLista.id),
+    nuevo ? Promise.resolve({ data: [] }) : sb.from('variables')
+      .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
+      .eq('punto_id', puntoLista.id).order('id')
   ]);
   if (fila) punto = { ...puntoLista, ...fila };
+  const cfgLecturas = armarConfigLecturas(vars || [], nuevo ? null : punto);
 
   const f = {
     nombre: el('input', { value: punto?.nombre || '', placeholder: 'Ej.: Agua Mar 1' }),
@@ -3121,6 +3288,8 @@ async function editarPunto(puntoLista) {
     el('h3', { class: 'sub-form', text: 'Grupos de reporte' }),
     el('p', { class: 'ayuda', text: 'El punto sale en el informe de cada grupo que marques. Puede estar en varios.' }),
     zonaGrupos,
+    el('h3', { class: 'sub-form', text: 'Qué se lee en este punto' }),
+    cfgLecturas.nodo,
     el('label', { text: 'Cómo se toma la lectura acá (opcional)', style: 'margin-top:14px' }, [f.instruccion]),
     el('p', { class: 'ayuda', text: 'Aparece arriba al abrir el punto en terreno: de qué menú sale cada valor.' }),
     el('button', { class: 'btn guardar grande', style: 'margin-top:14px',
@@ -3146,6 +3315,7 @@ async function editarPunto(puntoLista) {
       instruccion_lectura: f.instruccion.value.trim() || null
     };
     if (!datos.nombre) return toast('El punto necesita un nombre', true);
+    if (!cfgLecturas.hayAlguna()) return toast('Marca al menos una lectura: sin lecturas el punto no aparece en terreno', true);
     if (!enGrupo.size && !confirm('El punto no está en ningún grupo: no va a salir en los informes por grupo. ¿Guardar igual?')) return;
     const b = e?.target; if (b) b.disabled = true;
     try {
@@ -3155,11 +3325,12 @@ async function editarPunto(puntoLista) {
       if (r.error) throw r.error;
       const idPunto = nuevo ? r.data.id : punto.id;
       await guardarGrupos(idPunto);
+      await cfgLecturas.aplicar(idPunto);
       S.catalogo = await DB.descargarCatalogo();
       if (nuevo) {
         // Sin lecturas el punto no aparece en terreno: se abre de nuevo para agregarlas.
         const { data: creado } = await sb.from('v_puntos').select('*').eq('id', idPunto).single();
-        toast('Punto creado. Ahora agrega sus lecturas.');
+        toast('Punto creado. Si ya tiene medidor, instálalo abajo.');
         render();
         return editarPunto(creado || { id: idPunto, nombre: datos.nombre });
       }
@@ -3170,40 +3341,6 @@ async function editarPunto(puntoLista) {
   }
 
   if (!nuevo) {
-    // ---- lecturas del punto ----
-    const zonaVars = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
-    cuerpo.append(
-      el('h3', { class: 'sub-form', text: 'Lecturas de este punto' }),
-      el('p', { class: 'ayuda', text:
-        'La principal va al consumo del informe; la secundaria se toma y se guarda pero no suma. ' +
-        'Una opcional aparece en terreno pero no cuenta como pendiente.' }),
-      zonaVars);
-    async function pintarVariables() {
-      const { data, error } = await sb.from('variables')
-        .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
-        .eq('punto_id', punto.id).order('id');
-      if (error) { poner(zonaVars, el('p', { class: 'error', text: error.message })); return; }
-      poner(zonaVars,
-        (data && data.length) ? tabla(['Lectura', 'Display', 'Informe', 'Rol', ''],
-          [...data].sort(ordenVariables).map(x => [
-            x.nombre,
-            UNIDAD[x.unidad_display] || x.unidad_display,
-            UNIDAD[x.unidad_reporte] || x.unidad_reporte,
-            el('div', { class: 'fila' }, [
-              el('span', { class: 'pill ' + (x.principal ? 'ok' : 'neutro'),
-                           text: x.principal ? 'principal' : 'secundaria' }),
-              x.opcional ? el('span', { class: 'pill neutro', text: 'opcional' }) : null,
-              x.activo ? null : el('span', { class: 'pill warn', text: 'inactiva' })
-            ].filter(Boolean)),
-            el('button', { class: 'btn chico', text: 'Editar',
-              onclick: () => editarVariable(x, punto, pintarVariables) })
-          ]))
-          : el('p', { class: 'banda warn', text: 'Sin lecturas: este punto no aparece en terreno hasta que agregues al menos una.' }),
-        el('button', { class: 'btn', style: 'margin-top:10px', text: '+ Agregar una lectura',
-          onclick: () => editarVariable(null, punto, pintarVariables) }));
-    }
-    pintarVariables();
-
     // ---- equipo instalado ----
     const zonaEq = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
     cuerpo.append(el('h3', { class: 'sub-form', text: 'Equipo instalado' }), zonaEq);
@@ -3223,14 +3360,34 @@ async function editarPunto(puntoLista) {
    pantalla Instalaciones. Muestra el equipo vigente, permite instalar otro (lo
    que retira el anterior), retirarlo a bodega, y el historial completo. */
 async function pintarEquipoDelPunto(punto, zona, alCambiar) {
-  const [{ data: hist }, { data: libres }, { data: actual }] = await Promise.all([
+  const [{ data: hist }, { data: libres }, { data: actual }, { data: varsPunto }] = await Promise.all([
     sb.from('asignaciones').select('id, desde, hasta, motivo, equipo:equipos(id, tag, marca, modelo, n_serie)')
       .eq('punto_id', punto.id).order('desde', { ascending: false }),
     sb.from('v_equipos').select('id, tag, marca, modelo, tipo, tipo_equipo_id, estado')
       .is('punto_actual_id', null).eq('activo', true).order('tag'),
     sb.from('v_puntos').select('equipo_id, tag, marca, modelo, n_serie, certificado, vence_certificado, equipo_desde, tipo_equipo_id')
-      .eq('id', punto.id).maybeSingle()
+      .eq('id', punto.id).maybeSingle(),
+    sb.from('variables').select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional')
+      .eq('punto_id', punto.id).eq('activo', true)
   ]);
+  // La unidad del display es del MEDIDOR: si el nuevo muestra MWh y el viejo kWh y
+  // nadie lo cambia, la lectura siguiente sale mil veces más chica y el consumo, absurdo.
+  const energia = (varsPunto || []).filter(v => v.unidad_reporte === 'kWh');
+  const displayActual = energia.length ? displayDe(energia[0]) : null;
+  const selDisplay = el('select');
+  for (const [v, txt] of DISPLAY_ENERGIA) selDisplay.append(el('option', { value: v, selected: displayActual === v || null, text: txt }));
+  async function ajustarDisplay() {
+    if (!energia.length || selDisplay.value === displayActual) return false;
+    const d = displayA(selDisplay.value);
+    for (const v of energia) {
+      const { error } = await sb.rpc('guardar_variable', {
+        p_id: v.id, p_punto_id: punto.id, p_nombre: v.nombre, p_unidad_display: d.unidad_display,
+        p_unidad_reporte: v.unidad_reporte, p_decimales: v.decimales_display ?? 0, p_formato: d.formato_lectura,
+        p_principal: v.principal, p_activo: true, p_opcional: v.opcional });
+      if (error) throw error;
+    }
+    return true;
+  }
   const a = actual || {};
   const despues = async (msg) => {
     toast(msg);
@@ -3273,6 +3430,7 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
         el('label', { class: 'crece', text: 'Fecha' }, [fecha]),
         el('label', { class: 'crece', text: 'Motivo' }, [motivo])
       ]),
+      energia.length ? el('label', { text: '¿Cómo muestra la energía el equipo nuevo?' }, [selDisplay]) : null,
       el('div', { class: 'fila' }, [
         el('button', { class: 'btn guardar', text: a.equipo_id ? 'Reemplazar' : 'Instalar', onclick: async () => {
           if (!selEquipo.value) return toast('Elige un equipo', true);
@@ -3280,7 +3438,11 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
             p_equipo_id: Number(selEquipo.value), p_punto_id: punto.id,
             p_desde: fecha.value, p_motivo: motivo.value.trim() || null });
           if (r.error) return toast(r.error.message, true);
-          despues(a.equipo_id ? 'Equipo reemplazado; el anterior quedó en bodega' : 'Equipo instalado');
+          let cambio = false;
+          try { cambio = await ajustarDisplay(); }
+          catch (err) { return toast('El equipo quedó instalado, pero no se pudo cambiar la unidad: ' + err.message, true); }
+          despues((a.equipo_id ? 'Equipo reemplazado; el anterior quedó en bodega' : 'Equipo instalado') +
+                  (cambio ? ' · las lecturas ahora se toman en ' + DISPLAY_ENERGIA.find(x => x[0] === selDisplay.value)[1] : ''));
         } }),
         a.equipo_id ? el('button', { class: 'btn cancelar', text: 'Retirar a bodega', onclick: async () => {
           if (!motivo.value.trim()) return toast('Escribe el motivo del retiro', true);
@@ -3303,98 +3465,6 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
       ]))
     ]) : null
   );
-}
-
-/* ===================================================================
-   CONFIGURACIÓN · INSTALACIONES (punto ↔ equipo)
-   Una fila por punto con su equipo vigente, y aparte los equipos que no están
-   en ningún punto. Sirve para responder rápido "¿qué medidor está en X?",
-   "¿qué puntos no tienen equipo?" y "¿qué certificados vencen?".
-   =================================================================== */
-async function vistaInstalaciones(c) {
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando instalaciones…' })]);
-  const buscar = el('input', { type: 'search', placeholder: 'Buscar punto, TAG, marca o serie…',
-    oninput: () => pintar() });
-  c.append(el('div', { class: 'buscador' }, [buscar]), zona);
-
-  const [{ data: puntos, error }, { data: equipos }, { data: gp }] = await Promise.all([
-    sb.from('v_puntos').select('*').eq('activo', true).order('nombre'),
-    sb.from('v_equipos').select('*').eq('activo', true).order('tag'),
-    sb.from('v_grupos_punto').select('punto_id, grupos')
-  ]);
-  if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
-  const gruposPorPunto = Object.fromEntries((gp || []).map(x => [x.punto_id, x.grupos || []]));
-  for (const p of puntos) p.grupos = gruposPorPunto[p.id] || [];
-  const hoy = new Date().toISOString().slice(0, 10);
-  const en60 = new Date(Date.now() + 60 * 86400e3).toISOString().slice(0, 10);
-  const vencido = p => p.certificado && p.vence_certificado && p.vence_certificado < hoy;
-  const porVencer = p => p.certificado && p.vence_certificado && p.vence_certificado >= hoy && p.vence_certificado <= en60;
-  const enBodega = (equipos || []).filter(e => !e.punto_actual_id);
-
-  let filtro = 'todos';
-  function pintar() {
-    const q = (buscar.value || '').toLowerCase();
-    const n = {
-      todos: puntos.length,
-      sin: puntos.filter(p => !p.equipo_id).length,
-      venc: puntos.filter(p => vencido(p) || porVencer(p)).length,
-      bodega: enBodega.length
-    };
-    const chip = (k, txt) => el('button', { class: 'chip-filtro' + (filtro === k ? ' sel' : ''),
-      text: `${txt} · ${n[k]}`, onclick: () => { filtro = k; pintar(); } });
-    const chips = el('div', { class: 'filtros-terreno' }, [
-      chip('todos', 'Todos los puntos'), chip('sin', 'Sin equipo'),
-      chip('venc', 'Certificado vencido o por vencer'), chip('bodega', 'Equipos sin instalar')
-    ]);
-
-    if (filtro === 'bodega') {
-      const lista = enBodega.filter(e => !q || `${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.tipo}`.toLowerCase().includes(q));
-      return poner(zona, chips,
-        lista.length ? tabla(['TAG', 'Tipo', 'Marca · modelo', 'Serie', 'Estado', ''], lista.map(e => [
-          e.tag || el('span', { class: 'pill warn', text: 'sin TAG' }), e.tipo || '—',
-          [e.marca, e.modelo].filter(Boolean).join(' · ') || '—', e.n_serie || '—',
-          el('span', { class: 'pill ' + (ESTADO_EQUIPO[e.estado]?.[0] || 'neutro'), text: ESTADO_EQUIPO[e.estado]?.[1] || e.estado }),
-          el('button', { class: 'btn chico', text: 'Abrir', onclick: () => editarEquipo(e) })
-        ]), { etiquetas: true }) : el('p', { class: 'vacio', text: 'Todos los equipos están instalados.' }));
-    }
-
-    const lista = puntos.filter(p =>
-      (filtro !== 'sin' || !p.equipo_id) &&
-      (filtro !== 'venc' || vencido(p) || porVencer(p)) &&
-      (!q || `${p.nombre} ${gruposTexto(p)} ${p.tag || ''} ${p.marca || ''} ${p.modelo || ''} ${p.n_serie || ''}`.toLowerCase().includes(q)));
-    poner(zona, chips,
-      el('p', { class: 'ayuda', text: `${lista.length} punto(s) · toca uno para cambiar su equipo o ver el historial.` }),
-      tabla(['Punto', 'Grupos', 'Equipo instalado', 'Desde', 'Certificado', ''], lista.map(p => [
-        p.nombre, gruposTexto(p),
-        p.equipo_id
-          ? el('span', {}, [el('b', { text: p.tag || 'sin TAG' }),
-              el('small', { class: 'tenue-b', text: ' ' + [p.marca, p.modelo].filter(Boolean).join(' · ') })])
-          : el('span', { class: 'pill warn', text: 'sin equipo' }),
-        p.equipo_id ? fechaCorta(p.equipo_desde) : '—',
-        !p.certificado ? '—'
-          : el('span', { class: 'pill ' + (vencido(p) ? 'bad' : porVencer(p) ? 'warn' : 'ok'),
-              text: (vencido(p) ? 'vencido ' : 'vence ') + fechaCorta(p.vence_certificado) }),
-        el('button', { class: 'btn chico', text: p.equipo_id ? 'Cambiar' : 'Instalar', onclick: () => {
-          const z = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
-          modal(p.nombre, el('div', {}, [
-            el('p', { class: 'ayuda', text: gruposTexto(p) }), z,
-            el('button', { class: 'btn', style: 'margin-top:14px', text: 'Abrir la ficha completa del punto',
-              onclick: () => editarPunto(p) })
-          ]));
-          pintarEquipoDelPunto(p, z, () => { recargar(); });
-        } })
-      ]), { etiquetas: true }));
-  }
-  async function recargar() {
-    const [{ data: p2 }, { data: e2 }] = await Promise.all([
-      sb.from('v_puntos').select('*').eq('activo', true).order('nombre'),
-      sb.from('v_equipos').select('*').eq('activo', true).order('tag')
-    ]);
-    if (p2) { puntos.splice(0, puntos.length, ...p2); for (const p of puntos) p.grupos = gruposPorPunto[p.id] || []; }
-    if (e2) { enBodega.splice(0, enBodega.length, ...e2.filter(e => !e.punto_actual_id)); }
-    pintar();
-  }
-  pintar();
 }
 
 // Un medidor puede mostrar MWh y el informe necesita kWh: eso se declara acá,
@@ -3936,23 +4006,43 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
 async function vistaUsuarios(c) {
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
   c.append(el('div', { class: 'fila entre seccion' }, [
-    el('p', { class: 'ayuda', text: 'El rol define qué ve cada persona. Para crear una cuenta nueva hay que invitarla desde Supabase; aquí se le asigna el rol.' })
+    el('p', { class: 'ayuda crece', text:
+      'El rol define qué puede hacer cada persona; los grupos, qué puntos ve. ' +
+      'El admin ve todo. Cualquier otro rol sin grupos ni puntos asignados no ve ningún punto.' }),
+    el('button', { class: 'btn guardar', text: '+ Persona nueva', onclick: () => nuevoUsuario() })
   ]), zona);
 
-  const { data, error } = await sb.from('usuarios').select('*').order('rol');
+  const [{ data, error }, { data: ug }, { data: up }] = await Promise.all([
+    sb.from('usuarios').select('*').order('rol').order('nombre'),
+    sb.from('usuario_grupos').select('usuario_id, grupo_id'),
+    sb.from('usuario_puntos').select('usuario_id, punto_id')
+  ]);
   if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
+  const nombreGrupo = Object.fromEntries((S.catalogo.grupos || []).map(g => [g.id, g.nombre]));
+  const gruposDeU = id => (ug || []).filter(x => x.usuario_id === id).map(x => nombreGrupo[x.grupo_id]).filter(Boolean);
+  const puntosDeU = id => (up || []).filter(x => x.usuario_id === id).length;
 
   const ROLES = ['admin', 'supervisor', 'colaborador', 'casa_fuerza', 'visualizador'];
   const filas = data.map(u => {
     const sel = el('select', { onchange: async e => {
       const { error } = await sb.from('usuarios').update({ rol: e.target.value }).eq('id', u.id);
       toast(error ? error.message : `${u.nombre} ahora es ${e.target.value}`, !!error);
+      if (!error) vistaUsuariosRefrescar();
     } });
     for (const r of ROLES) sel.append(el('option', { value: r, selected: r === u.rol || null, text: r }));
     const act = el('input', { type: 'checkbox', checked: u.activo || null, onchange: async e => {
       const { error } = await sb.from('usuarios').update({ activo: e.target.checked }).eq('id', u.id);
       toast(error ? error.message : 'Actualizado', !!error);
     } });
+    // Qué puntos ve: lo que más se olvida al dar de alta a alguien.
+    const gs = gruposDeU(u.id), np = puntosDeU(u.id);
+    const acceso = u.rol === 'admin'
+      ? el('span', { class: 'pill ok', text: 'todo (admin)' })
+      : (gs.length || np)
+        ? el('span', { text: [gs.join(' · '), np ? `${np} punto(s) suelto(s)` : null].filter(Boolean).join(' + ') })
+        : el('span', { class: 'pill bad', text: 'sin acceso: no ve ningún punto' });
+    const btnAcceso = u.rol === 'admin' ? null
+      : el('button', { class: 'btn chico', text: 'Grupos', onclick: () => editarAccesoUsuario(u) });
     const borrar = (S.usuario.rol === 'admin' && u.id !== S.usuario.id)
       ? el('button', { class: 'btn chico peligro', text: 'Eliminar',
           onclick: () => eliminarCosa({
@@ -3964,9 +4054,147 @@ async function vistaUsuarios(c) {
     const clave = (S.usuario.rol === 'admin')
       ? el('button', { class: 'btn chico', text: 'Cambiar clave', onclick: () => cambiarClaveUsuario(u) })
       : null;
-    return [u.nombre, u.correo, sel, act, u.casa_fuerza ? 'sí' : 'no', clave || '—', borrar || '—'];
+    return [u.nombre, u.correo, sel, el('div', { class: 'fila' }, [acceso, btnAcceso].filter(Boolean)),
+            act, u.casa_fuerza ? 'sí' : 'no',
+            el('div', { class: 'fila' }, [clave, borrar].filter(Boolean))];
   });
-  zona.replaceChildren(tabla(['Nombre', 'Correo', 'Rol', 'Activo', 'Casa de Fuerza', '', ''], filas));
+  const sinAcceso = data.filter(u => u.activo && u.rol !== 'admin' && !gruposDeU(u.id).length && !puntosDeU(u.id));
+  zona.replaceChildren(
+    sinAcceso.length ? el('p', { class: 'banda warn', text:
+      `${sinAcceso.length} persona(s) activa(s) sin grupos ni puntos: entran a la app pero no ven ningún punto. ` +
+      'Asígnales grupos con el botón "Grupos".' }) : '',
+    tabla(['Nombre', 'Correo', 'Rol', 'Qué puntos ve', 'Activo', 'Casa de Fuerza', ''], filas, { etiquetas: true }));
+}
+const vistaUsuariosRefrescar = () => { if (S.vista === 'usuarios') render(); };
+
+// Casillas de grupos (y, plegado, puntos sueltos) para dar acceso a una persona.
+function selectorAcceso(gruposSel = new Set(), puntosSel = new Set()) {
+  const cajaGrupos = el('div', { class: 'grupos-check' });
+  for (const g of [...(S.catalogo.grupos || [])].sort((a, b) => compararGrupos(a.nombre, b.nombre))) {
+    const n = new Set(S.catalogo.variables.filter(v => (v.punto.grupos || []).includes(g.nombre)).map(v => v.punto.id)).size;
+    cajaGrupos.append(el('label', { class: 'fila' }, [
+      el('input', { type: 'checkbox', checked: gruposSel.has(g.id) || null,
+        onchange: e => { e.target.checked ? gruposSel.add(g.id) : gruposSel.delete(g.id); } }),
+      el('span', { text: `${g.nombre}` }), el('small', { class: 'tenue-b', text: `${n} pts` })
+    ]));
+  }
+  const puntos = [...new Map(S.catalogo.variables.map(v => [v.punto.id, v.punto])).values()]
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const lista = el('div', { class: 'lista-puntos-acceso' });
+  const buscar = el('input', { type: 'search', placeholder: 'Filtrar puntos…', oninput: () => pintar() });
+  const pintar = () => {
+    const q = buscar.value.toLowerCase();
+    poner(lista, puntos.filter(p => !q || p.nombre.toLowerCase().includes(q)).map(p =>
+      el('label', { class: 'fila' }, [
+        el('input', { type: 'checkbox', checked: puntosSel.has(p.id) || null,
+          onchange: e => { e.target.checked ? puntosSel.add(p.id) : puntosSel.delete(p.id); } }),
+        el('span', { text: p.nombre })])));
+  };
+  pintar();
+  return el('div', {}, [
+    el('h3', { class: 'sub-form', text: 'Grupos que puede ver' }),
+    el('p', { class: 'ayuda', text: 'Ve todos los puntos de los grupos marcados, también los que se agreguen al grupo más adelante.' }),
+    cajaGrupos,
+    el('details', { class: 'plegable', open: puntosSel.size ? '' : null }, [
+      el('summary', { text: `Puntos sueltos (fuera de sus grupos)${puntosSel.size ? ' · ' + puntosSel.size : ''}` }),
+      el('p', { class: 'ayuda', text: 'Solo si necesita uno o dos puntos de otro grupo sin ver el grupo entero.' }),
+      buscar, lista
+    ])
+  ]);
+}
+
+async function editarAccesoUsuario(u) {
+  const [{ data: g }, { data: p }] = await Promise.all([
+    sb.from('usuario_grupos').select('grupo_id').eq('usuario_id', u.id),
+    sb.from('usuario_puntos').select('punto_id').eq('usuario_id', u.id)
+  ]);
+  const gruposSel = new Set((g || []).map(x => x.grupo_id));
+  const puntosSel = new Set((p || []).map(x => x.punto_id));
+  modal(`Acceso · ${u.nombre}`, el('div', { class: 'form-punto' }, [
+    el('p', { class: 'ayuda', text: `${u.correo} · rol ${u.rol}` }),
+    selectorAcceso(gruposSel, puntosSel),
+    el('button', { class: 'btn guardar grande', style: 'margin-top:16px', text: 'Guardar acceso', onclick: async e => {
+      e.target.disabled = true;
+      try {
+        for (const [tabla, col, sel] of [['usuario_grupos', 'grupo_id', gruposSel], ['usuario_puntos', 'punto_id', puntosSel]]) {
+          const del = await sb.from(tabla).delete().eq('usuario_id', u.id);
+          if (del.error) throw del.error;
+          if (sel.size) {
+            const ins = await sb.from(tabla).insert([...sel].map(id => ({ usuario_id: u.id, [col]: id })));
+            if (ins.error) throw ins.error;
+          }
+        }
+        cerrarModal(); toast(`Acceso de ${u.nombre} actualizado`); render();
+      } catch (err) { toast(err.message || String(err), true); }
+      finally { e.target.disabled = false; }
+    } })
+  ]));
+}
+
+// Alta completa desde la app: cuenta, rol y grupos en un solo paso (función crear_usuario).
+function nuevoUsuario() {
+  const f = {
+    nombre: el('input', { placeholder: 'Nombre y apellido' }),
+    correo: el('input', { type: 'email', autocomplete: 'off', placeholder: 'correo@algortanorte.cl' }),
+    clave: el('input', { type: 'text', autocomplete: 'off', placeholder: 'Mínimo 6 caracteres' }),
+    rol: el('select'),
+    cf: el('input', { type: 'checkbox' }),
+    hist: el('input', { type: 'checkbox' })
+  };
+  const DESC = {
+    colaborador: 'colaborador · toma lecturas en terreno',
+    supervisor: 'supervisor · valida, ve informes y configura sus puntos',
+    visualizador: 'visualizador · solo mira',
+    casa_fuerza: 'casa_fuerza · generadores y recargas',
+    admin: 'admin · todo, incluido usuarios'
+  };
+  for (const r of ['colaborador', 'supervisor', 'visualizador', 'casa_fuerza', 'admin'])
+    f.rol.append(el('option', { value: r, text: DESC[r] }));
+  const gruposSel = new Set(), puntosSel = new Set();
+  const zonaAcceso = el('div', {}, [selectorAcceso(gruposSel, puntosSel)]);
+  f.rol.addEventListener('change', () => { zonaAcceso.hidden = f.rol.value === 'admin'; });
+  const err = el('p', { class: 'error', hidden: true });
+
+  modal('Persona nueva', el('div', { class: 'form-punto' }, [
+    el('label', { text: 'Nombre' }, [f.nombre]),
+    el('label', { text: 'Correo' }, [f.correo]),
+    el('label', { text: 'Clave inicial' }, [f.clave]),
+    el('p', { class: 'ayuda', text: 'Se la entregas tú. Si el correo ya tiene cuenta en el proyecto (por la app de instrumentación), se usa esa cuenta y su clave no cambia.' }),
+    el('label', { text: 'Rol' }, [f.rol]),
+    el('label', { class: 'fila' }, [f.cf, el('span', { text: 'También trabaja en Casa de Fuerza' })]),
+    el('label', { class: 'fila' }, [f.hist, el('span', { text: 'Puede ver meses anteriores (los supervisores siempre pueden)' })]),
+    zonaAcceso,
+    err,
+    el('button', { class: 'btn guardar grande', style: 'margin-top:16px', text: 'Crear', onclick: async e => {
+      err.hidden = true;
+      const nombre = f.nombre.value.trim(), correo = f.correo.value.trim().toLowerCase();
+      if (!nombre) { err.textContent = 'Falta el nombre.'; err.hidden = false; return; }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)) { err.textContent = 'El correo no es válido.'; err.hidden = false; return; }
+      if (f.rol.value !== 'admin' && !gruposSel.size && !puntosSel.size &&
+          !confirm('No marcaste ningún grupo: la persona va a entrar pero no verá ningún punto. ¿Crear igual?')) return;
+      e.target.disabled = true; e.target.textContent = 'Creando…';
+      try {
+        const { data, error } = await sb.functions.invoke('crear_usuario', { body: {
+          nombre, correo, clave: f.clave.value, rol: f.rol.value,
+          grupos: f.rol.value === 'admin' ? [] : [...gruposSel],
+          puntos: f.rol.value === 'admin' ? [] : [...puntosSel],
+          casa_fuerza: f.cf.checked, ver_historico: f.hist.checked } });
+        if (error) {
+          let msg = error.message || 'No se pudo crear.';
+          try { const cuerpo = await error.context.json(); if (cuerpo?.error) msg = cuerpo.error; } catch {}
+          throw new Error(msg);
+        }
+        if (data?.error) throw new Error(data.error);
+        cerrarModal();
+        toast(data?.cuenta_nueva ? `${nombre} creado. Entrégale su correo y la clave inicial.`
+                                 : `${nombre} dado de alta con la cuenta que ya tenía (su clave no cambió).`);
+        render();
+      } catch (ex) {
+        err.textContent = ex.message; err.hidden = false;
+        e.target.disabled = false; e.target.textContent = 'Crear';
+      }
+    } })
+  ]));
 }
 
 function cambiarClaveUsuario(u) {

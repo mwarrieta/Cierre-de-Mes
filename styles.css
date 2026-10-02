@@ -623,7 +623,10 @@ body.con-modal{overflow:hidden}
 .explica-periodo[open] > summary::after{content:''}
 
 /* ---------- Avisos: filtros y PDF de pendientes ---------- */
-.filtros-avisos select{flex:1 1 150px;max-width:none;margin-top:0}
+.filtros-avisos{display:flex;gap:8px;margin-bottom:8px}
+.filtros-avisos select{flex:1 1 0;min-width:0;margin-top:0}
+.filtros-avisos.grupo-pdf{margin-bottom:10px}
+.filtros-avisos.grupo-pdf .btn{flex:none;min-height:46px}
 .hoja-informe{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .hoja-avisos table.planilla td{vertical-align:top}
 .hoja-avisos table.planilla td.num{white-space:pre-line}

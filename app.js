@@ -2449,21 +2449,20 @@ async function vistaAvisos(c) {
   for (const g of [...(S.catalogo.grupos || [])].sort((a, b) => compararGrupos(a.nombre, b.nombre)))
     selGrupo.append(el('option', { value: g.nombre, text: g.nombre }));
 
+  // Dos filas: qué ver y en qué estado; luego el grupo con su PDF al lado.
+  const btnPdf = el('button', { class: 'btn primario', text: '📄 PDF',
+    title: 'PDF en blanco y negro con los avisos sin resolver del grupo elegido',
+    onclick: () => pdfAvisosPendientes(selGrupo.value) });
   c.append(
-    el('div', { class: 'fila seccion filtros-avisos' }, [selVista, selEstado, selGrupo]),
-    el('div', { class: 'fila entre', style: 'margin-bottom:10px' }, [
-      el('p', { class: 'ayuda crece', style: 'margin:0', text:
-        'El PDF lista los avisos sin resolver del grupo elegido, en blanco y negro, para adjuntarlo al informe.' }),
-      el('button', { class: 'btn primario', text: '📄 PDF de avisos pendientes',
-        onclick: () => pdfAvisosPendientes(selGrupo.value) })
-    ]),
+    el('div', { class: 'filtros-avisos' }, [selVista, selEstado]),
+    el('div', { class: 'filtros-avisos grupo-pdf' }, [selGrupo, btnPdf]),
     buscar, zona);
   pintar();
 
   async function pintar() {
     poner(zona, el('p', { class: 'cargando', text: 'Cargando…' }));
     selEstado.hidden = selVista.value === 'observaciones';
-    selGrupo.hidden = selVista.value === 'observaciones';
+    selGrupo.hidden = btnPdf.hidden = selVista.value === 'observaciones';
     const q = (buscar.value || '').toLowerCase();
 
     if (selVista.value === 'observaciones') {
@@ -2529,10 +2528,11 @@ async function vistaAvisos(c) {
               // "Otro" no dice nada: en ese caso manda la descripción.
               esOtroAviso(a.categoria) ? null : el('span', { class: 'categoria-tag', text: a.categoria || 'Aviso' })
             ]),
-            el('p', { class: 'descripcion-corta', text: a.descripcion || a.categoria || 'Sin descripción' }),
+            // Si la descripción solo repite la categoría, no se escribe dos veces.
+            descripcionUtil(a) ? el('p', { class: 'descripcion-corta', text: descripcionUtil(a) }) : null,
             el('span', { class: 'texto-secundario', text:
-              `${a.sitio} · ${a.estado === 'resuelto' ? 'resuelto ' + fechaCorta(a.resuelto_en)
-                : 'hace ' + diasAbierto(a) + ' día' + (diasAbierto(a) === 1 ? '' : 's')} · ${a.abierto_por_nombre || '—'}` })
+              `${a.sitio} · ${a.estado === 'resuelto' ? 'resuelto ' + fechaCorta(a.resuelto_en) : haceDias(a)}` +
+              ` · ${a.abierto_por_nombre || '—'}` })
           ]),
           el('div', { class: 'info-secundaria' }, [
             el('span', { class: 'pill ' + sevClase, text: a.severidad }),
@@ -2551,6 +2551,12 @@ async function vistaAvisos(c) {
 
 const esOtroAviso = cat => /^Otro/i.test(cat || '');
 const diasAbierto = a => Math.max(0, Math.floor((Date.now() - new Date(a.abierto_en)) / 86400e3));
+const haceDias = a => { const d = diasAbierto(a); return d === 0 ? 'hoy' : d === 1 ? 'ayer' : `hace ${d} días`; };
+const descripcionUtil = a => {
+  const d = (a.descripcion || '').trim();
+  if (!d) return esOtroAviso(a.categoria) ? 'Sin descripción' : '';
+  return d.replace(/[.\s]+$/, '').toLowerCase() === String(a.categoria || '').toLowerCase() ? '' : d;
+};
 
 /* ---------------- PDF de avisos pendientes ----------------
    Blanco y negro, A4, para adjuntar a los informes por grupo. Lo arma el navegador

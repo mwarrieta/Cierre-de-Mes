@@ -85,7 +85,9 @@ function num(v, dec = 0) {
 }
 function fechaCorta(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
+  // Una fecha sola (2025-03-01) se lee como medianoche UTC: en Chile salía el día anterior.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  const d = m ? new Date(+m[1], m[2] - 1, +m[3]) : new Date(iso);
   return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 function fechaHora(iso) {
@@ -390,6 +392,8 @@ $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));
 
 function ir(vista) {
+  if (S.puntoAbierto && S.fichaSucia && !confirm('Hay cambios sin guardar en este punto. ¿Salir igual?')) return;
+  S.puntoAbierto = null; S.fichaSucia = false; S.puntoEnHistorial = false;
   S.vista = vista;
   S.filtro = '';
   $$('#menu button[data-vista]').forEach(b => b.classList.toggle('sel', b.dataset.vista === vista));
@@ -3053,19 +3057,36 @@ async function editarEquipo(eq) {
 // "Instalaciones" se unió a Puntos de medición: un enlace viejo cae en Puntos.
 function vistaPuntosSiInstalaciones() { return S.vista === 'instalaciones' ? vistaPuntos : vistaTerreno; }
 
+/* ===================================================================
+   PUNTOS DE MEDICIÓN · lista compacta + ficha en página completa
+   La lista muestra solo lo necesario para encontrar un punto; el resto vive
+   en la ficha, que es una página y no un popup (en el teléfono el popup
+   quedaba largo y apretado, y en el PC angosto).
+   Los puntos dados de baja (activo = false) no se mezclan con los activos:
+   antes salían como "sin lecturas" y parecían datos perdidos.
+   =================================================================== */
+function etiquetaLectura(v) {
+  if (/exportada/i.test(v.nombre)) return 'kWh−';
+  if (/importada/i.test(v.nombre)) return 'kWh+';
+  if (/^horas/i.test(v.nombre)) return 'horas';
+  return UNIDAD[v.unidad_reporte] || v.unidad_reporte;
+}
+
 async function vistaPuntos(c) {
+  if (S.puntoAbierto) return fichaPunto(c, S.puntoAbierto);
   c.append(
-    el('div', { class: 'fila entre seccion' }, [
-      el('p', { class: 'ayuda crece', text: 'El lugar donde se mide. Permanece aunque se cambie el equipo: la serie histórica cuelga de aquí.' }),
+    el('div', { class: 'fila entre puntos-cab' }, [
+      el('p', { class: 'ayuda crece', text: 'El lugar donde se mide. La serie histórica cuelga del punto aunque se cambie el equipo.' }),
       el('button', { class: 'btn', text: '+ Punto nuevo', onclick: () => editarPunto(null) })
     ]),
     el('div', { class: 'buscador' }, [
-      el('input', { type: 'search', placeholder: 'Buscar punto, grupo o TAG…',
+      el('input', { type: 'search', placeholder: 'Buscar punto, grupo, tipo o TAG…', value: S.filtro || '',
         oninput: e => { S.filtro = e.target.value.toLowerCase(); pintar(); } })
     ])
   );
+  const zonaChips = el('div', { class: 'filtros-terreno' });
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando puntos…' })]);
-  c.append(zona);
+  c.append(zonaChips, zona);
 
   const [{ data, error }, { data: gp }] = await Promise.all([
     sb.from('v_puntos').select('*').order('nombre'),
@@ -3074,55 +3095,79 @@ async function vistaPuntos(c) {
   if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
   const gruposPorPunto = Object.fromEntries((gp || []).map(x => [x.punto_id, x.grupos || []]));
   for (const p of data) p.grupos = gruposPorPunto[p.id] || [];
+  const varsPorPunto = {};
+  for (const v of (S.catalogo?.variables || [])) (varsPorPunto[v.punto.id] = varsPorPunto[v.punto.id] || []).push(v);
 
   const hoy = new Date().toISOString().slice(0, 10);
   const en60 = new Date(Date.now() + 60 * 86400e3).toISOString().slice(0, 10);
   const vencido = p => p.certificado && p.vence_certificado && p.vence_certificado < hoy;
   const porVencer = p => p.certificado && p.vence_certificado && p.vence_certificado >= hoy && p.vence_certificado <= en60;
+  // [texto, condición, se muestra siempre]. Los demás chips aparecen solo si hay algo.
   const FILTROS = {
-    todos: ['Todos', () => true],
-    sin: ['Sin equipo', p => !p.equipo_id],
-    cert: ['Certificado vencido o por vencer', p => vencido(p) || porVencer(p)],
-    sinlect: ['Sin lecturas', p => !p.n_variables]
+    activos:  ['Activos', p => p.activo, true],
+    sin:      ['Sin equipo', p => p.activo && !p.equipo_id, true],
+    singrupo: ['Sin grupo', p => p.activo && !p.grupos.length, true],
+    cert:     ['Certificado vencido o por vencer', p => p.activo && (vencido(p) || porVencer(p))],
+    sinlect:  ['Sin nada que leer', p => p.activo && !p.n_variables],
+    baja:     ['Dados de baja', p => !p.activo, true]
   };
-  let filtroP = 'todos';
-  const zonaChips = el('div', { class: 'filtros-terreno' });
-  zona.before(zonaChips);
+  if (!FILTROS[S.filtroPuntos]) S.filtroPuntos = 'activos';
+
+  function fila(p) {
+    const vs = (varsPorPunto[p.id] || []).slice().sort((a, b) => b.principal - a.principal);
+    const grupos = gruposDe(p);
+    const lee = vs.length ? [...new Set(vs.map(etiquetaLectura))].join(' · ')
+      : p.n_variables ? `${p.n_variables} lecturas` : 'nada que leer';
+    const der = [];
+    if (!p.activo) der.push(el('span', { class: 'pill neutro', text: 'dado de baja' }));
+    else if (p.tag) der.push(el('b', { class: 'tag', text: p.tag }));
+    else der.push(el('span', { class: 'pill warn', text: 'sin equipo' }));
+    if (p.activo && vencido(p)) der.push(el('span', { class: 'pill bad', text: 'cert. vencido' }));
+    else if (p.activo && porVencer(p)) der.push(el('span', { class: 'pill warn', text: 'cert. por vencer' }));
+    return el('button', { class: 'item punto-fila' + (p.activo ? '' : ' baja'), onclick: () => editarPunto(p) }, [
+      el('span', { class: 'txt' }, [
+        el('span', { class: 'n' }, [el('span', { class: 'n-nom', text: p.nombre })]),
+        el('span', { class: 'd', text: [p.tipo, lee,
+          grupos.length > 1 ? 'también en ' + grupos.slice(1).join(', ') : null].filter(Boolean).join(' · ') })
+      ]),
+      el('span', { class: 'der' }, der),
+      el('span', { class: 'chev', text: '›', 'aria-hidden': 'true' })
+    ]);
+  }
 
   function pintar() {
-    const f = S.filtro;
-    poner(zonaChips, Object.entries(FILTROS).map(([k, [txt, fn]]) =>
-      el('button', { class: 'chip-filtro' + (filtroP === k ? ' sel' : ''),
-        text: `${txt} · ${data.filter(fn).length}`, onclick: () => { filtroP = k; pintar(); } })));
-    const lista = data.filter(p => FILTROS[filtroP][1](p) && (!f ||
-      `${p.nombre} ${gruposTexto(p)} ${p.tag || ''} ${p.marca || ''} ${p.n_serie || ''}`.toLowerCase().includes(f)));
-    const filas = lista.map(p => [
-      p.nombre, gruposTexto(p), p.tipo,
-      p.tag ? el('span', {}, [el('b', { text: p.tag }),
-                vencido(p) ? el('span', { class: 'pill bad', text: ' cert. vencido' })
-                : porVencer(p) ? el('span', { class: 'pill warn', text: ' cert. por vencer' }) : null].filter(Boolean))
-            : el('span', { class: 'pill neutro', text: 'sin equipo' }),
-      p.n_variables || el('span', { class: 'pill warn', text: '0' }),
-      p.n_equipos_historicos > 1
-        ? el('span', { class: 'pill acento', text: p.n_equipos_historicos + ' equipos' })
-        : '—',
-      p.foto_obligatoria ? 'sí' : 'no',
-      el('button', { class: 'btn chico', text: 'Abrir', onclick: () => editarPunto(p) })
-    ]);
+    const f = S.filtro || '';
+    poner(zonaChips, Object.entries(FILTROS)
+      .filter(([k, [, fn, siempre]]) => siempre || k === S.filtroPuntos || data.some(fn))
+      .map(([k, [txt, fn]]) => el('button', { class: 'chip-filtro' + (S.filtroPuntos === k ? ' sel' : ''),
+        text: `${txt} · ${data.filter(fn).length}`, onclick: () => { S.filtroPuntos = k; pintar(); } })));
+    const lista = data.filter(p => FILTROS[S.filtroPuntos][1](p) && (!f ||
+      `${p.nombre} ${gruposTexto(p)} ${p.tipo || ''} ${p.tag || ''} ${p.marca || ''} ${p.n_serie || ''}`.toLowerCase().includes(f)));
+    // Ordenados como el informe: por su primer grupo. Un punto en varios grupos sale una vez.
+    const porGrupo = new Map();
+    for (const p of lista) {
+      const g = gruposDe(p)[0] || null;
+      if (!porGrupo.has(g)) porGrupo.set(g, []);
+      porGrupo.get(g).push(p);
+    }
+    const activos = data.filter(p => p.activo);
     poner(zona,
-      el('p', { class: 'ayuda', text:
-        `${lista.length} puntos · ${data.filter(p => !p.equipo_id).length} sin equipo instalado` }),
-      tabla(['Punto', 'Grupos', 'Tipo', 'Equipo', 'Lecturas', 'Historial', 'Foto', ''],
-            filas, { num: [4], etiquetas: true }));
+      el('p', { class: 'ayuda', text: S.filtroPuntos === 'baja'
+        ? `${lista.length} puntos dados de baja. No se piden en terreno y su historia se conserva; se pueden reactivar desde su ficha.`
+        : `${lista.length} de ${activos.length} puntos activos · ${activos.filter(p => !p.equipo_id).length} sin equipo instalado` }),
+      lista.length
+        ? [...porGrupo.keys()].sort(compararGrupos).flatMap(g => [
+            el('h3', { class: 'grupo-sitio', text: `${g || 'Sin grupo'} · ${porGrupo.get(g).length}` }),
+            el('div', { class: 'lista-puntos' },
+              porGrupo.get(g).sort((a, b) => a.nombre.localeCompare(b.nombre)).map(fila))
+          ])
+        : el('p', { class: 'vacio', text: f ? 'Ningún punto calza con la búsqueda.' : 'No hay puntos en este filtro.' })
+    );
   }
   pintar();
+  if (S.scrollPuntos != null) { window.scrollTo(0, S.scrollPuntos); S.scrollPuntos = null; }
 }
 
-/* Formulario del punto. Orden: lo que define el punto (nombre, tipo, foto, grupos,
-   instrucción) y se guarda con un botón; después, ya con el punto creado, sus
-   lecturas y el equipo instalado, que tienen sus propias acciones.
-   Se lee la fila completa de `puntos`: v_puntos no trae la instrucción de lectura,
-   y guardar desde ahí la borraba sin aviso. */
 /* ---------------- Lecturas de un punto, con preguntas simples ----------------
    En vez de "unidad del display / unidad de informe / formato / decimales", tres
    preguntas: qué se lee, cómo lo muestra el display y cuál va al informe.
@@ -3274,19 +3319,67 @@ function armarConfigLecturas(existentes, punto) {
   };
 }
 
-async function editarPunto(puntoLista) {
-  const nuevo = !puntoLista;
-  let punto = puntoLista;
-  const [{ data: fila }, { data: tiposDb }, { data: misGrupos }, { data: vars }] = await Promise.all([
-    nuevo ? Promise.resolve({ data: null }) : sb.from('puntos').select('*').eq('id', puntoLista.id).single(),
+/* ---------------- Ficha del punto (página, no popup) ----------------
+   Orden: equipo instalado (lo que más se toca en terreno), datos del punto,
+   grupos y qué se lee; al final, dar de baja o eliminar. En el PC va en dos
+   columnas: configuración a la izquierda, equipo a la derecha.
+   Los datos, grupos y lecturas se guardan con la barra de abajo; el equipo
+   tiene sus propios botones porque cada cambio queda en el historial.
+   Se lee la fila completa de `puntos`: v_puntos no trae la instrucción de lectura,
+   y guardar desde ahí la borraba sin aviso. */
+function editarPunto(puntoLista) {
+  if (S.vista !== 'puntos') {
+    S.vista = 'puntos';
+    $$('#menu button[data-vista]').forEach(b => b.classList.toggle('sel', b.dataset.vista === 'puntos'));
+  }
+  if (!S.puntoAbierto) {
+    S.scrollPuntos = window.scrollY;
+    // El botón "atrás" del teléfono o del navegador vuelve a la lista, no sale de la app.
+    try { history.pushState({ fichaPunto: true }, ''); S.puntoEnHistorial = true; } catch (_) {}
+  }
+  S.puntoAbierto = puntoLista || { nuevo: true };
+  S.fichaSucia = false;
+  if (!$('#modal').hidden) cerrarModal();
+  render();
+  window.scrollTo(0, 0);
+}
+function cerrarFicha(forzar) {
+  if (!forzar && S.fichaSucia && !confirm('Hay cambios sin guardar en este punto. ¿Salir igual?')) return;
+  S.puntoAbierto = null; S.fichaSucia = false;
+  if (S.puntoEnHistorial) { S.puntoEnHistorial = false; try { history.back(); } catch (_) {} }
+  render();
+}
+window.addEventListener('popstate', () => {
+  if (!S.puntoAbierto) return;
+  if (S.fichaSucia && !confirm('Hay cambios sin guardar en este punto. ¿Salir igual?')) {
+    try { history.pushState({ fichaPunto: true }, ''); } catch (_) {}
+    return;
+  }
+  S.puntoEnHistorial = false;
+  cerrarFicha(true);
+});
+
+async function fichaPunto(c, puntoLista) {
+  const nuevo = !!puntoLista.nuevo;
+  c.append(el('p', { class: 'cargando', text: nuevo ? 'Preparando…' : 'Cargando el punto…' }));
+  const [{ data: fila }, { data: vp }, { data: tiposDb }, { data: misGrupos }, { data: vars }] = await Promise.all([
+    nuevo ? Promise.resolve({ data: null }) : sb.from('puntos').select('*').eq('id', puntoLista.id).maybeSingle(),
+    nuevo ? Promise.resolve({ data: null }) : sb.from('v_puntos').select('*').eq('id', puntoLista.id).maybeSingle(),
     sb.from('tipos_equipo').select('id, nombre').order('nombre'),
     nuevo ? Promise.resolve({ data: [] }) : sb.from('grupo_puntos').select('grupo_id').eq('punto_id', puntoLista.id),
     nuevo ? Promise.resolve({ data: [] }) : sb.from('variables')
       .select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional, en_informe')
       .eq('punto_id', puntoLista.id).order('id')
   ]);
-  if (fila) punto = { ...puntoLista, ...fila };
-  const cfgLecturas = armarConfigLecturas(vars || [], nuevo ? null : punto);
+  if (!c.isConnected) return;
+  const volver = el('button', { class: 'btn chico volver', text: '‹ Puntos', onclick: () => cerrarFicha() });
+  if (!nuevo && !fila) {
+    poner(c, el('div', { class: 'ficha-cab' }, [volver]),
+      el('p', { class: 'error', text: 'No se encontró el punto, o tu cuenta no tiene acceso a él.' }));
+    return;
+  }
+  const punto = nuevo ? null : { ...puntoLista, ...(vp || {}), ...fila };
+  const cfgLecturas = armarConfigLecturas(vars || [], punto);
 
   const f = {
     nombre: el('input', { value: punto?.nombre || '', placeholder: 'Ej.: Agua Mar 1' }),
@@ -3303,7 +3396,7 @@ async function editarPunto(puntoLista) {
   for (const [v_, t] of [['normal', 'Normal · ~300 KB'], ['alta', 'Alta · ~500 KB']])
     f.calidad.append(el('option', { value: v_, selected: (punto?.foto_calidad || 'normal') === v_ || null, text: t }));
 
-  // Grupos de reporte: también al crear. Un punto puede estar en varios grupos.
+  // Grupos de reporte: también al crear. Un punto puede estar en varios.
   const enGrupo = new Set((misGrupos || []).map(x => x.grupo_id));
   const zonaGrupos = el('div', { class: 'grupos-check' });
   for (const g of [...S.catalogo.grupos].sort((a, b) => compararGrupos(a.nombre, b.nombre))) {
@@ -3311,23 +3404,40 @@ async function editarPunto(puntoLista) {
       onchange: e => { e.target.checked ? enGrupo.add(g.id) : enGrupo.delete(g.id); } });
     zonaGrupos.append(el('label', { class: 'fila' }, [chk, el('span', { text: g.nombre })]));
   }
+  const nombresGrupos = () => [...S.catalogo.grupos].filter(g => enGrupo.has(g.id))
+    .sort((a, b) => compararGrupos(a.nombre, b.nombre)).map(g => g.nombre);
 
-  const cuerpo = el('div', { class: 'form-punto' }, [
-    el('label', { text: 'Nombre del punto' }, [f.nombre]),
-    el('label', { text: 'Tipo de equipo que va acá' }, [f.tipo]),
-    el('label', { class: 'fila' }, [f.foto, el('span', { text: 'La foto es obligatoria en este punto' })]),
-    el('label', { text: 'Calidad de la foto' }, [f.calidad]),
-    el('p', { class: 'ayuda', text: 'Normal (~300 KB) alcanza para leer un display. Alta (~500 KB): solo para puntos de facturación o del reporte de la Ley 21.305.' }),
-    el('h3', { class: 'sub-form', text: 'Grupos de reporte' }),
-    el('p', { class: 'ayuda', text: 'El punto sale en el informe de cada grupo que marques. Puede estar en varios.' }),
-    zonaGrupos,
-    el('h3', { class: 'sub-form', text: 'Qué se lee en este punto' }),
-    cfgLecturas.nodo,
-    el('label', { text: 'Cómo se toma la lectura acá (opcional)', style: 'margin-top:14px' }, [f.instruccion]),
-    el('p', { class: 'ayuda', text: 'Aparece arriba al abrir el punto en terreno: de qué menú sale cada valor.' }),
-    el('button', { class: 'btn guardar grande', style: 'margin-top:14px',
-      text: nuevo ? 'Crear el punto' : 'Guardar', onclick: guardar })
+  const tarjeta = (clase, titulo, ayuda, ...hijos) => el('section', { class: 'ficha-card ' + clase },
+    [el('h3', { text: titulo }), ayuda ? el('p', { class: 'ayuda intro', text: ayuda }) : null, ...hijos.flat()]);
+
+  const colCfg = el('div', { class: 'ficha-cfg' }, [
+    tarjeta('', 'Datos del punto', null,
+      el('div', { class: 'par' }, [
+        el('label', { text: 'Nombre del punto' }, [f.nombre]),
+        el('label', { text: 'Tipo de equipo que va acá' }, [f.tipo])
+      ]),
+      el('label', { text: 'Cómo se toma la lectura (opcional)' }, [f.instruccion,
+        el('span', { class: 'ayuda', text: 'Aparece arriba al abrir el punto en terreno: de qué menú sale cada valor.' })]),
+      el('div', { class: 'par' }, [
+        el('label', { class: 'fila', style: 'align-self:center' }, [f.foto, el('span', { text: 'La foto es obligatoria' })]),
+        el('label', { text: 'Calidad de la foto' }, [f.calidad])
+      ]),
+      el('p', { class: 'ayuda', style: 'margin-top:-6px', text: 'Normal alcanza para leer un display. Alta: solo para puntos de facturación o del reporte de la Ley 21.305.' })
+    ),
+    tarjeta('', 'Grupos de reporte', 'El punto sale en el informe de cada grupo que marques. Puede estar en varios.', zonaGrupos),
+    tarjeta('', 'Qué se lee en este punto', null, cfgLecturas.nodo)
   ]);
+
+  const estado = el('span', { class: 'estado', text: nuevo ? '' : 'Sin cambios' });
+  const btnGuardar = el('button', { class: 'btn guardar', text: nuevo ? 'Crear el punto' : 'Guardar cambios', onclick: guardar });
+  const barra = el('div', { class: 'ficha-barra' }, [estado,
+    el('button', { class: 'btn', text: nuevo ? 'Cancelar' : 'Volver', onclick: () => cerrarFicha() }), btnGuardar]);
+  const marcarSucio = () => {
+    if (S.fichaSucia) return;
+    S.fichaSucia = true; barra.classList.add('sucia'); estado.textContent = 'Cambios sin guardar';
+  };
+  colCfg.addEventListener('input', marcarSucio);
+  colCfg.addEventListener('change', marcarSucio);
 
   async function guardarGrupos(idPunto) {
     const del = await sb.from('grupo_puntos').delete().eq('punto_id', idPunto);
@@ -3339,7 +3449,7 @@ async function editarPunto(puntoLista) {
     }
   }
 
-  async function guardar(e) {
+  async function guardar() {
     const datos = {
       nombre: f.nombre.value.trim(),
       tipo_equipo_id: Number(f.tipo.value),
@@ -3348,9 +3458,10 @@ async function editarPunto(puntoLista) {
       instruccion_lectura: f.instruccion.value.trim() || null
     };
     if (!datos.nombre) return toast('El punto necesita un nombre', true);
-    if (!cfgLecturas.hayAlguna()) return toast('Marca al menos una lectura: sin lecturas el punto no aparece en terreno', true);
+    if (punto?.activo !== false && !cfgLecturas.hayAlguna())
+      return toast('Marca al menos una lectura: sin lecturas el punto no aparece en terreno', true);
     if (!enGrupo.size && !confirm('El punto no está en ningún grupo: no va a salir en los informes por grupo. ¿Guardar igual?')) return;
-    const b = e?.target; if (b) b.disabled = true;
+    btnGuardar.disabled = true;
     try {
       const r = nuevo
         ? await sb.from('puntos').insert(datos).select('id').single()
@@ -3360,38 +3471,76 @@ async function editarPunto(puntoLista) {
       await guardarGrupos(idPunto);
       await cfgLecturas.aplicar(idPunto);
       S.catalogo = await DB.descargarCatalogo();
-      if (nuevo) {
-        // Sin lecturas el punto no aparece en terreno: se abre de nuevo para agregarlas.
-        const { data: creado } = await sb.from('v_puntos').select('*').eq('id', idPunto).single();
-        toast('Punto creado. Si ya tiene medidor, instálalo abajo.');
-        render();
-        return editarPunto(creado || { id: idPunto, nombre: datos.nombre });
-      }
-      cerrarModal(); toast('Guardado'); render();
+      S.fichaSucia = false;
+      const { data: fresco } = await sb.from('v_puntos').select('*').eq('id', idPunto).maybeSingle();
+      toast(nuevo ? 'Punto creado. Si ya tiene medidor, instálalo en "Equipo instalado".' : 'Guardado');
+      editarPunto(fresco || { id: idPunto, nombre: datos.nombre });
     } catch (err) {
       toast(err.message || String(err), true);
-    } finally { if (b) b.disabled = false; }
+    } finally { btnGuardar.disabled = false; }
   }
 
+  const cab = el('div', { class: 'ficha-cab' }, [
+    volver,
+    el('div', { class: 'ficha-tit' }, [
+      el('h2', { text: nuevo ? 'Punto nuevo' : punto.nombre }),
+      nuevo ? null : el('p', { class: 'ayuda', text:
+        [punto.tipo, nombresGrupos().join(' · ') || 'sin grupo'].filter(Boolean).join(' · ') })
+    ])
+  ]);
+
+  let colEq = null, colZona = null, avisoBaja = null;
   if (!nuevo) {
-    // ---- equipo instalado ----
     const zonaEq = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
-    cuerpo.append(el('h3', { class: 'sub-form', text: 'Equipo instalado' }), zonaEq);
+    colEq = tarjeta('ficha-eq', 'Equipo instalado', null, zonaEq);
     pintarEquipoDelPunto(punto, zonaEq);
 
-    if (S.usuario.rol !== 'colaborador') cuerpo.append(
-      el('button', { class: 'btn peligro', style: 'margin-top:26px', text: 'Eliminar este punto de medición',
-        onclick: () => eliminarCosa({
+    const darDeBaja = async () => {
+      if (!confirm(`¿Dar de baja "${punto.nombre}"?\n\nDeja de pedirse en terreno y sale de la lista de activos. Su historia se conserva y se puede reactivar.`)) return;
+      // Se apagan también sus lecturas: si no, el punto seguiría saliendo pendiente en terreno.
+      const e1 = (await sb.from('variables').update({ activo: false }).eq('punto_id', punto.id).eq('activo', true)).error;
+      const e2 = e1 || (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error;
+      if (e2) return toast(e2.message, true);
+      S.catalogo = await DB.descargarCatalogo().catch(() => S.catalogo);
+      toast('Punto dado de baja');
+      cerrarFicha(true);
+    };
+    const reactivar = async () => {
+      const { error } = await sb.from('puntos').update({ activo: true }).eq('id', punto.id);
+      if (error) return toast(error.message, true);
+      S.catalogo = await DB.descargarCatalogo().catch(() => S.catalogo);
+      toast('Punto reactivado. Revisa qué se lee en él y guarda.');
+      editarPunto({ ...punto, activo: true });
+    };
+    if (punto.activo === false) avisoBaja = el('div', { class: 'banda warn ficha-baja' }, [
+      el('span', { text: 'Este punto está dado de baja: no se pide en terreno ni sale en la lista de activos. Su historia se conserva.' }),
+      S.usuario.rol !== 'colaborador' ? el('button', { class: 'btn chico', text: 'Reactivar', onclick: reactivar }) : null
+    ]);
+    if (S.usuario.rol !== 'colaborador') colZona = tarjeta('ficha-zona', 'Dar de baja o eliminar',
+      'Dar de baja lo saca de terreno y de los activos, pero conserva su historia. Eliminar solo funciona si el punto nunca tuvo lecturas.',
+      el('div', { class: 'fila' }, [
+        punto.activo === false
+          ? el('button', { class: 'btn', text: 'Reactivar el punto', onclick: reactivar })
+          : el('button', { class: 'btn', text: 'Dar de baja el punto', onclick: darDeBaja }),
+        el('button', { class: 'btn peligro', text: 'Eliminar', onclick: () => eliminarCosa({
           rpc: 'eliminar_punto', id: { p_id: punto.id }, nombre: punto.nombre, que: 'el punto',
-          desactivar: async () => (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error
-        }) }));
+          alTerminar: () => cerrarFicha(true),
+          desactivar: async () => {
+            const e1 = (await sb.from('variables').update({ activo: false }).eq('punto_id', punto.id).eq('activo', true)).error;
+            return e1 || (await sb.from('puntos').update({ activo: false }).eq('id', punto.id)).error;
+          } }) })
+      ]));
   }
-  modal(nuevo ? 'Punto nuevo' : punto.nombre, cuerpo);
+
+  poner(c, cab, avisoBaja,
+    el('div', { class: 'ficha-grid' + (nuevo ? ' nuevo' : '') }, [colEq, colCfg, colZona].filter(Boolean)),
+    barra);
 }
 
-/* El cruce punto ↔ equipo, en un solo lugar: lo usan la ficha del punto y la
-   pantalla Instalaciones. Muestra el equipo vigente, permite instalar otro (lo
-   que retira el anterior), retirarlo a bodega, y el historial completo. */
+/* El cruce punto ↔ equipo, en un solo lugar. Tres acciones visibles:
+   reemplazar (el anterior vuelve a bodega), instalar si no hay, y retirar SIN
+   reemplazo eligiendo a dónde va el equipo: bodega, reparación o baja. Antes el
+   retiro estaba escondido dentro de "Cambiar" y solo mandaba a bodega. */
 async function pintarEquipoDelPunto(punto, zona, alCambiar) {
   const [{ data: hist }, { data: libres }, { data: actual }, { data: varsPunto }] = await Promise.all([
     sb.from('asignaciones').select('id, desde, hasta, motivo, equipo:equipos(id, tag, marca, modelo, n_serie)')
@@ -3403,6 +3552,7 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
     sb.from('variables').select('id, nombre, unidad_display, unidad_reporte, decimales_display, formato_lectura, principal, activo, opcional, en_informe')
       .eq('punto_id', punto.id).eq('activo', true)
   ]);
+  if (!zona.isConnected) return;
   // La unidad del display es del MEDIDOR: si el nuevo muestra MWh y el viejo kWh y
   // nadie lo cambia, la lectura siguiente sale mil veces más chica y el consumo, absurdo.
   const energia = (varsPunto || []).filter(v => v.unidad_reporte === 'kWh');
@@ -3428,19 +3578,98 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
     pintarEquipoDelPunto(punto, zona, alCambiar);
     alCambiar && alCambiar();
   };
+  // Fecha local: toISOString() da la de UTC y después de las 21:00 en Chile ya es mañana.
+  const _h = new Date();
+  const hoyISO = `${_h.getFullYear()}-${String(_h.getMonth() + 1).padStart(2, '0')}-${String(_h.getDate()).padStart(2, '0')}`;
 
-  // Los equipos del mismo tipo que el punto, primero.
-  const libresOrd = [...(libres || [])].sort((x, y) =>
+  // Equipos libres: los del mismo tipo primero. Los que están en reparación no se ofrecen.
+  const libresOrd = (libres || []).filter(e => e.estado !== 'en_reparacion').sort((x, y) =>
     (y.tipo_equipo_id === a.tipo_equipo_id) - (x.tipo_equipo_id === a.tipo_equipo_id) ||
     String(x.tag || '').localeCompare(String(y.tag || '')));
   const selEquipo = el('select');
-  selEquipo.append(el('option', { value: '', text: libresOrd.length ? '— elegir equipo en bodega —' : 'No hay equipos sin instalar' }));
+  selEquipo.append(el('option', { value: '', text: '— elegir equipo en bodega —' }));
   for (const e of libresOrd)
     selEquipo.append(el('option', { value: e.id,
       text: [e.tag || 'sin TAG', e.marca, e.modelo, e.tipo].filter(Boolean).join(' · ') }));
-  const fecha = el('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
-  const motivo = el('input', { placeholder: 'Motivo: instalación, reemplazo por daño…' });
-  const vencido = a.certificado && a.vence_certificado && a.vence_certificado < new Date().toISOString().slice(0, 10);
+  const fechaC = el('input', { type: 'date', value: hoyISO });
+  const motivoC = el('input', { placeholder: a.equipo_id ? 'Ej.: reemplazo por daño del display' : 'Ej.: instalación inicial' });
+
+  const panelCambiar = el('div', { class: 'panel-equipo', hidden: '' }, libresOrd.length ? [
+    el('label', { text: a.equipo_id ? 'Reemplazar por' : 'Equipo a instalar' }, [selEquipo]),
+    el('div', { class: 'par' }, [
+      el('label', { text: 'Fecha' }, [fechaC]),
+      el('label', { text: 'Motivo' }, [motivoC])
+    ]),
+    energia.length ? el('label', { text: '¿Cómo muestra la energía el equipo nuevo?' }, [selDisplay]) : null,
+    a.equipo_id ? el('p', { class: 'ayuda', text: `${a.tag || 'El equipo actual'} vuelve a bodega. Si está dañado, mejor usa "Retirar sin reemplazo" y elige "Se da de baja".` }) : null,
+    el('button', { class: 'btn guardar', text: a.equipo_id ? 'Reemplazar' : 'Instalar', onclick: async ev => {
+      if (!selEquipo.value) return toast('Elige un equipo', true);
+      ev.target.disabled = true;
+      const r = await sb.rpc('asignar_equipo', {
+        p_equipo_id: Number(selEquipo.value), p_punto_id: punto.id,
+        p_desde: fechaC.value, p_motivo: motivoC.value.trim() || null });
+      ev.target.disabled = false;
+      if (r.error) return toast(r.error.message, true);
+      let cambio = false;
+      try { cambio = await ajustarDisplay(); }
+      catch (err) { return toast('El equipo quedó instalado, pero no se pudo cambiar la unidad: ' + err.message, true); }
+      despues((a.equipo_id ? 'Equipo reemplazado; el anterior quedó en bodega' : 'Equipo instalado') +
+              (cambio ? ' · las lecturas ahora se toman en ' + DISPLAY_ENERGIA.find(x => x[0] === selDisplay.value)[1] : ''));
+    } })
+  ] : [
+    el('p', { class: 'banda warn', text: 'No hay equipos libres en bodega.' }),
+    el('p', { class: 'ayuda', text: 'Para instalar uno, primero dalo de alta en Configuración → Equipos (o retíralo del punto donde está). ' +
+      (a.equipo_id ? 'Si este equipo hay que sacarlo igual, usa "Retirar sin reemplazo".' : '') })
+  ]);
+
+  const fechaR = el('input', { type: 'date', value: hoyISO });
+  const motivoR = el('input', { placeholder: 'Ej.: display quemado, se llevó a revisión…' });
+  const nombreRadio = 'destino-' + punto.id;
+  const destinos = [
+    ['bodega', 'Vuelve a bodega', 'Queda libre para instalarlo en otro punto.'],
+    ['en_reparacion', 'Va a reparación', 'No se ofrece para instalar hasta que vuelva.'],
+    ['baja', 'Se da de baja', 'Dañado, perdido o descartado. No se usa más.']
+  ];
+  const panelRetirar = el('div', { class: 'panel-equipo', hidden: '' }, [
+    el('p', { class: 'ayuda', style: 'margin:0 0 10px', text: '¿Qué pasa con el equipo?' }),
+    el('div', { class: 'destinos' }, destinos.map(([v, t, d], i) => el('label', { class: 'fila opcion' }, [
+      el('input', { type: 'radio', name: nombreRadio, value: v, checked: i === 0 || null }),
+      el('span', {}, [el('b', { text: t }), el('small', { text: d })])
+    ]))),
+    el('div', { class: 'par' }, [
+      el('label', { text: 'Fecha del retiro' }, [fechaR]),
+      el('label', { text: 'Motivo (obligatorio)' }, [motivoR])
+    ]),
+    el('p', { class: 'ayuda', text: 'El punto queda sin equipo y se sigue pidiendo en terreno. Mientras no tenga, márcalo como "No se pudo leer" en la toma del mes.' }),
+    el('button', { class: 'btn cancelar', text: 'Retirar ' + (a.tag || 'el equipo'), onclick: async ev => {
+      const est = zona.querySelector(`input[name="${nombreRadio}"]:checked`)?.value || 'bodega';
+      if (!motivoR.value.trim()) return toast('Escribe el motivo del retiro', true);
+      const txt = { bodega: 'y devolverlo a bodega', en_reparacion: 'y mandarlo a reparación', baja: 'y DARLO DE BAJA' }[est];
+      if (!confirm(`¿Retirar ${a.tag || 'el equipo'} de "${punto.nombre}" ${txt}?\n\nEl punto queda sin equipo.`)) return;
+      ev.target.disabled = true;
+      const r = await sb.rpc('retirar_equipo', {
+        p_equipo_id: a.equipo_id, p_hasta: fechaR.value, p_estado: est, p_motivo: motivoR.value.trim() });
+      ev.target.disabled = false;
+      if (r.error) return toast(r.error.message, true);
+      despues({ bodega: 'Equipo retirado a bodega', en_reparacion: 'Equipo retirado a reparación', baja: 'Equipo retirado y dado de baja' }[est]);
+    } })
+  ]);
+
+  const botones = [];
+  const alternar = (panel, boton) => {
+    const abrir = panel.hidden;
+    panelCambiar.hidden = true; panelRetirar.hidden = true;
+    botones.forEach(b => b.classList.remove('sel'));
+    if (abrir) { panel.hidden = false; boton.classList.add('sel'); }
+  };
+  const bCambiar = el('button', { class: 'btn', text: a.equipo_id ? 'Reemplazar' : 'Instalar un equipo',
+    onclick: () => alternar(panelCambiar, bCambiar) });
+  botones.push(bCambiar);
+  if (a.equipo_id) {
+    const bRetirar = el('button', { class: 'btn', text: 'Retirar sin reemplazo', onclick: () => alternar(panelRetirar, bRetirar) });
+    botones.push(bRetirar);
+  }
+  const vencido = a.certificado && a.vence_certificado && a.vence_certificado < hoyISO;
 
   poner(zona,
     a.equipo_id
@@ -3455,47 +3684,20 @@ async function pintarEquipoDelPunto(punto, zona, alCambiar) {
               text: vencido ? 'certificado vencido' : 'certificado al ' + fechaCorta(a.vence_certificado) }) : null
           ])
         ])
-      : el('p', { class: 'banda warn', text: 'Este punto no tiene equipo instalado.' }),
-    el('details', { class: 'plegable' }, [
-      el('summary', { text: a.equipo_id ? 'Cambiar o retirar el equipo' : 'Instalar un equipo' }),
-      el('label', { text: a.equipo_id ? 'Reemplazar por' : 'Equipo' }, [selEquipo]),
-      el('div', { class: 'fila' }, [
-        el('label', { class: 'crece', text: 'Fecha' }, [fecha]),
-        el('label', { class: 'crece', text: 'Motivo' }, [motivo])
-      ]),
-      energia.length ? el('label', { text: '¿Cómo muestra la energía el equipo nuevo?' }, [selDisplay]) : null,
-      el('div', { class: 'fila' }, [
-        el('button', { class: 'btn guardar', text: a.equipo_id ? 'Reemplazar' : 'Instalar', onclick: async () => {
-          if (!selEquipo.value) return toast('Elige un equipo', true);
-          const r = await sb.rpc('asignar_equipo', {
-            p_equipo_id: Number(selEquipo.value), p_punto_id: punto.id,
-            p_desde: fecha.value, p_motivo: motivo.value.trim() || null });
-          if (r.error) return toast(r.error.message, true);
-          let cambio = false;
-          try { cambio = await ajustarDisplay(); }
-          catch (err) { return toast('El equipo quedó instalado, pero no se pudo cambiar la unidad: ' + err.message, true); }
-          despues((a.equipo_id ? 'Equipo reemplazado; el anterior quedó en bodega' : 'Equipo instalado') +
-                  (cambio ? ' · las lecturas ahora se toman en ' + DISPLAY_ENERGIA.find(x => x[0] === selDisplay.value)[1] : ''));
-        } }),
-        a.equipo_id ? el('button', { class: 'btn cancelar', text: 'Retirar a bodega', onclick: async () => {
-          if (!motivo.value.trim()) return toast('Escribe el motivo del retiro', true);
-          if (!confirm(`¿Retirar ${a.tag || 'el equipo'} de este punto? El punto queda sin equipo.`)) return;
-          const r = await sb.rpc('retirar_equipo', {
-            p_equipo_id: a.equipo_id, p_hasta: fecha.value, p_estado: 'bodega', p_motivo: motivo.value.trim() });
-          if (r.error) return toast(r.error.message, true);
-          despues('Equipo retirado a bodega');
-        } }) : null
-      ].filter(Boolean)),
-      el('p', { class: 'ayuda', text: 'Solo aparecen equipos sin instalar (primero los del mismo tipo). Para mover uno que está en otro punto, retíralo primero allá o ábrelo desde Equipos.' })
-    ]),
-    (hist && hist.length) ? el('div', {}, [
-      el('h4', { text: 'Historial de equipos en este punto', style: 'margin:14px 0 6px' }),
-      tabla(['Equipo', 'Desde', 'Hasta', 'Motivo'], hist.map(h => [
-        [h.equipo?.tag || 'sin TAG', h.equipo?.marca].filter(Boolean).join(' · '),
-        fechaCorta(h.desde),
-        h.hasta ? fechaCorta(h.hasta) : el('span', { class: 'pill ok', text: 'instalado' }),
-        h.motivo || '—'
-      ]))
+      : el('p', { class: 'banda warn', style: 'margin-top:0', text: 'Este punto no tiene equipo instalado.' }),
+    el('div', { class: 'fila acciones-equipo' }, botones),
+    panelCambiar,
+    a.equipo_id ? panelRetirar : null,
+    (hist && hist.length) ? el('details', { class: 'plegable historial-eq' }, [
+      el('summary', { text: `Historial de equipos en este punto · ${hist.length}` }),
+      el('ul', { class: 'lista-hist' }, hist.map(h => el('li', {}, [
+        el('div', { class: 'fila entre' }, [
+          el('b', { text: [h.equipo?.tag || 'sin TAG', h.equipo?.marca].filter(Boolean).join(' · ') }),
+          h.hasta ? el('small', { text: `${fechaCorta(h.desde)} → ${fechaCorta(h.hasta)}` })
+                  : el('span', { class: 'pill ok', text: 'instalado desde ' + fechaCorta(h.desde) })
+        ]),
+        h.motivo ? el('small', { class: 'tenue-b', text: h.motivo.replace(/^ · /, '') }) : null
+      ])))
     ]) : null
   );
 }

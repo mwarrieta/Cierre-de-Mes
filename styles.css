@@ -171,6 +171,82 @@ input[type=number]{-moz-appearance:textfield}
 .menu-pie .link{display:block;margin-bottom:4px;text-align:left;padding:0}
 .velo{position:fixed;inset:0;background:rgba(15,34,38,.45);z-index:30;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
 
+/* ---------- navegación por secciones ----------
+   PC y tablet horizontal (≥900px): barra lateral con cinco secciones que se
+   pliegan; se abre sola la del lugar donde estás.
+   Celular y tablet vertical (<900px): barra inferior con las mismas secciones;
+   al tocar una se abre un panel con sus pantallas. El ☰ queda solo para la
+   cuenta (usuario, Este dispositivo, contraseña, cerrar sesión). */
+.menu-grupo{border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
+.menu-grupo:first-child{border-top:none;margin-top:0;padding-top:0}
+.menu .grupo-cab{display:flex;align-items:center;gap:12px;width:100%;font-weight:600;color:var(--ink)}
+.grupo-cab .ico,.grupo-cab .chev,.navinf .ico{
+  stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.grupo-cab .ico{width:20px;height:20px;flex:none;color:var(--ink-3)}
+.grupo-cab .chev{width:16px;height:16px;flex:none;color:var(--ink-3);transition:transform .2s}
+.grupo-cab .grupo-nombre{flex:1;text-align:left}
+.menu-grupo.abierto .grupo-cab .chev{transform:rotate(180deg)}
+.menu-grupo.tiene-sel > .grupo-cab,.menu-grupo.tiene-sel > .grupo-cab .ico,
+.menu .grupo-cab.sel .ico{color:var(--acento-ink)}
+.grupo-items{display:grid;grid-template-rows:0fr;visibility:hidden;
+  transition:grid-template-rows .2s ease,visibility 0s .2s}
+.menu-grupo.abierto .grupo-items{grid-template-rows:1fr;visibility:visible;margin-bottom:4px;
+  transition:grid-template-rows .2s ease,visibility 0s}
+.grupo-int{overflow:hidden;min-height:0;display:flex;flex-direction:column;gap:2px;
+  margin-left:21px;padding-left:10px;border-left:2px solid var(--line)}
+
+.navinf,.panel-nav{display:none}
+
+@media (max-width:899px){
+  :root{--navinf-alto:60px}
+
+  /* el ☰ abre un panel chico con la cuenta; las secciones viven abajo */
+  .menu{top:calc(58px + env(safe-area-inset-top));bottom:auto;left:8px;
+    width:min(300px,calc(100vw - 16px));
+    max-height:calc(100dvh - 140px - env(safe-area-inset-top));
+    padding:12px;border:1px solid var(--line);border-radius:12px}
+  .menu .menu-grupo,.menu hr{display:none}
+  .menu-pie{margin-top:0;padding:0}
+
+  /* barra inferior */
+  .navinf{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:42;
+    background:var(--surface);border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom);
+    box-shadow:0 -8px 22px -18px rgba(15,34,38,.55)}
+  body.ficha-abierta .navinf{display:none}
+  .navinf .tab{flex:1 1 0;min-width:0;min-height:var(--navinf-alto);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    padding:6px 2px;border:none;background:none;cursor:pointer;
+    color:var(--ink-3);font-size:11px;font-weight:600;line-height:1.15;text-align:center}
+  .navinf .tab .ico{width:24px;height:24px}
+  .navinf .tab.sel,.navinf .tab[aria-expanded="true"]{color:var(--acento-ink)}
+  .navinf .tab.sel{box-shadow:inset 0 3px 0 var(--acento)}
+  .navinf .tab:active{background:var(--surface-2)}
+
+  /* panel de la sección */
+  .panel-nav{display:block;position:fixed;left:0;right:0;margin:0 auto;width:100%;max-width:560px;
+    bottom:calc(var(--navinf-alto) + env(safe-area-inset-bottom));z-index:43;
+    background:var(--surface);border:1px solid var(--line);border-bottom:none;
+    border-radius:14px 14px 0 0;box-shadow:var(--sombra);
+    max-height:calc(100dvh - 150px);overflow:auto;animation:panel-sube .18s ease-out}
+  .panel-nav-cab{display:flex;align-items:center;justify-content:space-between;
+    padding:4px 4px 0 18px;min-height:48px}
+  .panel-nav-tit{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+  .panel-nav-lista button{display:flex;align-items:center;justify-content:space-between;
+    width:100%;min-height:56px;padding:0 18px;border:none;border-top:1px solid var(--line);
+    background:none;font-size:16px;text-align:left;cursor:pointer;color:var(--ink)}
+  .panel-nav-lista button::after{content:"›";font-size:22px;color:var(--ink-3)}
+  .panel-nav-lista button:active{background:var(--surface-2)}
+  .panel-nav-lista button.sel{background:var(--acento-suave);color:var(--acento-ink);font-weight:600}
+
+  /* el contenido y los avisos no quedan tapados por la barra */
+  body.con-navinf:not(.ficha-abierta) main{
+    padding-bottom:calc(var(--navinf-alto) + env(safe-area-inset-bottom) + 24px)}
+  body.con-navinf:not(.ficha-abierta) .toast{
+    bottom:calc(var(--navinf-alto) + env(safe-area-inset-bottom) + 12px)}
+}
+@keyframes panel-sube{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
 /* ---------- contenido ---------- */
 /* min-width:0 · sin esto una tabla ancha estira la columna del grid y
    empuja toda la página hacia la derecha en vez de desplazarse sola. */

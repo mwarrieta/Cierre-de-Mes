@@ -50,7 +50,7 @@
 <!-- ===================== APP ===================== -->
 <div id="app" hidden>
   <header class="barra">
-    <button class="icono" id="btn-menu" aria-label="Menú">☰</button>
+    <button class="icono" id="btn-menu" aria-label="Cuenta y ajustes">☰</button>
     <div class="titulo">
       <strong id="titulo-vista">Terreno</strong>
       <span id="subtitulo-vista"></span>
@@ -65,31 +65,51 @@
     </div>
   </header>
 
-  <nav id="menu" class="menu">
-    <div class="menu-titulo">Terreno</div>
-    <button data-vista="terreno">Tomar lecturas</button>
-
-    <div class="menu-titulo" data-rol="supervisor">Revisión del mes</div>
-    <button data-vista="tablero"    data-rol="supervisor">Tablero del mes</button>
-    <button data-vista="validacion" data-rol="supervisor">Validación</button>
-    <button data-vista="avisos"     data-rol="supervisor">Avisos</button>
-    <button data-vista="auditoria"  data-rol="supervisor">Auditoría</button>
-
-    <div class="menu-titulo" data-rol="supervisor">Informes</div>
-    <button data-vista="consumos" data-rol="supervisor">Consumos e informes</button>
-    <button data-vista="respaldo" data-rol="supervisor">Respaldo</button>
-
-    <div class="menu-titulo" data-rol="casa_fuerza">Casa de Fuerza</div>
-    <button data-vista="generadores" data-rol="casa_fuerza">Generadores</button>
-    <button data-vista="recargas"    data-rol="casa_fuerza">Recargas de combustible</button>
-
-    <div class="menu-titulo" data-rol="supervisor">Configuración</div>
-    <button data-vista="equipos"   data-rol="supervisor">Equipos</button>
-    <button data-vista="puntos"    data-rol="supervisor">Puntos de medición</button>
-    <button data-vista="grupos"    data-rol="supervisor">Grupos</button>
-    <button data-vista="etiquetas" data-rol="supervisor">Etiquetas QR</button>
-    <button data-vista="usuarios"  data-rol="admin">Usuarios</button>
-
+  <nav id="menu" class="menu" aria-label="Secciones">
+    <div class="menu-grupo" data-grupo="terreno" data-corto="Terreno">
+      <button class="grupo-cab" type="button" data-vista="terreno"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 1 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg><span class="grupo-nombre">Terreno</span></button>
+    </div>
+    <div class="menu-grupo" data-grupo="revision" data-corto="Revisión" data-rol="supervisor">
+      <button class="grupo-cab" type="button" aria-expanded="false" aria-controls="gi-revision">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/></svg><span class="grupo-nombre">Revisión del mes</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="grupo-items" id="gi-revision"><div class="grupo-int">
+        <button data-vista="tablero" data-rol="supervisor">Tablero del mes</button>
+        <button data-vista="validacion" data-rol="supervisor">Validación</button>
+        <button data-vista="avisos" data-rol="supervisor">Avisos</button>
+        <button data-vista="auditoria" data-rol="supervisor">Auditoría</button>
+      </div></div>
+    </div>
+    <div class="menu-grupo" data-grupo="informes" data-corto="Informes" data-rol="supervisor">
+      <button class="grupo-cab" type="button" aria-expanded="false" aria-controls="gi-informes">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 13h6M9 17h6"/></svg><span class="grupo-nombre">Informes</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="grupo-items" id="gi-informes"><div class="grupo-int">
+        <button data-vista="consumos" data-rol="supervisor">Consumos e informes</button>
+        <button data-vista="respaldo" data-rol="supervisor">Respaldo</button>
+      </div></div>
+    </div>
+    <div class="menu-grupo" data-grupo="fuerza" data-corto="Casa Fuerza" data-rol="casa_fuerza">
+      <button class="grupo-cab" type="button" aria-expanded="false" aria-controls="gi-fuerza">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><span class="grupo-nombre">Casa de Fuerza</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="grupo-items" id="gi-fuerza"><div class="grupo-int">
+        <button data-vista="generadores" data-rol="casa_fuerza">Generadores</button>
+        <button data-vista="recargas" data-rol="casa_fuerza">Recargas de combustible</button>
+      </div></div>
+    </div>
+    <div class="menu-grupo" data-grupo="config" data-corto="Config." data-rol="supervisor">
+      <button class="grupo-cab" type="button" aria-expanded="false" aria-controls="gi-config">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="grupo-nombre">Configuración</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="grupo-items" id="gi-config"><div class="grupo-int">
+        <button data-vista="equipos" data-rol="supervisor">Equipos</button>
+        <button data-vista="puntos" data-rol="supervisor">Puntos de medición</button>
+        <button data-vista="grupos" data-rol="supervisor">Grupos</button>
+        <button data-vista="etiquetas" data-rol="supervisor">Etiquetas QR</button>
+        <button data-vista="usuarios" data-rol="admin">Usuarios</button>
+      </div></div>
+    </div>
     <hr>
     <div class="menu-pie">
       <span id="menu-usuario"></span>
@@ -99,6 +119,16 @@
     </div>
   </nav>
   <div id="velo" class="velo" hidden></div>
+
+  <!-- Panel de la sección tocada en la barra inferior (celular y tablet vertical) -->
+  <div id="hoja" class="panel-nav" role="dialog" aria-labelledby="hoja-tit" hidden>
+    <div class="panel-nav-cab">
+      <strong id="hoja-tit" class="panel-nav-tit"></strong>
+      <button class="icono" id="hoja-cerrar" type="button" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="panel-nav-lista"></div>
+  </div>
+  <nav id="navinf" class="navinf" aria-label="Secciones, barra inferior" hidden></nav>
 
   <div id="banner-cola" class="banner-cola fila" hidden></div>
   <main id="contenido"></main>

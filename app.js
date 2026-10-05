@@ -263,6 +263,7 @@ async function arrancar() {
   if (!S.usuario.casa_fuerza && !(S.catalogo.generadores || []).length) {
     $$('#menu [data-rol="casa_fuerza"]').forEach(b => { b.hidden = true; });
   }
+  construirNavInferior();
 
   // En iOS, Safari borra el almacenamiento tras unos días sin usar el sitio.
   // Pedir persistencia lo evita, y solo se concede si la app está instalada.
@@ -335,12 +336,108 @@ window.addEventListener('online',  () => { actualizarConexion(); sincronizar(tru
 window.addEventListener('offline', () => actualizarConexion());
 
 // ------------------------------------------------------------------ navegación
-function menuAbierto(abrir) {
-  $('#menu').classList.toggle('abierto', abrir);
-  $('#velo').hidden = !abrir;
+/* Dos formas de navegar según el aparato (los cortes son los mismos que en el CSS):
+   · ≥900px (PC, tablet horizontal): barra lateral con secciones plegables.
+   · <900px (celular, tablet vertical): barra inferior; al tocar una sección se abre
+     un panel con sus pantallas. El ☰ queda solo para la cuenta.
+   Las pantallas y sus permisos salen de #menu: ahí se define qué ve cada rol. */
+let hojaGrupo = null;          // sección cuyo panel está abierto en la barra inferior
+let ultimaVistaNav = null;     // para abrir la sección solo cuando cambia la pantalla
+
+function actualizarVelo() {
+  $('#velo').hidden = !($('#menu').classList.contains('abierto') || hojaGrupo);
 }
+function menuAbierto(abrir) {
+  if (abrir) cerrarHoja();
+  $('#menu').classList.toggle('abierto', abrir);
+  actualizarVelo();
+}
+function cerrarHoja() {
+  hojaGrupo = null;
+  $('#hoja').hidden = true;
+  $$('#navinf .tab').forEach(t => t.setAttribute('aria-expanded', 'false'));
+  actualizarVelo();
+}
+function abrirHoja(grupo) {
+  $('#menu').classList.remove('abierto');
+  hojaGrupo = grupo.dataset.grupo;
+  const hoja = $('#hoja');
+  $('#hoja-tit').textContent = $('.grupo-nombre', grupo).textContent;
+  $('.panel-nav-lista', hoja).replaceChildren(...$$('.grupo-items button[data-vista]', grupo)
+    .filter(b => !b.hidden)
+    .map(b => el('button', {
+      type: 'button', class: b.dataset.vista === S.vista ? 'sel' : null,
+      text: b.textContent.trim(), onclick: () => ir(b.dataset.vista)
+    })));
+  hoja.hidden = false;
+  $$('#navinf .tab').forEach(t =>
+    t.setAttribute('aria-expanded', String(t.dataset.grupo === hojaGrupo)));
+  actualizarVelo();
+}
+
+function ponerGrupo(g, abierto) {
+  g.classList.toggle('abierto', abierto);
+  $('.grupo-cab', g)?.setAttribute('aria-expanded', String(abierto));
+}
+// Una sección abierta a la vez en la barra lateral.
+$$('#menu .grupo-cab:not([data-vista])').forEach(cab => cab.addEventListener('click', () => {
+  const g = cab.closest('.menu-grupo');
+  const abrir = !g.classList.contains('abierto');
+  $$('#menu .menu-grupo.abierto').forEach(o => ponerGrupo(o, false));
+  ponerGrupo(g, abrir);
+}));
+
+// Marca la pantalla actual en la barra lateral y en la inferior. Se llama desde
+// render(), así que cubre todos los caminos (menú, escaneo, ficha de un punto).
+function marcarNav() {
+  let actual = null;
+  $$('#menu button[data-vista]').forEach(b => {
+    const sel = b.dataset.vista === S.vista;
+    b.classList.toggle('sel', sel);
+    if (sel) actual = b.closest('.menu-grupo');
+  });
+  $$('#menu .menu-grupo').forEach(g => g.classList.toggle('tiene-sel', g === actual));
+  // La sección de la pantalla actual se abre sola, pero solo cuando la pantalla
+  // cambia: si alguien abrió otra a mano, un refresco de datos no se la cierra.
+  if (S.vista !== ultimaVistaNav) {
+    ultimaVistaNav = S.vista;
+    $$('#menu .menu-grupo').forEach(g =>
+      ponerGrupo(g, g === actual && !$('.grupo-cab[data-vista]', g)));
+  }
+  $$('#navinf .tab').forEach(t =>
+    t.classList.toggle('sel', !!actual && t.dataset.grupo === actual.dataset.grupo));
+  document.body.classList.toggle('ficha-abierta', !!S.puntoAbierto);
+  if (S.puntoAbierto) cerrarHoja();
+}
+
+// Se arma después de filtrar #menu por rol: cada usuario ve solo sus secciones.
+// Con una sola sección visible no hay nada que elegir y la barra no aparece.
+function construirNavInferior() {
+  const grupos = $$('#menu .menu-grupo').filter(g => !g.hidden);
+  const nav = $('#navinf');
+  ultimaVistaNav = null;
+  nav.replaceChildren(...grupos.map(g => {
+    const directo = $('.grupo-cab[data-vista]', g);
+    return el('button', {
+      type: 'button', class: 'tab', 'data-grupo': g.dataset.grupo, 'aria-expanded': 'false',
+      onclick: () => directo ? ir(directo.dataset.vista)
+                  : hojaGrupo === g.dataset.grupo ? cerrarHoja() : abrirHoja(g)
+    }, [$('svg.ico', g).cloneNode(true), el('span', { text: g.dataset.corto })]);
+  }));
+  const hay = grupos.length >= 2;
+  nav.hidden = !hay;
+  document.body.classList.toggle('con-navinf', hay);
+  marcarNav();
+}
+
 $('#btn-menu').addEventListener('click', () => menuAbierto(!$('#menu').classList.contains('abierto')));
-$('#velo').addEventListener('click', () => menuAbierto(false));
+$('#velo').addEventListener('click', () => { menuAbierto(false); cerrarHoja(); });
+$('#hoja-cerrar').addEventListener('click', cerrarHoja);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { menuAbierto(false); cerrarHoja(); } });
+// Si la tablet se gira a horizontal con un panel abierto, se cierra.
+window.matchMedia('(min-width:900px)').addEventListener?.('change', e => {
+  if (e.matches) { menuAbierto(false); cerrarHoja(); }
+});
 $('#modal-cerrar').addEventListener('click', pedirCerrarModal);
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') pedirCerrarModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') pedirCerrarModal(); });
@@ -396,8 +493,8 @@ function ir(vista) {
   S.puntoAbierto = null; S.fichaSucia = false; S.puntoEnHistorial = false;
   S.vista = vista;
   S.filtro = '';
-  $$('#menu button[data-vista]').forEach(b => b.classList.toggle('sel', b.dataset.vista === vista));
-  if (window.innerWidth < 900) menuAbierto(false);
+  menuAbierto(false);
+  cerrarHoja();
   render();
 }
 
@@ -447,6 +544,7 @@ const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
 
 function render() {
+  marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
     ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
@@ -3328,10 +3426,7 @@ function armarConfigLecturas(existentes, punto) {
    Se lee la fila completa de `puntos`: v_puntos no trae la instrucción de lectura,
    y guardar desde ahí la borraba sin aviso. */
 function editarPunto(puntoLista) {
-  if (S.vista !== 'puntos') {
-    S.vista = 'puntos';
-    $$('#menu button[data-vista]').forEach(b => b.classList.toggle('sel', b.dataset.vista === 'puntos'));
-  }
+  S.vista = 'puntos';
   if (!S.puntoAbierto) {
     S.scrollPuntos = window.scrollY;
     // El botón "atrás" del teléfono o del navegador vuelve a la lista, no sale de la app.

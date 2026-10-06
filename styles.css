@@ -853,3 +853,35 @@ body.con-modal{overflow:hidden}
 @media (max-width:560px){
   .item.punto-fila .d{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 }
+
+/* ---- Consumos: valores que abren su ficha ---- */
+.celda-cons{background:none;border:1px solid transparent;border-radius:4px;padding:2px 6px;font:inherit;
+  color:inherit;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap}
+.celda-cons:hover,.celda-cons:focus-visible{border-color:var(--line);background:var(--surface-2)}
+.celda-cons.bad{background:var(--bad-bg);color:var(--bad);font-weight:700}
+.celda-cons.warn{background:var(--warn-bg);color:var(--warn);font-weight:700}
+.celda-cons.rev{color:var(--ok)}
+.celda-cons.falta{color:var(--ink-3)}
+.marca-rev{font-size:11px}
+.marcas{display:flex;flex-wrap:wrap;gap:4px}
+button.pill{border:none;cursor:pointer;font-family:inherit}
+button.pill:hover{filter:brightness(.95);text-decoration:underline}
+.check-linea{display:flex;align-items:center;gap:6px;font-weight:600;cursor:pointer}
+.check-linea input{width:18px;height:18px}
+
+/* ---- ficha de un consumo ---- */
+.ficha-cab .ficha-valor{font-size:28px;font-weight:700;margin-bottom:8px;font-variant-numeric:tabular-nums}
+.ficha-cab .ficha-valor.falta{color:var(--ink-3);font-size:20px}
+.ficha-lecturas{margin:14px 0}
+.ficha-col h4{margin:0}
+.ficha-col > .ayuda{margin:2px 0 8px}
+.ficha-lectura{margin-bottom:10px}
+.ficha-lectura-valor{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.ficha-fotos{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+#modal-cuerpo .ficha-fotos img{max-width:220px;max-height:220px;border-radius:6px;border:1px solid var(--line);display:block}
+.ficha-form{margin-top:10px;display:grid;gap:8px}
+.ficha-revision textarea{width:100%;min-height:70px;margin:8px 0}
+.aviso-linea{padding:8px 0;border-bottom:1px solid var(--line);gap:10px}
+@media print{.celda-cons{border:none;background:none!important;color:inherit!important;padding:0}}
+.kpi.ok .v{color:var(--ok)}
+.celda-cons.falta.pend{color:var(--warn);font-weight:700}

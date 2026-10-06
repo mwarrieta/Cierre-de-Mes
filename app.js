@@ -1986,14 +1986,27 @@ async function vistaConsumos(c) {
     try {
       const ids = [...new Set(enAlcance.map(v => v.punto.id))];
       const r = await sb.from('avisos')
-        .select('punto_id, descripcion, severidad, abierto_en, categoria:catalogo_avisos(categoria)')
+        .select('id, punto_id, descripcion, severidad, abierto_en, categoria:catalogo_avisos(categoria)')
         .neq('estado', 'resuelto').in('punto_id', ids.slice(0, 300));
       avisos = r.data || [];
     } catch { /* sin avisos, el informe igual sirve */ }
 
+    // Lo que ya se revisó (corregido o desestimado) deja de contar como pendiente.
+    const revisiones = new Map();
+    try {
+      const r = await sb.from('revisiones_consumo').select('*').gte('mes', desde).lte('mes', hasta);
+      for (const x of (r.data || [])) revisiones.set(x.variable_id + '|' + x.mes, x);
+    } catch { /* sin revisiones, todo lo marcado sigue por revisar */ }
+
     const bandas = await DB.bandasCache().catch(() => ({}));
-    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas };
-    poner(zona, ...armarInforme(data, desde, hasta, { faltantes, noLeidos, avisos, bandas }));
+    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, revisiones };
+    const ctx = { filas: data, hasta, avisos, bandas, revisiones, alCambiar: cargar };
+    poner(zona, ...armarInforme(data, desde, hasta, {
+      faltantes, noLeidos, avisos, bandas, revisiones,
+      soloRevisar: R.soloRevisar,
+      alFiltrar: v => { R.soloRevisar = v; cargar(); },
+      abrir: clave => verConsumo(clave, ctx)
+    }));
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
       ? `${new Set(data.map(f => f.punto_id)).size} puntos · ${data.length} valores calculados`
@@ -2060,12 +2073,26 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const bloques = [...new Set(data.map(f => claveSuma(f.variable, f.unidad_reporte)))];
   const partes = [];
 
-  const { faltantes = [], noLeidos = [], avisos = [], bandas = {} } = extra;
+  const { faltantes = [], noLeidos = [], avisos = [], bandas = {}, revisiones = new Map(), abrir } = extra;
   const conAviso = new Set(avisos.map(a => a.punto_id));
+  const avisosDe = new Map();
+  for (const a of avisos) (avisosDe.get(a.punto_id) || avisosDe.set(a.punto_id, []).get(a.punto_id)).push(a);
   const juicios = new Map();
   for (const f of data) { const j = juzgarConsumo(f, bandas); if (j) juicios.set(f.variable_id + '|' + f.mes, j); }
-  const fueraDeRango = [...juicios.values()].filter(j => j.nivel === 'bad').length;
-  const atencion = [...juicios.values()].filter(j => j.nivel === 'warn').length;
+  // Un mes sin valor dentro del periodo, para una lectura que sí tiene otros meses,
+  // también es algo que revisar: falta una de las dos tomas que lo forman.
+  const conValor = new Set(data.map(f => f.variable_id + '|' + f.mes));
+  for (const id of new Set(data.map(f => f.variable_id)))
+    for (const m of meses)
+      if (!conValor.has(id + '|' + m)) juicios.set(id + '|' + m, { nivel: 'warn', texto: 'sin dato', sinDato: true });
+  // Pendiente = marcado y todavía sin corregir ni desestimar.
+  const pendiente = k => juicios.has(k) && !revisiones.has(k);
+  const pend = [...juicios.keys()].filter(pendiente);
+  const fueraDeRango = pend.filter(k => juicios.get(k).nivel === 'bad').length;
+  const atencion = pend.filter(k => juicios.get(k).nivel === 'warn').length;
+  const revisados = [...revisiones.keys()].filter(k => data.some(f => f.variable_id + '|' + f.mes === k)).length;
+  const mesCorto = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
+  const nombreTipo = { corregido: 'corregido', desestimado: 'desestimado' };
 
   // ---- KPIs ----
   // Sin total general a propósito: los puntos tienen naturalezas distintas (unos
@@ -2080,6 +2107,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
   if (noLeidos.length) kpis.push(kpi(noLeidos.length, 'no se pudo leer', 'aviso'));
   if (fueraDeRango) kpis.push(kpi(fueraDeRango, 'fuera de rango', 'alerta'));
   if (atencion) kpis.push(kpi(atencion, 'para revisar', 'aviso'));
+  if (revisados) kpis.push(kpi(revisados, 'ya revisados', 'ok'));
   if (conAviso.size) kpis.push(kpi(conAviso.size, 'puntos con aviso abierto', 'aviso'));
   if (provisionales) kpis.push(kpi(provisionales, 'valores provisionales', 'aviso'));
   partes.push(el('div', { class: 'kpis seccion' }, kpis));
@@ -2098,26 +2126,72 @@ function armarInforme(data, desde, hasta, extra = {}) {
     }
   }
 
+  // ---- interruptor: solo lo que falta revisar ----
+  const hayPendientes = pend.length || conAviso.size;
+  if (abrir) {
+    const chk = el('input', { type: 'checkbox', checked: extra.soloRevisar || null,
+      onchange: e => extra.alFiltrar && extra.alFiltrar(e.target.checked) });
+    partes.push(el('div', { class: 'fila entre seccion' }, [
+      el('label', { class: 'check-linea' }, [chk, el('span', { text: ' Solo lo por revisar' +
+        (hayPendientes ? ` (${[pend.length ? `${pend.length} ${pend.length === 1 ? 'valor' : 'valores'}` : '',
+                              conAviso.size ? `${conAviso.size} ${conAviso.size === 1 ? 'punto con aviso' : 'puntos con aviso'}` : '']
+                              .filter(Boolean).join(' · ')})` : '') })]),
+      el('span', { class: 'ayuda', text: 'Toca un valor para ver sus lecturas, fotos y avisos.' })
+    ]));
+  }
+  const varsPendientes = new Set([
+    ...pend.map(k => Number(k.split('|')[0])),
+    ...data.filter(f => conAviso.has(f.punto_id)).map(f => f.variable_id)]);
+  const visibles = extra.soloRevisar && abrir ? data.filter(f => varsPendientes.has(f.variable_id)) : data;
+  if (extra.soloRevisar && abrir && !visibles.length)
+    partes.push(el('p', { class: 'vacio', text: hayPendientes ? 'Nada pendiente entre los valores calculados.' : 'Todo revisado: no queda nada marcado.' }));
+
+  // Un valor de la tabla: botón que abre la ficha, con el color de su estado.
+  const celda = (f, m, texto) => {
+    const k = f.variable_id + '|' + m;
+    const rev = revisiones.get(k), j = juicios.get(k);
+    if (!abrir) return texto;
+    return el('button', {
+      class: 'celda-cons' + (rev ? ' rev' : j && !j.sinDato ? ' ' + j.nivel : '') + (texto === '—' ? (rev ? ' falta' : ' falta pend') : ''),
+      title: rev ? `${nombreTipo[rev.tipo]}: ${rev.motivo}` : j ? j.texto : 'Ver lecturas',
+      onclick: () => abrir({ variable_id: f.variable_id, mes: m })
+    }, [el('span', { text: texto }), rev ? el('span', { class: 'marca-rev', text: ' ✓' }) : null]);
+  };
+  // La columna Revisar dice QUÉ pasa y en qué mes; cada marca abre su ficha.
+  const marcas = (f, mesesFila, conMes) => {
+    const out = [];
+    for (const m of mesesFila) {
+      const k = f.variable_id + '|' + m;
+      const rev = revisiones.get(k), j = juicios.get(k);
+      const pre = conMes ? mesCorto(m) + ': ' : '';
+      if (rev)
+        out.push(el(abrir ? 'button' : 'span', { class: 'pill ok', title: rev.motivo,
+          onclick: abrir ? () => abrir({ variable_id: f.variable_id, mes: m }) : null, text: pre + nombreTipo[rev.tipo] }));
+      else if (j)
+        out.push(el(abrir ? 'button' : 'span', { class: 'pill ' + j.nivel,
+          onclick: abrir ? () => abrir({ variable_id: f.variable_id, mes: m }) : null, text: pre + j.texto }));
+    }
+    for (const a of (avisosDe.get(f.punto_id) || []).slice(0, 2))
+      out.push(el(abrir ? 'button' : 'span', { class: 'pill warn', title: a.descripcion || '',
+        onclick: abrir ? () => abrir({ variable_id: f.variable_id, mes: mesesFila[mesesFila.length - 1] }) : null,
+        text: 'aviso: ' + (a.categoria?.categoria || a.descripcion || 'abierto').slice(0, 28) }));
+    return out.length ? el('div', { class: 'marcas' }, out) : el('span', { class: 'pill ok', text: 'ok' });
+  };
+
   // ---- tabla ----
   if (meses.length === 1) {
     partes.push(tabla(
       ['Grupo', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'],
-      data.map(f => {
-        const j = juicios.get(f.variable_id + '|' + f.mes);
-        const marcas = [];
-        if (j) marcas.push(el('span', { class: 'pill ' + j.nivel, text: j.texto }));
-        if (conAviso.has(f.punto_id)) marcas.push(el('span', { class: 'pill warn', text: 'aviso' }));
-        return [
+      visibles.map(f => [
           f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
-          num(f.consumo), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
-          marcas.length ? el('div', { class: 'fila' }, marcas) : el('span', { class: 'pill ok', text: 'ok' }),
+          celda(f, f.mes, num(f.consumo)), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
+          marcas(f, [f.mes], false),
           el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })
-        ];
-      }), { num: [4, 6] }));
+        ]), { num: [4, 6] }));
   } else {
     // pivote: una fila por punto·variable, una columna por mes
     const claves = new Map();
-    for (const f of data) {
+    for (const f of visibles) {
       const k = f.variable_id;
       if (!claves.has(k)) claves.set(k, { f, meses: {} });
       claves.get(k).meses[f.mes] = Number(f.consumo);
@@ -2129,18 +2203,23 @@ function armarInforme(data, desde, hasta, extra = {}) {
       .map(({ f, meses: mm }) => {
         const vals = meses.map(m => mm[m]);
         const total = vals.reduce((a, v) => a + (v || 0), 0);
-        const malos = meses.filter(m => juicios.get(f.variable_id + '|' + m)?.nivel === 'bad').length;
-        const tibios = meses.filter(m => juicios.get(f.variable_id + '|' + m)?.nivel === 'warn').length;
-        const marca = malos ? el('span', { class: 'pill bad', text: `${malos} fuera de rango` })
-                    : tibios ? el('span', { class: 'pill warn', text: `${tibios} para revisar` })
-                    : conAviso.has(f.punto_id) ? el('span', { class: 'pill warn', text: 'aviso' })
-                    : el('span', { class: 'pill ok', text: 'ok' });
         return [f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
                 UNIDAD[f.unidad_reporte] || f.unidad_reporte,
-                ...vals.map(v => v === undefined ? '—' : num(v)), num(total), marca];
+                ...meses.map((m, i) => celda(f, m, vals[i] === undefined ? '—' : num(vals[i]))),
+                num(total), marcas(f, meses, true)];
       });
     partes.push(tabla(cab, filas, { num: cab.map((_, i) => i).filter(i => i >= 5 && i < cab.length - 1) }));
   }
+
+  // Los puntos sin consumo calculado también se pueden revisar: cargar lo que
+  // faltó o dejar constancia de por qué no hay dato.
+  const revisarSinDato = v => {
+    const k = v.id + '|' + hasta;
+    const rev = revisiones.get(k);
+    if (!abrir) return rev ? nombreTipo[rev.tipo] : '—';
+    return el('button', { class: 'pill ' + (rev ? 'ok' : 'neutro'), title: rev ? rev.motivo : '',
+      onclick: () => abrir({ variable_id: v.id, mes: hasta }), text: rev ? nombreTipo[rev.tipo] : 'revisar' });
+  };
 
   // ---- puntos que se visitaron y no se pudieron leer ----
   if (noLeidos.length) {
@@ -2149,11 +2228,12 @@ function armarInforme(data, desde, hasta, extra = {}) {
       el('p', { class: 'ayuda', text:
         'Alguien fue al punto y dejó constancia de que no se pudo tomar la lectura: display ' +
         'apagado, tablero cerrado, equipo retirado. No es lo mismo que un punto sin visitar.' }),
-      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto', 'Revisar'],
         noLeidos.slice(0, 300).map(v => [
           gruposTexto(v.punto), v.punto.nombre, v.nombre,
           UNIDAD[v.unidad_reporte] || v.unidad_reporte,
-          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
+          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—',
+          revisarSinDato(v)]))
     ]));
   }
 
@@ -2164,11 +2244,12 @@ function armarInforme(data, desde, hasta, extra = {}) {
       el('p', { class: 'ayuda', text:
         'No hay ninguna lectura de estos puntos en el periodo. Puede ser que no se hayan tomado ' +
         'o que falte la lectura del mes siguiente para poder calcular su consumo.' }),
-      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto'],
+      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto', 'Revisar'],
         faltantes.slice(0, 300).map(v => [
           gruposTexto(v.punto), v.punto.nombre, v.nombre,
           UNIDAD[v.unidad_reporte] || v.unidad_reporte,
-          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—']))
+          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—',
+          revisarSinDato(v)]))
     ]));
   }
 
@@ -2186,6 +2267,234 @@ function armarInforme(data, desde, hasta, extra = {}) {
   ]));
 
   return partes;
+}
+
+/* ---------- ficha de un consumo (punto · variable · mes) ----------
+   Lo que hay detrás de un número del informe: las dos lecturas que lo forman (la
+   toma que abre el mes y la que lo cierra), con foto y autor, el rango habitual,
+   los avisos abiertos del punto y lo que ya se hizo con él. Desde acá se corrige
+   una lectura, se carga la que faltó o se desestima la alerta con su motivo. */
+async function verConsumo({ variable_id, mes }, ctx) {
+  const v = S.catalogo.variables.find(x => x.id === variable_id);
+  const f = ctx.filas.find(x => x.variable_id === variable_id && x.mes === mes);
+  if (!v && !f) return toast('Esta lectura ya no está en el catálogo', true);
+  const puntoNombre = v ? v.punto.nombre : f.punto;
+  const varNombre = v ? v.nombre : f.variable;
+  const uRep = UNIDAD[(v || f).unidad_reporte] || (v || f).unidad_reporte;
+  const uDisp = v ? (UNIDAD[v.unidad_display] || v.unidad_display) : uRep;
+  const dec = v ? (v.decimales_display || 0) : 0;
+  const doble = v && v.formato_lectura === 'doble_mwh_kwh';
+  const puedo = ['admin', 'supervisor'].includes(S.usuario.rol);
+  const k = variable_id + '|' + mes;
+  const rev = ctx.revisiones.get(k);
+  const j = f ? juzgarConsumo(f, ctx.bandas) : null;
+  const b = ctx.bandas[variable_id];
+  const sig = mesSiguiente(mes);
+  const gente = S.catalogo.gente || {};
+  const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado' };
+
+  const cuerpo = el('div', { class: 'ficha-consumo' });
+  modal(`${puntoNombre} · ${varNombre}`, el('p', { class: 'cargando', text: 'Cargando lecturas…' }),
+        { subtitulo: 'Consumo de ' + nombrePeriodo(mes) });
+
+  const registrar = async (tipo, motivo) => {
+    const { error } = await sb.from('revisiones_consumo').upsert(
+      { variable_id, mes, tipo, motivo, por: S.usuario.id, en: new Date().toISOString() },
+      { onConflict: 'variable_id,mes' });
+    if (error) throw error;
+  };
+  const terminar = async texto => { cerrarModal(); toast(texto); await ctx.alCambiar(); };
+
+  // ---- el número y por qué está marcado ----
+  const rango = b && b.sigma
+    ? `Rango habitual: ${num(Math.max(0, b.media - 1.5 * b.sigma))} – ${num(b.media + 1.5 * b.sigma)} ${uRep} (promedio ${num(b.media)})`
+    : 'Todavía no hay historia suficiente para un rango habitual (hacen falta 4 meses).';
+  cuerpo.append(el('div', { class: 'card ficha-cab' }, [
+    f ? el('div', { class: 'ficha-valor', text: `${num(f.consumo)} ${uRep}` })
+      : el('div', { class: 'ficha-valor falta', text: 'Sin consumo calculado' }),
+    el('div', { class: 'fila' }, [
+      j ? el('span', { class: 'pill ' + j.nivel, text: j.texto }) : (f ? el('span', { class: 'pill ok', text: 'dentro de rango' }) : null),
+      f ? el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' }) : null,
+      f ? el('span', { class: 'pill neutro', text: f.metodo }) : null,
+      rev ? el('span', { class: 'pill ok', text: tipoTxt[rev.tipo] }) : null
+    ]),
+    el('p', { class: 'ayuda', text: f ? rango
+      : 'Falta una de las dos lecturas que forman este consumo: la que abre el mes o la que lo cierra.' })
+  ]));
+
+  // ---- las dos lecturas ----
+  const { data: lects, error } = await sb.from('lecturas')
+    .select('id, periodo, valor, valor_display, valor_mwh, valor_kwh, fecha_lectura, observacion, estado, tomada_por, origen, sin_dato, es_reset, fotos(id, storage_path, orden)')
+    .eq('variable_id', variable_id).in('periodo', [mes, sig]).neq('estado', 'descartada').order('fecha_lectura');
+  if (error) { cuerpo.append(el('p', { class: 'error', text: error.message })); }
+
+  const campoValor = (valores = {}) => doble
+    ? { mwh: el('input', { type: 'number', step: 'any', value: valores.mwh ?? '', placeholder: 'MWh' }),
+        kwh: el('input', { type: 'number', step: 'any', value: valores.kwh ?? '', placeholder: 'kWh' }) }
+    : { val: el('input', { type: 'number', step: dec > 0 ? '0.' + '0'.repeat(dec - 1) + '1' : '1',
+                           value: valores.val ?? '', placeholder: `Valor en ${uDisp}`, inputmode: 'decimal' }) };
+  const nodosValor = c => doble
+    ? [el('label', { text: 'MWh' }, [c.mwh]), el('label', { text: 'kWh' }, [c.kwh])]
+    : [el('label', { text: `Valor del display (${uDisp})` }, [c.val])];
+  const leerValor = c => doble
+    ? (c.mwh.value === '' && c.kwh.value === '' ? null : { valor_display: null, valor_mwh: Number(c.mwh.value || 0), valor_kwh: Number(c.kwh.value || 0) })
+    : (c.val.value === '' ? null : { valor_display: Number(c.val.value), valor_mwh: null, valor_kwh: null });
+
+  const tarjetaLectura = l => {
+    const valorTxt = l.sin_dato ? 'No se pudo leer'
+      : doble ? `${num(l.valor_mwh)} MWh + ${num(l.valor_kwh)} kWh`
+      : `${num(l.valor_display ?? l.valor, dec)} ${uDisp}`;
+    const fotos = el('div', { class: 'ficha-fotos' });
+    if (l.fotos?.length) {
+      (async () => {
+        for (const ft of fotosOrdenadas(l)) {
+          const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 600);
+          if (data?.signedUrl) fotos.append(el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
+            [el('img', { src: data.signedUrl, alt: 'Foto del medidor' })]));
+        }
+      })();
+    } else fotos.append(el('p', { class: 'ayuda', text: 'Sin foto' }));
+
+    const zonaCorregir = el('div');
+    const abrirCorreccion = () => {
+      const c = campoValor({ val: l.valor_display, mwh: l.valor_mwh, kwh: l.valor_kwh });
+      const motivo = el('input', { type: 'text', placeholder: 'Motivo (queda en la auditoría)' });
+      zonaCorregir.replaceChildren(el('div', { class: 'card ficha-form' }, [
+        ...nodosValor(c),
+        el('label', { text: 'Motivo' }, [motivo]),
+        el('div', { class: 'fila' }, [
+          el('button', { class: 'btn ok', text: 'Guardar corrección', onclick: async e => {
+            const nv = leerValor(c);
+            if (!nv) return toast('Escribe el valor', true);
+            if (!motivo.value.trim()) return toast('Escribe el motivo', true);
+            e.target.disabled = true;
+            try {
+              const r = await sb.rpc('corregir_lectura', { p_id: l.id, p_valor_display: nv.valor_display,
+                p_motivo: motivo.value.trim(), p_valor_mwh: nv.valor_mwh, p_valor_kwh: nv.valor_kwh });
+              if (r.error) throw r.error;
+              await registrar('corregido', `Lectura del ${fechaHora(l.fecha_lectura)}: ${valorTxt} → ` +
+                `${doble ? `${nv.valor_mwh} MWh + ${nv.valor_kwh} kWh` : `${nv.valor_display} ${uDisp}`}. ${motivo.value.trim()}`);
+              await terminar('Lectura corregida');
+            } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+          } }),
+          el('button', { class: 'btn', text: 'Cancelar', onclick: () => zonaCorregir.replaceChildren() })
+        ])
+      ]));
+    };
+
+    return el('div', { class: 'card ficha-lectura' }, [
+      el('div', { class: 'ficha-lectura-valor', text: valorTxt }),
+      el('p', { class: 'ayuda', text:
+        `${fechaHora(l.fecha_lectura)} · ${gente[l.tomada_por] || (l.origen === 'importacion' ? 'Importado' : 'sin autor')} · ${l.estado}` +
+        (l.es_reset ? ' · reinicio del totalizador' : '') }),
+      l.observacion ? el('p', { class: 'ayuda', html: '<b>Observación:</b> ' + esc(l.observacion) }) : null,
+      fotos,
+      puedo ? el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }) : null,
+      zonaCorregir
+    ]);
+  };
+
+  const formularioAtrasada = (periodo, zona) => {
+    const c = campoValor();
+    const fecha = el('input', { type: 'date', value: periodo, max: new Date().toISOString().slice(0, 10) });
+    const obs = el('input', { type: 'text', placeholder: 'Por qué se carga ahora (queda en la auditoría)' });
+    const foto = el('input', { type: 'file', accept: 'image/*' });
+    zona.replaceChildren(el('div', { class: 'card ficha-form' }, [
+      ...nodosValor(c),
+      el('label', { text: 'Fecha en que se tomó' }, [fecha]),
+      el('label', { text: 'Foto (opcional)' }, [foto]),
+      el('label', { text: 'Motivo' }, [obs]),
+      el('div', { class: 'fila' }, [
+        el('button', { class: 'btn ok', text: 'Guardar lectura', onclick: async e => {
+          const nv = leerValor(c);
+          if (!nv) return toast('Escribe el valor', true);
+          if (!obs.value.trim()) return toast('Escribe el motivo', true);
+          if (!fecha.value) return toast('Indica la fecha', true);
+          e.target.disabled = true;
+          try {
+            const iso = new Date(fecha.value + 'T12:00:00').toISOString();
+            const r = await sb.rpc('guardar_captura', {
+              p_punto_id: v.punto.id, p_periodo: periodo, p_fecha_lectura: iso,
+              p_lecturas: [{ variable_id, ...nv, sin_dato: false }], p_avisos: [],
+              p_observacion: obs.value.trim(), p_dispositivo: 'Consumos e informes · lectura atrasada' });
+            if (r.error) throw r.error;
+            const nueva = (r.data?.lecturas || []).find(x => x.variable_id === variable_id);
+            if (foto.files[0] && nueva) {
+              const blob = await DB.comprimirFoto(foto.files[0], v.punto.foto_calidad || 'normal');
+              await DB.subirFotoALectura({ lectura_id: nueva.lectura_id, periodo, variable_id, blob, tomada_en: iso });
+            }
+            await registrar('corregido', `Lectura atrasada de la toma de ${nombrePeriodo(periodo)} cargada: ` +
+              `${doble ? `${nv.valor_mwh} MWh + ${nv.valor_kwh} kWh` : `${nv.valor_display} ${uDisp}`}. ${obs.value.trim()}`);
+            await terminar('Lectura cargada');
+          } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+        } }),
+        el('button', { class: 'btn', text: 'Cancelar', onclick: () => zona.replaceChildren() })
+      ])
+    ]));
+  };
+
+  const columnas = [[mes, 'Lectura que abre el mes', `toma de ${nombrePeriodo(mes)}`],
+                    [sig, 'Lectura que cierra el mes', `toma de ${nombrePeriodo(sig)}`]].map(([p, titulo, sub]) => {
+    const deP = (lects || []).filter(l => l.periodo === p);
+    const zonaNueva = el('div');
+    return el('div', { class: 'ficha-col' }, [
+      el('h4', { text: titulo }), el('p', { class: 'ayuda', text: sub }),
+      ...(deP.length ? deP.map(tarjetaLectura) : [
+        el('p', { class: 'banda warn', text: 'No hay lectura de esta toma.' }),
+        puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura atrasada',
+          onclick: () => formularioAtrasada(p, zonaNueva) }) : null,
+        zonaNueva])
+    ]);
+  });
+  cuerpo.append(el('div', { class: 'grid2 ficha-lecturas' }, columnas));
+
+  // ---- avisos abiertos del punto ----
+  const pid = v ? v.punto.id : f.punto_id;
+  const suyos = (ctx.avisos || []).filter(a => a.punto_id === pid);
+  if (suyos.length) {
+    cuerpo.append(el('h4', { text: `Avisos abiertos del punto (${suyos.length})` }),
+      ...suyos.map(a => el('div', { class: 'fila entre aviso-linea' }, [
+        el('span', {}, [
+          el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn' }[a.severidad] || 'neutro'), text: a.severidad }),
+          el('span', { text: ` ${a.categoria?.categoria || ''} · ${a.descripcion || ''}` })]),
+        el('button', { class: 'btn chico', text: 'Abrir aviso', onclick: async () => {
+          const { data, error: e2 } = await sb.from('v_avisos').select('*').eq('id', a.id).single();
+          if (e2) return toast(e2.message, true);
+          verDetalleAviso(data, () => ctx.alCambiar());
+        } })
+      ])));
+  }
+
+  // ---- revisión ----
+  const caja = el('div', { class: 'card ficha-revision' });
+  if (rev) {
+    caja.append(
+      el('p', { html: `<b>${tipoTxt[rev.tipo]}</b> por ${esc(gente[rev.por] || '—')} el ${fechaHora(rev.en)}` }),
+      el('p', { class: 'ayuda', text: rev.motivo }),
+      puedo ? el('button', { class: 'btn chico peligro', text: 'Quitar la marca (vuelve a por revisar)', onclick: async () => {
+        const { error: e3 } = await sb.from('revisiones_consumo').delete().eq('id', rev.id);
+        if (e3) return toast(e3.message, true);
+        await terminar('Marca quitada');
+      } }) : null);
+  } else if (puedo && (j || !f)) {
+    const motivo = el('textarea', { placeholder: f
+      ? 'Por qué el valor está bien aunque salga del rango (obligatorio)'
+      : 'Por qué no hay dato este mes (obligatorio)' });
+    caja.append(
+      el('h4', { style: 'margin-top:0', text: f ? 'Desestimar la alerta' : 'Justificar la falta de dato' }),
+      el('p', { class: 'ayuda', text: f ? 'El valor queda como está y la columna Revisar pasa a "desestimado".'
+                                        : 'No se carga nada; queda constancia del motivo y pasa a "desestimado".' }),
+      motivo,
+      el('button', { class: 'btn', text: 'Desestimar', onclick: async e => {
+        if (!motivo.value.trim()) return toast('Escribe el motivo', true);
+        e.target.disabled = true;
+        try { await registrar('desestimado', motivo.value.trim()); await terminar('Marcado como desestimado'); }
+        catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+      } }));
+  }
+  if (caja.childNodes.length) cuerpo.append(caja);
+
+  modal(`${puntoNombre} · ${varNombre}`, cuerpo, { subtitulo: 'Consumo de ' + nombrePeriodo(mes), completo: true });
 }
 
 /* ---------- informe imprimible ----------

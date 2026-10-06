@@ -4832,15 +4832,26 @@ async function vistaCierreCF(c) {
     sel.append(el('option', { value: p, selected: p === S.mesCF || null, text: nombrePeriodo(p) }));
   }
   const zona = el('div');
+  let ultimo = null;                     // lo último calculado, para el PDF y el respaldo
+  const paso = el('span', { class: 'ayuda' });
   c.append(el('div', { class: 'fila entre seccion' }, [
     el('label', { text: 'Mes' }, [sel]),
-    el('p', { class: 'ayuda crece', text: 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.' })
+    el('p', { class: 'ayuda crece', text: 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.' }),
+    paso,
+    el('button', { class: 'btn', text: 'PDF del cierre', onclick: () => ultimo && imprimirCierreCF(S.mesCF, ultimo) }),
+    el('button', { class: 'btn', text: 'Respaldo del mes (fotos + Excel)', onclick: async e => {
+      if (!ultimo) return;
+      e.target.disabled = true;
+      try { await respaldoCF(S.mesCF, ultimo, t => { paso.textContent = t; }); }
+      catch (err) { toast('Falló el respaldo: ' + (err.message || err), true); }
+      finally { e.target.disabled = false; paso.textContent = ''; }
+    } })
   ]), zona);
 
   async function cargar() {
     zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
     let d;
-    try { d = await datosGeneradores([S.mesCF]); }
+    try { d = await datosGeneradores([S.mesCF]); ultimo = d; }
     catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
     const mes = S.mesCF;
     const filas = d.gens.map(g => ({ g, r: resumenGenerador(g, mes, d) }))
@@ -4942,12 +4953,218 @@ async function fichaGenerador(g) {
         r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', autor(r.toma)]),
       { num: [2, 3, 4, 5, 6, 7, 8, 9] }),
     el('div', { class: 'fila', style: 'margin-top:12px' }, [
+      el('button', { class: 'btn chico', text: 'PDF de la ficha', onclick: () => imprimirFichaGenerador(g, filas, ingreso, devol, autor) }),
       el('button', { class: 'btn chico', text: 'Registrar ingreso / devolución', onclick: () => movimientoGenerador(g) }),
       ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol)
         ? el('button', { class: 'btn chico', text: 'Editar datos', onclick: () => editarGenerador(g) }) : null
     ])
   ]);
   modal(genNombre(g), cuerpo, { completo: true, subtitulo: `${g.propiedad || ''} · ${g.proveedor || ''}` });
+}
+
+/* ---------- PDF y respaldo de Casa de Fuerza ----------
+   Mismo mecanismo que el informe de consumos: una hoja en blanco y negro que el
+   navegador guarda como PDF. El cierre va en A4 horizontal (son muchas columnas). */
+function imprimirHoja(hoja, horizontal = false) {
+  const cont = document.getElementById('impresion');
+  const pagina = horizontal ? el('style', { id: 'pagina-h', text: '@page{size:A4 landscape;margin:10mm}' }) : null;
+  if (pagina) document.head.append(pagina);
+  cont.replaceChildren(hoja);
+  document.body.classList.add('imprimiendo');
+  const limpiar = () => {
+    document.body.classList.remove('imprimiendo');
+    cont.replaceChildren();
+    if (pagina) pagina.remove();
+    window.removeEventListener('afterprint', limpiar);
+  };
+  window.addEventListener('afterprint', limpiar);
+  setTimeout(() => window.print(), 150);
+}
+
+const cabHoja = (titulo, sub) => el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
+  el('td', {}, [el('h1', { text: titulo }), el('p', { text: sub })]),
+  el('td', { class: 'num', html: `Algorta Norte · Casa de Fuerza<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
+])])]);
+const thx = (t, n) => el('th', { class: n ? 'num' : null, text: t });
+const tdx = (t, n, cl) => el('td', { class: [n ? 'num' : '', cl || ''].join(' ').trim() || null, text: t ?? '—' });
+
+async function imprimirCierreCF(mes, d) {
+  const filas = d.gens.map(g => ({ g, r: resumenGenerador(g, mes, d) }))
+    .filter(({ g, r }) => g.activo || r.kwhMes != null || r.tomado).sort((a, b) => ordenGen(a.g, b.g));
+  const suma = (arr, k) => arr.reduce((a, x) => a + (x.r[k] || 0), 0);
+  let avisos = [];
+  try {
+    const ids = d.gens.filter(g => g.punto_id).map(g => g.punto_id);
+    const r = await sb.from('avisos').select('punto_id, descripcion, severidad, abierto_en, categoria:catalogo_avisos(categoria)')
+      .neq('estado', 'resuelto').in('punto_id', ids.length ? ids : [0]);
+    avisos = r.data || [];
+  } catch { /* el PDF sale igual */ }
+  const cuerpo = [];
+  for (const [titulo, arr] of [['GENERADORES PROPIOS', filas.filter(x => x.g.propiedad === 'Propio')],
+                               ['GENERADORES DE ARRIENDO', filas.filter(x => x.g.propiedad !== 'Propio')]]) {
+    if (!arr.length) continue;
+    cuerpo.push(el('tr', { class: 'grupo' }, [el('td', { colspan: 13, text: titulo })]));
+    for (const { g, r } of arr) cuerpo.push(el('tr', {}, [
+      tdx(g.n_interno || '—'), tdx(g.n_equipo), tdx(num(g.potencia_nominal_kw), 1), tdx(r.kw != null ? num(r.kw) : '—', 1),
+      tdx(r.kwhAcum != null ? num(r.kwhAcum) : (g.activo ? 'sin toma' : '—'), 1),
+      tdx(r.kwhMes != null ? num(r.kwhMes) : '—', 1, 'total'), tdx(r.horAcum != null ? num(r.horAcum) : '—', 1),
+      tdx(r.horasMes != null ? num(r.horasMes) : '—', 1), tdx(r.factor != null ? num(r.factor) + '%' : '—', 1),
+      tdx(r.litros != null ? num(r.litros) : '—', 1), tdx(r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', 1),
+      tdx(g.estado || '—'), tdx(g.ubicacion || '—')]));
+    cuerpo.push(el('tr', { class: 'suma' }, [el('td', { colspan: 5, text: 'Subtotal' }), tdx(num(suma(arr, 'kwhMes')), 1),
+      tdx(''), tdx(num(suma(arr, 'horasMes')), 1), tdx(''), tdx(suma(arr, 'litros') ? num(suma(arr, 'litros')) : '—', 1),
+      el('td', { colspan: 3 })]));
+  }
+  const kwh = suma(filas, 'kwhMes'), lit = suma(filas, 'litros');
+  const kwhD = filas.filter(x => x.r.litros).reduce((a, x) => a + (x.r.kwhMes || 0), 0);
+  const nomGen = id => { const g = d.gens.find(x => x.punto_id === id); return g ? genNombre(g) : '—'; };
+  const hoja = el('div', { class: 'hoja hoja-informe' }, [
+    cabHoja('Casa de Fuerza · Cierre de generadores', nombrePeriodo(mes).replace(/^./, c => c.toUpperCase()) +
+      ` · toma del ${fechaCorta(mesSiguiente(mes))}`),
+    el('p', { style: 'margin-bottom:8px', html:
+      `<b>Energía generada:</b> ${num(kwh)} kWh &nbsp;·&nbsp; <b>Horas de marcha:</b> ${num(suma(filas, 'horasMes'))} h &nbsp;·&nbsp; ` +
+      `<b>Combustible:</b> ${lit ? num(lit) + ' L' : '—'} &nbsp;·&nbsp; <b>L/kWh (diésel):</b> ${lit && kwhD ? num(lit / kwhD, 3) : '—'}` }),
+    el('table', { class: 'planilla' }, [
+      el('thead', {}, [el('tr', {}, [thx('N° int.'), thx('Equipo'), thx('Pot. nom. kW', 1), thx('kW toma', 1), thx('kWh acumulado', 1),
+        thx('kWh del mes', 1), thx('Horómetro', 1), thx('Horas mes', 1), thx('F. carga', 1), thx('Litros', 1), thx('L/kWh', 1),
+        thx('Estado'), thx('Ubicación')])]),
+      el('tbody', {}, cuerpo)
+    ]),
+    avisos.length ? el('div', {}, [el('h2', { text: `Avisos abiertos (${avisos.length})` }),
+      el('table', { class: 'planilla' }, [
+        el('thead', {}, [el('tr', {}, [thx('Generador'), thx('Categoría'), thx('Severidad'), thx('Abierto'), thx('Descripción')])]),
+        el('tbody', {}, avisos.map(a => el('tr', {}, [tdx(nomGen(a.punto_id)), tdx(a.categoria?.categoria), tdx(a.severidad),
+          tdx(fechaCorta(a.abierto_en)), tdx(a.descripcion)])))])]) : null,
+    el('div', { class: 'pie-informe' }, [
+      el('p', { text: 'kWh y horas del mes = toma del día 1 del mes siguiente − toma anterior. Factor de carga = kW medio (kWh ÷ horas) sobre la potencia nominal. ' +
+        'Litros = cargas de combustible registradas en el mes.' }),
+      el('p', { style: 'margin-top:18px', text: 'Revisado por: ______________________________     Firma: ____________________' })
+    ])
+  ]);
+  imprimirHoja(hoja, true);
+}
+
+function imprimirFichaGenerador(g, filas, ingreso, devol, autor) {
+  const dato = (k, v) => el('tr', {}, [el('th', { text: k }), el('td', { text: v ?? '—' })]);
+  const mov = m => m ? `${fechaCorta(m.fecha)} · horómetro ${m.horometro != null ? num(m.horometro) : '—'} · ${m.kwh != null ? num(m.kwh) + ' kWh' : 'kWh —'}` : 'Sin registro';
+  const conKwh = filas.filter(x => x.r.kwhMes != null);
+  const hoja = el('div', { class: 'hoja hoja-informe' }, [
+    cabHoja('Ficha del generador · ' + genNombre(g), `${g.propiedad || ''} · ${g.proveedor || ''}`),
+    el('table', { class: 'planilla', style: 'width:60%' }, [el('tbody', {}, [
+      dato('N° interno', g.n_interno), dato('TAG / N° equipo', g.n_equipo), dato('Marca', g.proveedor),
+      dato('Potencia nominal', g.potencia_nominal_kw ? num(g.potencia_nominal_kw) + ' kW' : null),
+      dato('Carga base', g.carga_base_kw ? num(g.carga_base_kw) + ' kW' : null), dato('Ubicación', g.ubicacion),
+      dato('Sincronismo', g.sincronismo), dato('Combustible', g.combustible), dato('Estado', g.estado),
+      dato('Ingreso a faena', mov(ingreso)), dato('Devolución', mov(devol)), dato('Observaciones', g.observaciones)])]),
+    conKwh.length > 1 ? graficoBarras(conKwh.map(x => ({ etiqueta: nombrePeriodo(x.m).split(' ')[0].slice(0, 3), valor: x.r.kwhMes })),
+      { titulo: 'Energía generada por mes', unidad: 'kWh', alto: 170 }) : null,
+    el('h2', { text: 'Tomas mensuales' }),
+    el('table', { class: 'planilla' }, [
+      el('thead', {}, [el('tr', {}, [thx('Mes'), thx('Toma'), thx('kW', 1), thx('kWh acumulado', 1), thx('kWh del mes', 1),
+        thx('Horómetro', 1), thx('Horas del mes', 1), thx('F. carga', 1), thx('Litros', 1), thx('L/kWh', 1), thx('Tomada por')])]),
+      el('tbody', {}, [...filas].reverse().map(({ m, r }) => el('tr', {}, [
+        tdx(nombrePeriodo(m)), tdx(r.toma ? fechaCorta(r.toma.fecha_lectura) : '—'), tdx(r.kw != null ? num(r.kw) : '—', 1),
+        tdx(r.kwhAcum != null ? num(r.kwhAcum) : '—', 1), tdx(r.kwhMes != null ? num(r.kwhMes) : '—', 1, 'total'),
+        tdx(r.horAcum != null ? num(r.horAcum) : '—', 1), tdx(r.horasMes != null ? num(r.horasMes) : '—', 1),
+        tdx(r.factor != null ? num(r.factor) + '%' : '—', 1), tdx(r.litros != null ? num(r.litros) : '—', 1),
+        tdx(r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', 1), tdx(autor(r.toma))])))
+    ]),
+    el('div', { class: 'pie-informe' }, [el('p', { text: 'Generado con la app Cierre de Mes (beta).' })])
+  ]);
+  imprimirHoja(hoja, false);
+}
+
+// ZIP del mes: Excel (portada, cierre, lecturas, combustible, movimientos) y las
+// fotos de la toma que cierra el mes, una carpeta por generador.
+async function respaldoCF(mes, d, paso) {
+  if (typeof JSZip === 'undefined') {
+    paso('Cargando el compresor…');
+    await new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = 'jszip.js'; sc.onload = ok; sc.onerror = mal; document.head.append(sc); });
+  }
+  const R = window.RESPALDO;
+  const toma = mesSiguiente(mes);
+  const ids = Object.values(d.idsDe).flatMap(x => Object.values(x).filter(Boolean).map(v => v.id));
+  paso('Consultando lecturas y combustible…');
+  const [lec, rec, mov] = await Promise.all([
+    sb.from('lecturas').select('id, variable_id, periodo, valor, valor_display, valor_mwh, valor_kwh, fecha_lectura, sin_dato, es_reset, tomada_por, origen, observacion, fotos(id, storage_path, orden)')
+      .in('variable_id', ids.length ? ids : [0]).eq('periodo', toma).neq('estado', 'descartada'),
+    sb.from('v_recargas').select('*').eq('periodo', mes).order('fecha_hora'),
+    sb.from('generador_movimientos').select('*, generador:generadores(n_equipo, n_interno)').order('fecha')
+  ]);
+  for (const r of [lec, rec, mov]) if (r.error) throw r.error;
+  const genDeVar = {};
+  for (const g of d.gens) for (const v of Object.values(d.idsDe[g.id] || {})) if (v) genDeVar[v.id] = { g, v };
+  const gente = S.catalogo?.gente || {};
+  const quien = l => gente[l.tomada_por] || (l.origen === 'importacion'
+    ? ((l.observacion || '').split(' · ').find(t => t.startsWith('Responsable en planilla: '))?.slice(25) || 'Planilla') : '');
+  const fecha = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit',
+    year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
+
+  const filas = d.gens.map(g => ({ g, r: resumenGenerador(g, mes, d) }))
+    .filter(({ g, r }) => g.activo || r.kwhMes != null || r.tomado).sort((a, b) => ordenGen(a.g, b.g));
+  const nm = nombrePeriodo(mes);
+  const hojas = [
+    { nombre: 'Portada', portada: true, anchos: [24, 70], encabezado: 'Casa de Fuerza', filas: [
+      [{ v: 'Cierre de Mes · Casa de Fuerza', fuente: 'nota' }], [{ v: 'Generadores', fuente: 'grande' }],
+      [{ v: nm.replace(/^./, c => c.toUpperCase()) + ` · toma del ${fechaCorta(toma)}`, fuente: 'titulo' }], [],
+      [{ v: 'Generado', fuente: 'b' }, fecha(new Date().toISOString())], [{ v: 'Por', fuente: 'b' }, S.usuario.nombre], [],
+      [{ v: 'Contenido', fuente: 'titulo' }],
+      [{ v: 'Cierre', fuente: 'b' }, 'Un generador por fila: kWh y horas del mes, factor de carga, litros y L/kWh.'],
+      [{ v: 'Lecturas', fuente: 'b' }, 'La toma que cierra el mes, con quién la tomó.'],
+      [{ v: 'Combustible', fuente: 'b' }, 'Cada carga del mes.'],
+      [{ v: 'Movimientos', fuente: 'b' }, 'Ingresos, devoluciones y traslados de equipos.'],
+      [{ v: 'Fotos/', fuente: 'b' }, 'Las fotos de la toma, una carpeta por generador.']] },
+    { nombre: 'Cierre', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Cierre', totales: { etiqueta: 'Total filtrado', desde: 5 } },
+      intro: [`Casa de Fuerza · Cierre de generadores · ${nm}`, 'kWh y horas del mes = toma del día 1 del mes siguiente − toma anterior.'],
+      filas: [['N° interno', 'Equipo', 'Propiedad', 'Marca', 'Pot. nominal kW', 'kWh del mes', 'Horas del mes', 'Litros',
+               'kW toma', 'kWh acumulado', 'Horómetro', 'Factor de carga %', 'L/kWh', 'Estado', 'Sincronismo', 'Ubicación', 'Observaciones'],
+        ...filas.map(({ g, r }) => [g.n_interno || '', g.n_equipo, g.propiedad || '', g.proveedor || '', Number(g.potencia_nominal_kw) || '',
+          r.kwhMes ?? '', r.horasMes ?? '', r.litros ?? '', r.kw ?? '', r.kwhAcum ?? '', r.horAcum ?? '',
+          r.factor != null ? { v: Math.round(r.factor * 10) / 10, s: 'pct' } : '', r.lPorKwh != null ? Math.round(r.lPorKwh * 1000) / 1000 : '',
+          g.estado || '', g.sincronismo || '', g.ubicacion || '', g.observaciones || ''])] },
+    { nombre: 'Lecturas', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Lecturas' },
+      intro: [`Casa de Fuerza · Toma del ${fechaCorta(toma)}`, 'Valores en kWh, horas y kW.'],
+      filas: [['N° interno', 'Equipo', 'Lectura', 'Valor', 'Fecha', 'Tomada por', 'Fotos', 'Observación'],
+        ...(lec.data || []).filter(l => genDeVar[l.variable_id]).map(l => {
+          const { g, v } = genDeVar[l.variable_id];
+          return [g.n_interno || '', g.n_equipo, v.nombre, l.sin_dato ? 'sin dato' : Number(l.valor), fecha(l.fecha_lectura),
+            quien(l), { v: (l.fotos || []).length, s: 'ent' }, l.observacion || ''];
+        })] },
+    { nombre: 'Combustible', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Combustible', totales: { etiqueta: 'Total', desde: 3 } },
+      intro: [`Casa de Fuerza · Combustible de ${nm}`, 'Cada carga registrada en el mes.'],
+      filas: [['Fecha', 'Generador', 'Combustible', 'Litros', 'Origen', 'Anotó', 'Registró'],
+        ...(rec.data || []).filter(r => !r.anulada).map(r => [fecha(r.fecha_hora), r.n_equipo, r.combustible || '', Number(r.litros),
+          r.origen || '', r.operador || '', r.registrado_por_nombre || ''])] },
+    { nombre: 'Movimientos', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Movimientos' },
+      intro: ['Casa de Fuerza · Movimientos de equipos', 'Ingresos, devoluciones y traslados.'],
+      filas: [['Fecha', 'Generador', 'Movimiento', 'Horómetro', 'kWh', 'Ubicación', 'Observaciones'],
+        ...(mov.data || []).map(m => [m.fecha, m.generador ? (m.generador.n_interno ? m.generador.n_interno + ' · ' : '') + m.generador.n_equipo : '',
+          m.tipo, m.horometro != null ? Number(m.horometro) : '', m.kwh != null ? Number(m.kwh) : '', m.ubicacion || '', m.observaciones || ''])] }
+  ];
+  if (hojas[2].filas.length === 1) hojas[2].filas.push(['', '', 'Sin lecturas de esta toma']);
+  if (hojas[3].filas.length === 1) hojas[3].filas.push(['', 'Sin cargas en el mes', '', 0]);
+  if (hojas[4].filas.length === 1) hojas[4].filas.push(['', 'Sin movimientos registrados']);
+
+  const zip = new JSZip();
+  paso('Armando el Excel…');
+  zip.file(`Casa_de_Fuerza_${mes.slice(0, 7)}.xlsx`, await R.construirExcel(hojas));
+  const conFoto = (lec.data || []).filter(l => genDeVar[l.variable_id] && (l.fotos || []).length);
+  let n = 0, total = conFoto.reduce((a, l) => a + l.fotos.length, 0);
+  for (const l of conFoto) {
+    const { g, v } = genDeVar[l.variable_id];
+    const carpeta = 'Fotos/' + R.limpio(genNombre(g));
+    for (const [i, f] of fotosOrdenadas(l).entries()) {
+      paso(`Descargando fotos… ${++n} de ${total}`);
+      const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 900);
+      if (!url?.signedUrl) continue;
+      const blob = await (await fetch(url.signedUrl)).blob();
+      zip.file(`${carpeta}/${String(l.fecha_lectura).slice(0, 10)}_${R.limpio(v.nombre)}${l.fotos.length > 1 ? '_foto' + (i + 1) : ''}.jpg`, blob);
+    }
+  }
+  paso('Comprimiendo…');
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  descargar(blob, `Respaldo_Casa_de_Fuerza_${mes.slice(0, 7)}.zip`);
+  toast(`Respaldo listo: ${filas.length} generadores y ${n} fotos`);
 }
 
 /* ---------------- alta, edición y baja de generadores ---------------- */

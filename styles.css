@@ -896,3 +896,11 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 [data-vista="auditoria"].en-construccion::after{content:' · en construcción';font-size:11px}
 .en-construccion-pag{text-align:center;padding:48px 16px;max-width:520px;margin:0 auto}
 .en-construccion-pag .ico-obra{font-size:40px;filter:grayscale(1);opacity:.6}
+
+/* ---- ficha del generador ---- */
+.datos-gen{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:4px 0 14px}
+.dato-gen{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.dato-gen small{display:block;color:var(--ink-3);font-size:11.5px}
+.dato-gen b{font-size:15px}
+.banda.neutro{background:var(--surface-2);color:var(--ink-2)}
+.obs-corta{display:block;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-3);font-size:12.5px}

@@ -504,7 +504,7 @@ function ir(vista) {
 }
 
 const TITULOS = {
-  terreno: 'Terreno',
+  terreno: 'Terreno', cierrecf: 'Cierre de generadores',
   consumos: 'Consumos e informes', avisos: 'Avisos', equipos: 'Equipos',
   dispositivo: 'Este dispositivo',
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
@@ -540,7 +540,7 @@ const signoEnergia = v => /importada/i.test(v?.nombre || '') ? '+'
                         : /exportada/i.test(v?.nombre || '') ? '-' : '';
 // En terreno siempre se carga en el mismo orden, aunque la principal sea la exportada:
 // importada primero, exportada después, el resto al final (la principal antes).
-const rangoVar = v => /importada/i.test(v.nombre || '') ? 0 : /exportada/i.test(v.nombre || '') ? 1 : 2;
+const rangoVar = v => /importada|generada/i.test(v.nombre || '') ? 0 : /exportada/i.test(v.nombre || '') ? 1 : 2;
 const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
   (b.principal === true) - (a.principal === true) || a.id - b.id;
 
@@ -556,7 +556,7 @@ function render() {
   marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
+    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
       : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -566,7 +566,7 @@ function render() {
   const c = el('div');
   $('#contenido').replaceChildren(avisoBeta(), c);
   ({
-    terreno: vistaTerreno,
+    terreno: vistaTerreno, cierrecf: vistaCierreCF,
     consumos: vistaConsumos, avisos: vistaAvisos, equipos: vistaEquipos,
     dispositivo: vistaDispositivo,
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
@@ -1039,6 +1039,8 @@ async function abrirCaptura(entrada) {
     if (c.sinDato.checked) { b.hidden = true; return; }
     const val = c.valorActual();
     if (val === null || Number.isNaN(val)) { b.hidden = true; return; }
+    // La potencia del momento (kW) no es un totalizador: no se compara con la anterior.
+    if (/^potencia/i.test(c.v.nombre || '')) { b.hidden = true; return; }
     const alertas = [];
     if (c.anterior && val < Number(c.anterior.valor)) {
       alertas.push(['bad', `Esta lectura (${num(val)}) es MENOR que la anterior (${num(c.anterior.valor)}). ` +
@@ -1743,6 +1745,8 @@ async function vistaConsumos(c) {
 const MEDICIONES = [
   { k: 'imp',   etiqueta: 'Energía importada (kWh+)', corto: 'kWh+' },
   { k: 'exp',   etiqueta: 'Energía exportada (kWh-)', corto: 'kWh-' },
+  { k: 'gen',   etiqueta: 'Energía generada (kWh)',   corto: 'kWh gen.' },
+  { k: 'kw',    etiqueta: 'Potencia (kW)',            corto: 'kW' },
   { k: 'hrs',   etiqueta: 'Horas de marcha',          corto: 'Horas' },
   { k: 'agua',  etiqueta: 'Volumen de agua (m³)',     corto: 'Agua m³' },
   { k: 'gas',   etiqueta: 'Volumen de gas (m³)',      corto: 'Gas m³' },
@@ -2008,7 +2012,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const j = f ? juzgarConsumo(f, ctx.bandas) : null;
   const b = ctx.bandas[variable_id];
   const sig = mesSiguiente(mes);
-  const gente = S.catalogo.gente || {};
+  const gente = S.catalogo?.gente || {};
   const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado' };
 
   const cuerpo = el('div', { class: 'ficha-consumo' });
@@ -3316,7 +3320,11 @@ const TIPOS_LECTURA = [
     es: v => /importada/i.test(v.nombre) },
   { k: 'exp', etiqueta: 'Energía exportada (kWh-)', nombre: 'Energía activa exportada (kWh-)', reporte: 'kWh', energia: true,
     es: v => /exportada/i.test(v.nombre), opcionalPorDefecto: true },
+  { k: 'gen', etiqueta: 'Energía generada (kWh)', nombre: 'Energía generada (kWh)', reporte: 'kWh', energia: true,
+    es: v => /generada/i.test(v.nombre) },
   { k: 'hrs', etiqueta: 'Horas de marcha', nombre: 'Horas de marcha', reporte: 'Hrs', es: v => /^horas/i.test(v.nombre) },
+  { k: 'kw', etiqueta: 'Potencia del momento (kW)', nombre: 'Potencia (kW)', reporte: 'kW',
+    es: v => /^potencia/i.test(v.nombre), opcionalPorDefecto: true },
   { k: 'agua', etiqueta: 'Volumen de agua (m³)', nombre: 'Volumen', reporte: 'm3',
     es: v => v.nombre === 'Volumen' && v.unidad_reporte === 'm3' },
   { k: 'gas', etiqueta: 'Volumen de gas (m³)', nombre: 'Volumen gas', reporte: 'm3', es: v => /^volumen gas$/i.test(v.nombre) },
@@ -4706,8 +4714,8 @@ async function vistaGeneradores(c) {
 
   const puedeAdmin = ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol);
 
-  const filas = gens.map(g => [
-    g.n_equipo,
+  const filas = [...gens].sort(ordenGen).map(g => [
+    g.n_interno || '—', g.n_equipo,
     g.propiedad === 'Arriendo' ? `Arriendo · ${g.proveedor || '—'}` : (g.proveedor || 'Propio'),
     num(g.potencia_nominal_kw),
     el('span', { class: 'pill ' + (g.estado === 'Operando' ? 'ok'
@@ -4719,6 +4727,7 @@ async function vistaGeneradores(c) {
     g.kwh_estadia != null ? num(g.kwh_estadia) : '—',
     g.litros_estadia != null ? num(g.litros_estadia) : '—',
     el('div', { class: 'fila' }, [
+      el('button', { class: 'btn chico', text: 'Ficha', onclick: () => fichaGenerador(g) }),
       el('button', { class: 'btn chico', text: 'Registrar', onclick: () => movimientoGenerador(g) }),
       el('button', { class: 'btn chico', text: 'Historial', onclick: () => historialGenerador(g) }),
       puedeAdmin ? el('button', { class: 'btn chico', text: 'Editar',
@@ -4743,13 +4752,202 @@ async function vistaGeneradores(c) {
           `${sinIngreso.length} generador(es) todavía no tienen movimiento de ingreso. ` +
           'Sin esa fecha y ese horómetro no se puede saber cuánto generó cada uno en su estadía.' })
       : null,
-    tabla(['Equipo', 'Propiedad', 'kW', 'Estado', 'Combustible', 'Ingreso', 'Días',
+    tabla(['N° int.', 'Equipo', 'Propiedad', 'kW', 'Estado', 'Combustible', 'Ingreso', 'Días',
            'Horas estadía', 'kWh estadía', 'Litros estadía', ''],
-      filas, { num: [2, 6, 7, 8, 9] }),
+      filas, { num: [3, 7, 8, 9, 10] }),
     el('p', { class: 'ayuda', text:
-      'Horas, kWh y litros de la estadía se cuentan desde el último ingreso a faena. ' +
-      'Para que avancen hay que registrar cada mes un movimiento de tipo "Lectura".' })
+      'La toma mensual (kWh, horómetro y kW) se hace desde Terreno, grupo "Generadores", escaneando el QR del equipo. ' +
+      'Aquí se registran el ingreso y la devolución de cada equipo.' })
   );
+}
+
+/* ===================================================================
+   CASA DE FUERZA · CIERRE DEL MES
+   Reemplaza la hoja RESUMEN de la planilla de generadores. Cada generador es
+   un punto de Terreno (grupo "Generadores") con tres lecturas: kWh generado,
+   horas de marcha y potencia del momento. Así la toma usa el mismo QR, fotos
+   y cola sin señal que los medidores, y el consumo del mes sale del mismo
+   cálculo (la toma del día 1 cierra el mes anterior).
+   =================================================================== */
+const VAR_GEN = { kwh: /generada/i, horas: /^horas/i, kw: /^potencia/i };
+
+async function datosGeneradores(meses) {
+  const { data: gens, error } = await sb.from('generadores').select('*');
+  if (error) throw error;
+  const puntos = gens.filter(g => g.punto_id).map(g => g.punto_id);
+  const { data: vars, error: e2 } = await sb.from('variables').select('id, punto_id, nombre, unidad_display, formato_lectura')
+    .in('punto_id', puntos.length ? puntos : [0]);
+  if (e2) throw e2;
+  const idsDe = {};                       // generador → { kwh, horas, kw } (ids de variable)
+  for (const g of gens) {
+    const suyas = (vars || []).filter(v => v.punto_id === g.punto_id);
+    idsDe[g.id] = Object.fromEntries(Object.entries(VAR_GEN).map(([k, re]) => [k, suyas.find(v => re.test(v.nombre))]));
+  }
+  const ids = (vars || []).map(v => v.id);
+  const tomas = meses.map(mesSiguiente);
+  const [cons, lects, recs] = await Promise.all([
+    sb.from('v_consumos').select('variable_id, mes, consumo, completo').in('variable_id', ids.length ? ids : [0]).in('mes', meses),
+    sb.from('lecturas').select('variable_id, periodo, valor, valor_display, valor_mwh, valor_kwh, fecha_lectura, sin_dato, es_reset, tomada_por, origen, observacion')
+      .in('variable_id', ids.length ? ids : [0]).in('periodo', tomas).neq('estado', 'descartada'),
+    sb.from('v_recargas').select('generador_id, periodo, litros').in('periodo', meses).eq('anulada', false)
+  ]);
+  for (const r of [cons, lects, recs]) if (r.error) throw r.error;
+  return { gens, idsDe, cons: cons.data || [], lects: lects.data || [], recs: recs.data || [] };
+}
+
+// Lo de un generador en un mes de consumo (la toma que lo cierra es la del mes siguiente).
+function resumenGenerador(g, mes, d) {
+  const iv = d.idsDe[g.id] || {};
+  const c = k => iv[k] && d.cons.find(x => x.variable_id === iv[k].id && x.mes === mes);
+  const l = k => iv[k] && d.lects.find(x => x.variable_id === iv[k].id && x.periodo === mesSiguiente(mes));
+  const kwhMes = c('kwh') ? Number(c('kwh').consumo) : null;
+  const horasMes = c('horas') ? Number(c('horas').consumo) : null;
+  const litros = d.recs.filter(r => r.generador_id === g.id && r.periodo === mes).reduce((a, r) => a + Number(r.litros), 0) || null;
+  const lk = l('kwh'), lh = l('horas'), lw = l('kw');
+  const kwMedio = kwhMes != null && horasMes > 0 ? kwhMes / horasMes : null;
+  return {
+    kwhMes, horasMes, litros, kwMedio,
+    factor: kwMedio != null && g.potencia_nominal_kw ? 100 * kwMedio / Number(g.potencia_nominal_kw) : null,
+    lPorKwh: litros && kwhMes > 0 ? litros / kwhMes : null,
+    kwhAcum: lk && !lk.sin_dato ? Number(lk.valor) : null,
+    horAcum: lh && !lh.sin_dato ? Number(lh.valor) : null,
+    kw: lw && !lw.sin_dato ? Number(lw.valor) : null,
+    toma: lk || lh || lw || null,
+    tomado: !!(lk || lh)
+  };
+}
+
+const genNombre = g => g.n_interno ? `${g.n_interno} · ${g.n_equipo}` : g.n_equipo;
+const ordenGen = (a, b) => (a.propiedad === 'Propio' ? 0 : 1) - (b.propiedad === 'Propio' ? 0 : 1) ||
+  String(a.n_interno || a.n_equipo).localeCompare(String(b.n_interno || b.n_equipo), 'es', { numeric: true });
+const pillEstadoGen = e => el('span', { class: 'pill ' + (e === 'Operando' ? 'ok'
+  : ['Devuelto', 'De baja'].includes(e) ? 'neutro' : ['Fuera de servicio', 'Para devolución'].includes(e) ? 'bad' : 'warn'), text: e || '—' });
+
+async function vistaCierreCF(c) {
+  S.mesCF = S.mesCF || S.periodoConsumo;
+  const sel = el('select', { onchange: e => { S.mesCF = e.target.value; cargar(); } });
+  const hoy = new Date();
+  for (let i = 0; i < 24; i++) {
+    const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
+    sel.append(el('option', { value: p, selected: p === S.mesCF || null, text: nombrePeriodo(p) }));
+  }
+  const zona = el('div');
+  c.append(el('div', { class: 'fila entre seccion' }, [
+    el('label', { text: 'Mes' }, [sel]),
+    el('p', { class: 'ayuda crece', text: 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.' })
+  ]), zona);
+
+  async function cargar() {
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
+    let d;
+    try { d = await datosGeneradores([S.mesCF]); }
+    catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
+    const mes = S.mesCF;
+    const filas = d.gens.map(g => ({ g, r: resumenGenerador(g, mes, d) }))
+      // los devueltos solo aparecen si tienen algo ese mes
+      .filter(({ g, r }) => g.activo || r.kwhMes != null || r.tomado)
+      .sort((a, b) => ordenGen(a.g, b.g));
+    const activos = filas.filter(x => x.g.activo);
+    const sinToma = activos.filter(x => !x.r.tomado);
+    const suma = (arr, k) => arr.reduce((a, x) => a + (x.r[k] || 0), 0);
+    const kwhTot = suma(filas, 'kwhMes'), litTot = suma(filas, 'litros');
+    const kwhDiesel = filas.filter(x => x.r.litros).reduce((a, x) => a + (x.r.kwhMes || 0), 0);
+
+    const kpis = el('div', { class: 'kpis seccion' }, [
+      kpi(kwhTot >= 1e6 ? num(kwhTot / 1e6, 2) + ' GWh' : num(kwhTot / 1000) + ' MWh', 'energía generada'),
+      kpi(num(suma(filas, 'horasMes')), 'horas de marcha'),
+      kpi(litTot ? num(litTot) + ' L' : '—', 'combustible cargado'),
+      kpi(litTot && kwhDiesel ? num(litTot / kwhDiesel, 3) : '—', 'L/kWh (diésel)'),
+      kpi(`${activos.filter(x => x.g.estado === 'Operando').length} / ${activos.length}`, 'operando'),
+      kpi(sinToma.length, 'sin toma de cierre', sinToma.length ? 'aviso' : 'ok')
+    ]);
+
+    const cab = ['N° int.', 'Equipo', 'Pot. nom.', 'kW toma', 'kWh acum.', 'kWh mes', 'Horómetro', 'Horas mes',
+                 'Factor carga', 'Litros', 'L/kWh', 'Estado', 'Sincronismo', 'Ubicación', 'Obs.'];
+    const fila = ({ g, r }) => [
+      el('button', { class: 'celda-cons', text: g.n_interno || '—', onclick: () => fichaGenerador(g) }),
+      el('button', { class: 'celda-cons', text: g.n_equipo, onclick: () => fichaGenerador(g) }),
+      num(g.potencia_nominal_kw), r.kw != null ? num(r.kw) : '—',
+      r.kwhAcum != null ? num(r.kwhAcum) : (g.activo ? el('span', { class: 'pill warn', text: 'sin toma' }) : '—'),
+      r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : '—',
+      r.horAcum != null ? num(r.horAcum) : '—', r.horasMes != null ? num(r.horasMes) : '—',
+      r.factor != null ? el('span', { class: 'pill ' + (r.factor > 85 ? 'warn' : r.factor < 30 ? 'neutro' : 'ok'), text: num(r.factor) + '%' }) : '—',
+      r.litros != null ? num(r.litros) : '—', r.lPorKwh != null ? num(r.lPorKwh, 3) : '—',
+      pillEstadoGen(g.estado), g.sincronismo || '—', g.ubicacion || '—',
+      g.observaciones ? el('span', { class: 'obs-corta', title: g.observaciones, text: g.observaciones }) : ''
+    ];
+    const bloque = (titulo, arr) => arr.length ? el('div', { class: 'seccion' }, [
+      el('h3', { text: `${titulo} (${arr.length})` }),
+      tabla(cab, [...arr.map(fila), ['Total', '', '', '', '', el('b', { text: num(suma(arr, 'kwhMes')) }), '',
+        num(suma(arr, 'horasMes')), '', suma(arr, 'litros') ? num(suma(arr, 'litros')) : '—', '', '', '', '', '']],
+        { num: [2, 3, 4, 5, 6, 7, 9, 10] })
+    ]) : null;
+    poner(zona, kpis,
+      bloque('Generadores propios', filas.filter(x => x.g.propiedad === 'Propio')),
+      bloque('Generadores de arriendo', filas.filter(x => x.g.propiedad !== 'Propio')),
+      el('p', { class: 'ayuda', text: 'Factor de carga = kW medio del mes (kWh ÷ horas) sobre la potencia nominal. ' +
+        'Litros: cargas de combustible del mes (Recargas). L/kWh solo para los que tienen cargas registradas.' }));
+  }
+  cargar();
+}
+
+/* ---------- ficha del generador ----------
+   Reemplaza la hoja por equipo: datos, ingreso y devolución, la tabla mensual
+   (kW, kWh y horómetro de cada toma, con lo generado en el mes) y el gráfico. */
+async function fichaGenerador(g) {
+  modal(genNombre(g), el('p', { class: 'cargando', text: 'Cargando…' }), { completo: true, subtitulo: `${g.propiedad || ''} · ${g.proveedor || ''}` });
+  const hoy = new Date();
+  const meses = [];
+  for (let i = 12; i >= 1; i--) meses.push(primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1)));
+  let d, movs = [];
+  try {
+    d = await datosGeneradores(meses);
+    const r = await sb.from('generador_movimientos').select('*').eq('generador_id', g.id).order('fecha');
+    movs = r.data || [];
+  } catch (e) { return modal(genNombre(g), el('p', { class: 'error', text: e.message || String(e) })); }
+  g = d.gens.find(x => x.id === g.id) || g;
+  const gente = S.catalogo?.gente || {};
+  const filas = meses.map(m => ({ m, r: resumenGenerador(g, m, d) }));
+  const conDato = filas.filter(x => x.r.tomado || x.r.kwhMes != null);
+  const dato = (k, v) => el('div', { class: 'dato-gen' }, [el('small', { text: k }), el('b', { text: v ?? '—' })]);
+  const ingreso = movs.filter(m => m.tipo === 'ingreso').pop();
+  const devol = movs.filter(m => m.tipo === 'devolucion').pop();
+  const mov = (titulo, m) => el('div', { class: 'card' }, [
+    el('h4', { style: 'margin-top:0', text: titulo }),
+    m ? el('p', { class: 'ayuda', text: `${fechaCorta(m.fecha)} · horómetro ${m.horometro != null ? num(m.horometro) : '—'} · ${m.kwh != null ? num(m.kwh) + ' kWh' : 'kWh —'}` +
+      (m.observaciones ? ` · ${m.observaciones}` : '') }) : el('p', { class: 'ayuda', text: 'Sin registro.' })
+  ]);
+  // Las importadas no tienen usuario: el responsable de la planilla viaja en la observación.
+  const autor = l => l ? (gente[l.tomada_por] || (l.origen === 'importacion'
+    ? ((l.observacion || '').split(' · ').find(t => t.startsWith('Responsable en planilla: '))?.slice(25) || 'Planilla')
+    : '—')) : '—';
+
+  const cuerpo = el('div', {}, [
+    el('div', { class: 'datos-gen' }, [
+      dato('N° interno', g.n_interno), dato('TAG / N° equipo', g.n_equipo), dato('Marca', g.proveedor),
+      dato('Propiedad', g.propiedad), dato('Potencia nominal', g.potencia_nominal_kw ? num(g.potencia_nominal_kw) + ' kW' : null),
+      dato('Carga base', g.carga_base_kw ? num(g.carga_base_kw) + ' kW' : null), dato('Ubicación', g.ubicacion),
+      dato('Sincronismo', g.sincronismo), dato('Combustible', g.combustible), dato('Estado', g.estado)
+    ]),
+    g.observaciones ? el('p', { class: 'banda neutro', text: g.observaciones }) : null,
+    el('div', { class: 'grid2' }, [mov('Ingreso a faena', ingreso), mov('Devolución', devol)]),
+    graficoBarras(conDato.filter(x => x.r.kwhMes != null).map(x => ({ etiqueta: nombrePeriodo(x.m).split(' ')[0].slice(0, 3), valor: x.r.kwhMes })),
+      { titulo: 'Energía generada por mes', unidad: 'kWh' }),
+    tabla(['Mes', 'Toma', 'kW', 'kWh acumulado', 'kWh del mes', 'Horómetro', 'Horas del mes', 'Factor carga', 'Litros', 'L/kWh', 'Tomada por'],
+      [...filas].reverse().map(({ m, r }) => [
+        nombrePeriodo(m), r.toma ? fechaCorta(r.toma.fecha_lectura) : '—', r.kw != null ? num(r.kw) : '—',
+        r.kwhAcum != null ? num(r.kwhAcum) : '—', r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : '—',
+        r.horAcum != null ? num(r.horAcum) : '—', r.horasMes != null ? num(r.horasMes) : '—',
+        r.factor != null ? num(r.factor) + '%' : '—', r.litros != null ? num(r.litros) : '—',
+        r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', autor(r.toma)]),
+      { num: [2, 3, 4, 5, 6, 7, 8, 9] }),
+    el('div', { class: 'fila', style: 'margin-top:12px' }, [
+      el('button', { class: 'btn chico', text: 'Registrar ingreso / devolución', onclick: () => movimientoGenerador(g) }),
+      ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol)
+        ? el('button', { class: 'btn chico', text: 'Editar datos', onclick: () => editarGenerador(g) }) : null
+    ])
+  ]);
+  modal(genNombre(g), cuerpo, { completo: true, subtitulo: `${g.propiedad || ''} · ${g.proveedor || ''}` });
 }
 
 /* ---------------- alta, edición y baja de generadores ---------------- */

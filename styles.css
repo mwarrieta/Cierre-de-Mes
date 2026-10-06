@@ -904,3 +904,13 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .dato-gen b{font-size:15px}
 .banda.neutro{background:var(--surface-2);color:var(--ink-2)}
 .obs-corta{display:block;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-3);font-size:12.5px}
+
+/* ---- combustible: planilla del día y grilla del mes ---- */
+.cargas{display:flex;flex-wrap:wrap;gap:6px}
+.carga{display:inline-flex;gap:4px;align-items:center}
+.carga input.carga-l{width:92px}
+.carga input.carga-h{width:104px;color:var(--ink-3)}
+.grilla-mes td,.grilla-mes th{padding:4px 6px;font-size:12.5px;white-space:nowrap}
+.grilla-mes th .celda-cons{padding:0 4px;font-weight:700}
+.grilla-mes .fila-total td{border-top:2px solid var(--line);font-weight:600}
+.tenue-b{color:var(--ink-3)}

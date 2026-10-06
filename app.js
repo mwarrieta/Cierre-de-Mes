@@ -509,7 +509,7 @@ const TITULOS = {
   dispositivo: 'Este dispositivo',
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
   usuarios: 'Usuarios', auditoria: 'Auditoría',
-  generadores: 'Casa de Fuerza · Generadores', recargas: 'Casa de Fuerza · Recargas',
+  generadores: 'Casa de Fuerza · Generadores', recargas: 'Casa de Fuerza · Combustible',
   etiquetas: 'Etiquetas QR'
 };
 
@@ -557,7 +557,7 @@ function render() {
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
     ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
-      : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
+      : S.vista === 'recargas' ? ''
       : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
   // Cada vista escribe en SU propio contenedor. Si una consulta lenta termina
@@ -4952,7 +4952,7 @@ async function fichaGenerador(g) {
 
 /* ---------------- alta, edición y baja de generadores ---------------- */
 const PROPIEDAD_GEN = ['Arriendo', 'Propio'];
-const COMBUSTIBLES_GEN = ['Diesel', 'Gas', 'Bunker'];
+const COMBUSTIBLES_GEN = ['Diesel', 'GNL', 'Bunker'];
 
 function editarGenerador(g) {
   const nuevo = !g;
@@ -5001,7 +5001,7 @@ function editarGenerador(g) {
       text: nuevo ? 'Crear el generador' : 'Guardar', onclick: async e => {
         if (!f.n_equipo.value.trim()) return toast('Ponle el número de equipo', true);
         e.target.disabled = true;
-        const { error } = await sb.rpc('guardar_generador', {
+        const { data: idGen, error } = await sb.rpc('guardar_generador', {
           p_id: g.id ?? null,
           p_n_equipo: f.n_equipo.value.trim(),
           p_n_interno: f.n_interno.value.trim() || null,
@@ -5017,8 +5017,11 @@ function editarGenerador(g) {
           p_obs: f.obs.value.trim() || null,
           p_activo: f.activo.checked
         });
+        if (error) { e.target.disabled = false; return toast(error.message, true); }
+        // Cada generador es un punto de Terreno: se crea si falta y se mantiene al día.
+        try { await asegurarPuntoGenerador(idGen ?? g.id); }
+        catch (err) { toast('Generador guardado, pero no se pudo preparar su punto de Terreno: ' + (err.message || err), true); }
         e.target.disabled = false;
-        if (error) return toast(error.message, true);
         cerrarModal(); toast(nuevo ? 'Generador creado' : 'Generador actualizado'); render();
       } })
   ]);
@@ -5032,6 +5035,43 @@ function editarGenerador(g) {
       }) }));
 
   modal(nuevo ? 'Generador nuevo' : g.n_equipo, cuerpo);
+}
+
+// El punto de Terreno de un generador: nombre "N° interno · equipo", grupo
+// Generadores y tres lecturas (kWh generado, horas de marcha, potencia del momento).
+// Si ya existe, solo se pone al día el nombre, la ubicación y si está activo.
+async function asegurarPuntoGenerador(id) {
+  if (!id) return;
+  const { data: g, error } = await sb.from('generadores').select('*').eq('id', id).single();
+  if (error) throw error;
+  const nombre = (g.n_interno ? g.n_interno + ' · ' : '') + g.n_equipo;
+  if (g.punto_id) {
+    const r = await sb.from('puntos').update({ nombre, area: g.ubicacion, activo: g.activo }).eq('id', g.punto_id);
+    if (r.error) throw r.error;
+    return;
+  }
+  const { data: p, error: e1 } = await sb.from('puntos').insert({
+    nombre, sitio_id: 3, area: g.ubicacion, tipo_equipo_id: 4, foto_obligatoria: true, activo: g.activo,
+    fuente_origen: 'Casa de Fuerza', instruccion_lectura: 'Anota el kWh acumulado, el horómetro y la potencia del momento. Foto del display.'
+  }).select('id').single();
+  if (e1) throw e1;
+  const grupo = (S.catalogo.grupos || []).find(x => x.nombre === 'Generadores');
+  if (grupo) await sb.from('grupo_puntos').insert({ grupo_id: grupo.id, punto_id: p.id });
+  const doble = g.formato_lectura === 'doble_mwh_kwh';
+  const vars = [
+    { p_nombre: 'Energía generada (kWh)', p_unidad_display: doble ? 'MWh' : 'kWh', p_unidad_reporte: 'kWh', p_formato: doble ? 'doble_mwh_kwh' : 'simple', p_opcional: false, informe: true },
+    { p_nombre: 'Horas de marcha', p_unidad_display: 'Hrs', p_unidad_reporte: 'Hrs', p_formato: 'simple', p_opcional: false, informe: true },
+    { p_nombre: 'Potencia (kW)', p_unidad_display: 'kW', p_unidad_reporte: 'kW', p_formato: 'simple', p_opcional: true, informe: false }
+  ];
+  for (const { informe, ...v } of vars) {
+    const { data: idVar, error: e2 } = await sb.rpc('guardar_variable', { p_id: null, p_punto_id: p.id, p_decimales: 0, p_principal: true, p_activo: true, ...v });
+    if (e2) throw e2;
+    await sb.from('variables').update({ en_informe: informe, ...(v.p_unidad_reporte === 'kW' ? { tipo_acumulacion: 'instantanea' } : {}) }).eq('id', idVar);
+  }
+  const r = await sb.from('generadores').update({ punto_id: p.id }).eq('id', id);
+  if (r.error) throw r.error;
+  await DB.descargarCatalogo().catch(() => {});
+  S.catalogo = await DB.catalogo();
 }
 
 function movimientoGenerador(g) {
@@ -5150,53 +5190,145 @@ async function historialGenerador(g) {
    =================================================================== */
 const ORIGENES = ['BBA.4', 'BBA.5', 'Camión externo', 'Otro'];
 
+/* ---------------- Combustible: la planilla del día ----------------
+   Los operadores de Casa de Fuerza anotan a mano, cada día, los litros que le
+   cargan a cada generador (una o varias veces). Esta pantalla es para pasar esa
+   hoja de una vez: una fila por generador, una casilla por carga. Debajo, la
+   grilla del mes (generador × día) para comparar contra el papel. */
+const hoyISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+
 async function vistaRecargas(c) {
+  S.diaCF = S.diaCF || hoyISO();
+  const dia = S.diaCF, mes = dia.slice(0, 7) + '-01';
+  const inDia = el('input', { type: 'date', value: dia, max: hoyISO(), onchange: e => { if (e.target.value) { S.diaCF = e.target.value; render(); } } });
+  const operador = el('input', { type: 'text', value: S.operadorCF || '', placeholder: 'Quién anotó la hoja (operador / turno)',
+    oninput: e => { S.operadorCF = e.target.value; } });
   c.append(el('div', { class: 'fila entre seccion' }, [
-    selectorPeriodo('periodoCF', () => render()),
-    el('button', { class: 'btn primario grande', text: '+ Registrar recarga', onclick: () => nuevaRecarga() })
+    el('label', { text: 'Día de la planilla' }, [inDia]),
+    el('label', { class: 'crece', text: 'Anotó' }, [operador]),
+    el('button', { class: 'btn', text: 'Carga con guía o camión', onclick: () => nuevaRecarga() })
   ]));
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando recargas…' })]);
+  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
   c.append(zona);
 
   const cola = (await DB.pendientes()).filter(x => x.tipo === 'recarga');
-  let recargas = [];
-  let sinRed = false;
+  let recargas = [], sinRed = false;
   try {
-    const { data, error } = await sb.from('v_recargas').select('*')
-      .eq('periodo', S.periodoCF).order('fecha_hora', { ascending: false });
+    const { data, error } = await sb.from('v_recargas').select('*').eq('periodo', mes).order('fecha_hora');
     if (error) throw error;
     recargas = (data || []).filter(r => !r.anulada);
-  } catch (e) { sinRed = true; }
+  } catch { sinRed = true; }
 
-  const total = recargas.reduce((a, r) => a + Number(r.litros), 0);
-  const porGen = {};
-  for (const r of recargas) porGen[r.n_equipo] = (porGen[r.n_equipo] || 0) + Number(r.litros);
+  // Diésel: los de gas no se abastecen con esta planilla.
+  const gens = (S.catalogo.generadores || [])
+    .filter(g => g.activo !== false && !/gnl|gas/i.test(g.combustible || ''))
+    .sort(ordenGen);
+  const delDia = r => r.fecha_dia === dia;
+  const horaDe = r => new Date(r.fecha_hora).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  const filas = recargas.map(r => [
-    fechaHora(r.fecha_hora), r.n_equipo, num(r.litros), r.combustible,
-    r.origen || '—', r.guia || '—', r.camion || '—',
-    r.registrado_por_nombre || '—',
-    esSupervisor()
-      ? el('button', { class: 'btn chico', text: 'Anular', onclick: () => anularRecarga(r) })
-      : ''
-  ]);
+  // ---- planilla del día ----
+  const entradas = new Map();          // generador → [{ litros, hora }]
+  const casilla = (g, cont) => {
+    const litros = el('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', placeholder: 'L', class: 'carga-l' });
+    const hora = el('input', { type: 'time', class: 'carga-h', title: 'Hora (opcional)' });
+    entradas.get(g.id).push({ litros, hora });
+    cont.append(el('span', { class: 'carga' }, [litros, hora]));
+    return litros;
+  };
+  const filas = gens.map(g => {
+    entradas.set(g.id, []);
+    const ya = recargas.filter(r => r.generador_id === g.id && delDia(r));
+    const cont = el('div', { class: 'cargas' });
+    casilla(g, cont);
+    const totalYa = ya.reduce((a, r) => a + Number(r.litros), 0);
+    return [
+      el('span', { html: `<b>${esc(g.n_interno || '—')}</b> <small class="tenue-b">${esc(g.n_equipo)}</small>` }),
+      ya.length ? el('div', { class: 'marcas' }, ya.map(r => el(esSupervisor() ? 'button' : 'span', {
+        class: 'pill neutro', title: `${r.registrado_por_nombre || ''}${r.operador ? ' · anotó ' + r.operador : ''}`,
+        text: `${num(r.litros)} L · ${horaDe(r)}`, onclick: esSupervisor() ? () => anularRecarga(r) : null }))) : '—',
+      el('div', { class: 'fila' }, [cont, el('button', { class: 'btn chico', text: '+', title: 'Otra carga del mismo día',
+        onclick: () => casilla(g, cont).focus() })]),
+      totalYa ? num(totalYa) : '—'
+    ];
+  });
+
+  const guardar = el('button', { class: 'btn guardar grande', text: 'Guardar planilla del día', onclick: async () => {
+    const nuevas = [];
+    for (const g of gens) {
+      (entradas.get(g.id) || []).forEach((x, k) => {
+        const l = Number(x.litros.value);
+        if (!x.litros.value || !(l > 0)) return;
+        // sin hora: 08:00, 08:01… así dos cargas iguales del mismo día no se toman por duplicado
+        const hh = x.hora.value || `08:${String(k).padStart(2, '0')}`;
+        nuevas.push({ tipo: 'recarga', generador_id: g.id, fecha_hora: new Date(`${dia}T${hh}:00`).toISOString(),
+          litros: l, combustible: 'Diesel', origen: 'Planilla diaria', guia: null, camion: null, horometro: null,
+          operador: operador.value.trim() || null, observaciones: null, dispositivo: 'Planilla diaria · ' + navigator.userAgent.slice(0, 90) });
+      });
+    }
+    if (!nuevas.length) return toast('No hay litros escritos', true);
+    guardar.disabled = true;
+    let ok = 0, enCola = 0;
+    for (const f of nuevas) {
+      if (navigator.onLine) {
+        const { error } = await sb.rpc('registrar_recarga', {
+          p_generador_id: f.generador_id, p_fecha_hora: f.fecha_hora, p_litros: f.litros, p_combustible: f.combustible,
+          p_origen: f.origen, p_guia: null, p_camion: null, p_horometro: null, p_operador: f.operador,
+          p_obs: null, p_dispositivo: f.dispositivo });
+        if (error) { await DB.encolar(f); enCola++; } else ok++;
+      } else { await DB.encolar(f); enCola++; }
+    }
+    await actualizarConexion();
+    toast(`${ok} carga(s) guardadas` + (enCola ? ` · ${enCola} en el dispositivo, se enviarán con señal` : ''));
+    render();
+  } });
+
+  const totDia = recargas.filter(delDia).reduce((a, r) => a + Number(r.litros), 0);
+
+  // ---- grilla del mes: generador × día ----
+  const fin = new Date(mes.slice(0, 4), +mes.slice(5, 7), 0).getDate();
+  const ultimo = mes.slice(0, 7) === hoyISO().slice(0, 7) ? +hoyISO().slice(8, 10) : fin;
+  const dias = Array.from({ length: ultimo }, (_, i) => i + 1);
+  const idsMes = new Set(recargas.map(r => r.generador_id));
+  const gensMes = [...gens, ...(S.catalogo.generadores || []).filter(g => idsMes.has(g.id) && !gens.includes(g))];
+  const celda = (gid, d) => recargas.filter(r => r.generador_id === gid && +r.fecha_dia.slice(8, 10) === d)
+    .reduce((a, r) => a + Number(r.litros), 0);
+  const cabDia = d => el('button', { class: 'celda-cons' + (d === +dia.slice(8, 10) ? ' rev' : ''), text: String(d),
+    onclick: () => { S.diaCF = mes.slice(0, 8) + String(d).padStart(2, '0'); render(); } });
+  const totalMes = recargas.reduce((a, r) => a + Number(r.litros), 0);
+  const grilla = el('div', { class: 'tabla-caja grilla-mes' }, [el('table', {}, [
+    el('thead', {}, [el('tr', {}, [el('th', { text: 'Generador' }), ...dias.map(d => el('th', {}, [cabDia(d)])), el('th', { text: 'Total' })])]),
+    el('tbody', {}, [
+      ...gensMes.map(g => el('tr', {}, [el('td', { text: g.n_interno || g.n_equipo }),
+        ...dias.map(d => { const v = celda(g.id, d); return el('td', { class: 'num', text: v ? num(v) : '' }); }),
+        el('td', { class: 'num' }, [el('b', { text: (t => t ? num(t) : '')(recargas.filter(r => r.generador_id === g.id).reduce((a, r) => a + Number(r.litros), 0)) })])])),
+      el('tr', { class: 'fila-total' }, [el('td', { text: 'Total del día' }),
+        ...dias.map(d => { const v = recargas.filter(r => +r.fecha_dia.slice(8, 10) === d).reduce((a, r) => a + Number(r.litros), 0);
+          return el('td', { class: 'num', text: v ? num(v) : '' }); }),
+        el('td', { class: 'num' }, [el('b', { text: num(totalMes) })])])
+    ])
+  ])]);
 
   poner(zona,
-    cola.length
-      ? el('p', { class: 'banda warn', text:
-          `${cola.length} recarga(s) guardadas en este dispositivo, todavía sin enviar.` })
-      : null,
-    sinRed ? el('p', { class: 'banda warn', text: 'Sin señal: no se pudo traer lo ya enviado al servidor.' }) : null,
+    cola.length ? el('p', { class: 'banda warn', text: `${cola.length} carga(s) guardadas en este dispositivo, todavía sin enviar.` }) : null,
+    sinRed ? el('p', { class: 'banda warn', text: 'Sin señal: no se pudo traer lo ya enviado. Igual puedes anotar: se guarda en el dispositivo.' }) : null,
     el('div', { class: 'kpis seccion' }, [
-      kpi(num(total) + ' L', 'cargados en ' + nombrePeriodo(S.periodoCF)),
-      kpi(recargas.length, 'recargas'),
-      kpi(Object.keys(porGen).length, 'generadores abastecidos')
+      kpi(num(totDia) + ' L', 'cargados el ' + fechaCorta(dia)),
+      kpi(num(totalMes) + ' L', 'en ' + nombrePeriodo(mes)),
+      kpi(recargas.length, 'cargas del mes')
     ]),
-    recargas.length
-      ? tabla(['Fecha y hora', 'Generador', 'Litros', 'Combustible', 'Origen', 'Guía', 'Camión', 'Quién', ''],
-          filas, { num: [2] })
-      : el('p', { class: 'vacio', text: 'No hay recargas registradas en este mes.' }),
-    await bloqueConsumoEspecifico(S.periodoCF)
+    el('div', { class: 'card seccion' }, [
+      el('h3', { style: 'margin-top:0', text: `Planilla del ${fechaCorta(dia)}` }),
+      el('p', { class: 'ayuda', text: 'Escribe los litros de cada carga. Si un generador cargó más de una vez, toca + para otra casilla. ' +
+        'La hora es opcional. Lo ya guardado aparece en gris' + (esSupervisor() ? ' (tócalo para anularlo).' : '.') }),
+      tabla(['Generador', 'Ya guardado', 'Nuevas cargas (L)', 'Total del día'], filas, { num: [3] }),
+      el('div', { class: 'fila', style: 'margin-top:12px' }, [guardar])
+    ]),
+    el('div', { class: 'seccion' }, [
+      el('h3', { text: `Mes de ${nombrePeriodo(mes)} · litros por día` }),
+      el('p', { class: 'ayuda', text: 'Para revisar contra las hojas de papel. Toca un día para abrir su planilla. ' +
+        'Los L/kWh y el factor de carga están en Cierre del mes.' }),
+      grilla
+    ])
   );
 }
 
@@ -5221,7 +5353,8 @@ function nuevaRecarga() {
 
   const sincronizarComb = () => {
     const g = gens.find(x => String(x.id) === selGen.value);
-    if (g && g.combustible) selComb.value = ['Diesel','Bunker','GNL'].includes(g.combustible) ? g.combustible : 'Otro';
+    const c = String(g?.combustible || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (g && g.combustible) selComb.value = /diesel/i.test(c) ? 'Diesel' : /gnl|gas/i.test(c) ? 'GNL' : /bunker/i.test(c) ? 'Bunker' : 'Otro';
   };
   selGen.addEventListener('change', sincronizarComb);
   sincronizarComb();
@@ -5297,38 +5430,6 @@ function anularRecarga(r) {
   ]));
 }
 
-// Litros por kWh: el número que la Ley 21.305 mira de reojo. Es referencial
-// mientras las lecturas de horómetro y kWh no se registren todos los meses.
-async function bloqueConsumoEspecifico(periodo) {
-  let datos = [];
-  try {
-    const { data } = await sb.from('v_generador_mes').select('*').eq('periodo', periodo).order('n_equipo');
-    datos = data || [];
-  } catch { return null; }
-  if (!datos.length) return null;
-
-  const filas = datos.map(d => [
-    d.n_equipo,
-    d.litros != null ? num(d.litros) : '—',
-    d.horas != null ? num(d.horas, 1) : '—',
-    d.kwh != null ? num(d.kwh) : '—',
-    d.litros_por_kwh != null
-      ? el('span', { class: 'pill ' + (d.litros_por_kwh >= 0.18 && d.litros_por_kwh <= 0.45 ? 'ok' : 'warn'),
-                     text: num(d.litros_por_kwh, 3) })
-      : '—',
-    d.litros_por_hora != null ? num(d.litros_por_hora, 1) : '—',
-    d.factor_carga != null ? num(d.factor_carga * 100, 0) + '%' : '—'
-  ]);
-  return el('div', { class: 'card seccion' }, [
-    el('h4', { style: 'margin-top:0', text: 'Consumo específico del mes' }),
-    tabla(['Generador', 'Litros', 'Horas', 'kWh', 'L/kWh', 'L/h', 'Factor de carga'],
-      filas, { num: [1, 2, 3, 5, 6] }),
-    el('p', { class: 'ayuda', text:
-      'Un grupo diésel sano gasta entre 0,20 y 0,35 L por kWh. Fuera de esa banda, o falta ' +
-      'una lectura de horómetro/kWh del mes, o hay litros cargados a un equipo equivocado. ' +
-      'Las horas y el kWh salen de los movimientos de tipo "Lectura": si en el mes hay una sola, la columna queda vacía.' })
-  ]);
-}
 
 /* ===================================================================
    CÓDIGOS QR

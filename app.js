@@ -274,7 +274,8 @@ async function arrancar() {
   await refrescarDatos();
   await actualizarConexion();
   revisarVersion();
-  ir(esSupervisor() ? 'tablero' : 'terreno');
+  // La revisión del mes se hace desde Consumos e informes (Tablero y Validación se retiraron).
+  ir(esSupervisor() ? 'consumos' : 'terreno');
   if (navigator.onLine) sincronizar(true);
 }
 
@@ -390,6 +391,9 @@ $$('#menu .grupo-cab:not([data-vista])').forEach(cab => cab.addEventListener('cl
 // Marca la pantalla actual en la barra lateral y en la inferior. Se llama desde
 // render(), así que cubre todos los caminos (menú, escaneo, ficha de un punto).
 function marcarNav() {
+  // Auditoría queda gris (en construcción) para quien no es admin.
+  document.querySelectorAll('[data-vista="auditoria"]').forEach(b =>
+    b.classList.toggle('en-construccion', S.usuario?.rol !== 'admin'));
   let actual = null;
   $$('#menu button[data-vista]').forEach(b => {
     const sel = b.dataset.vista === S.vista;
@@ -489,6 +493,7 @@ $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));
 
 function ir(vista) {
+  if (!TITULOS[vista]) vista = esSupervisor() ? 'consumos' : 'terreno';
   if (S.puntoAbierto && S.fichaSucia && !confirm('Hay cambios sin guardar en este punto. ¿Salir igual?')) return;
   S.puntoAbierto = null; S.fichaSucia = false; S.puntoEnHistorial = false;
   S.vista = vista;
@@ -499,7 +504,7 @@ function ir(vista) {
 }
 
 const TITULOS = {
-  terreno: 'Terreno', tablero: 'Tablero del mes', validacion: 'Validación',
+  terreno: 'Terreno',
   consumos: 'Consumos e informes', avisos: 'Avisos', equipos: 'Equipos',
   dispositivo: 'Este dispositivo',
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
@@ -543,21 +548,25 @@ const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
 
+// Leyenda chica y fija arriba de cada vista: la app está en desarrollo.
+const avisoBeta = () => el('p', { class: 'aviso-beta', role: 'note',
+  text: 'Versión beta · la app está en desarrollo y puede tener errores. Si ves algo raro, avísalo.' });
+
 function render() {
   marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
     ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? nombrePeriodo(S.periodoCF)
-      : ['terreno','tablero','validacion'].includes(S.vista) ? nombreCampana(S.periodo)
+      : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
   // Cada vista escribe en SU propio contenedor. Si una consulta lenta termina
   // después de que el usuario cambió de sección, escribe en un nodo ya desechado
   // en vez de pisar la vista nueva.
   const c = el('div');
-  $('#contenido').replaceChildren(c);
+  $('#contenido').replaceChildren(avisoBeta(), c);
   ({
-    terreno: vistaTerreno, tablero: vistaTablero, validacion: vistaValidacion,
+    terreno: vistaTerreno,
     consumos: vistaConsumos, avisos: vistaAvisos, equipos: vistaEquipos,
     dispositivo: vistaDispositivo,
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
@@ -1312,79 +1321,11 @@ function abrirAviso(punto, textoPrevio = '') {
   modal('Nuevo aviso', cuerpo);
 }
 
-/* ===================================================================
-   VISTA · TABLERO
-   =================================================================== */
-async function vistaTablero(c) {
-  c.append(el('div', { class: 'fila entre seccion' }, [selectorPeriodo()]));
-  const zona = el('div'); c.append(zona);
-  zona.append(el('p', { class: 'cargando', text: 'Calculando…' }));
-
-  const total = S.catalogo.variables.length;
-  const leidas = new Set(S.lecturas.map(l => l.variable_id)).size;
-  const porValidar = S.lecturas.filter(l => l.estado === 'enviada').length;
-  const validadas = S.lecturas.filter(l => l.estado === 'validada').length;
-  const sinDato = S.lecturas.filter(l => l.sin_dato).length;
-
-  let alertas = [];
-  try {
-    const { data } = await sb.from('v_alertas_duras').select('*').eq('periodo', S.periodo);
-    alertas = data || [];
-  } catch { /* ignorar */ }
-
-  let avisosAbiertos = 0;
-  try {
-    const { count } = await sb.from('avisos').select('id', { count: 'exact', head: true }).neq('estado', 'resuelto');
-    avisosAbiertos = count || 0;
-  } catch { /* ignorar */ }
-
-  let dups = 0;
-  try {
-    const { count } = await sb.from('v_duplicados').select('variable_id', { count: 'exact', head: true })
-      .eq('periodo', S.periodo);
-    dups = count || 0;
-  } catch { /* ignorar */ }
-
-  poner(zona,
-    el('div', { class: 'kpis seccion' }, [
-      kpi(leidas + ' / ' + total, 'lecturas tomadas'),
-      kpi(total - leidas, 'faltantes', total - leidas ? 'aviso' : ''),
-      kpi(porValidar, 'por validar', porValidar ? 'aviso' : ''),
-      kpi(validadas, 'validadas'),
-      kpi(alertas.length, 'fuera de rango', alertas.length ? 'alerta' : ''),
-      kpi(sinDato, 'sin dato'),
-      kpi(avisosAbiertos, 'avisos abiertos', avisosAbiertos ? 'aviso' : ''),
-      kpi(dups, 'tomados dos veces', dups ? 'alerta' : '')
-    ]),
-    await bloqueDuplicados(S.periodo),
-    el('div', { class: 'seccion' }, [
-      el('h2', { text: 'Faltan por leer' }),
-      tablaFaltantes()
-    ])
-  );
-}
 function kpi(v, k, clase = '') {
   return el('div', { class: 'kpi ' + clase }, [
     el('div', { class: 'v', text: String(v) }), el('div', { class: 'k', text: k })
   ]);
 }
-function tablaFaltantes() {
-  const hechas = new Set(S.lecturas.map(l => l.variable_id));
-  const faltan = S.catalogo.variables.filter(v => !hechas.has(v.id));
-  if (!faltan.length) return el('p', { class: 'vacio', text: 'Están todas las lecturas del mes.' });
-  return tabla(
-    ['Grupo', 'Punto', 'TAG', 'Variable', 'Unidad'],
-    faltan.slice(0, 300).map(v => [
-      gruposTexto(v.punto), v.punto.nombre,
-      v.punto.equipo?.tag || '—',
-      v.nombre, UNIDAD[v.unidad_reporte] || v.unidad_reporte
-    ])
-  );
-}
-
-// En pantalla ancha es una tabla con el encabezado fijo.
-// En celular o tablet angosta, cada fila se convierte en una tarjeta:
-// por eso cada celda lleva el nombre de su columna en data-col.
 function tabla(cabeceras, filas, opciones = {}) {
   const thead = el('thead', {}, [el('tr', {}, cabeceras.map(h => el('th', { text: h })))]);
   const tbody = el('tbody', {}, filas.map(f => el('tr', {}, f.map((celda, j) => {
@@ -1395,232 +1336,6 @@ function tabla(cabeceras, filas, opciones = {}) {
     return el('td', props);
   }))));
   return el('div', { class: 'tabla-caja' }, [el('table', {}, [thead, tbody])]);
-}
-
-/* ===================================================================
-   VISTA · VALIDACIÓN
-   =================================================================== */
-async function vistaValidacion(c) {
-  S.filtroValidacion = S.filtroValidacion || '';
-  
-  const cabecera = el('div', { class: 'fila entre seccion' }, [
-    selectorPeriodo(),
-    el('button', { class: 'btn primario', text: 'Validar sin errores', onclick: validarTodasSinAlertas })
-  ]);
-  
-  const buscador = el('div', { class: 'buscador' }, [
-    el('input', {
-      type: 'search', placeholder: 'Buscar punto o grupo…', value: S.filtroValidacion,
-      oninput: e => { S.filtroValidacion = e.target.value.toLowerCase(); renderListaValidacion(); }
-    })
-  ]);
-
-  const zona = el('div', { id: 'zona-validacion' }, [el('p', { class: 'cargando', text: 'Cargando lecturas…' })]);
-  c.append(cabecera, buscador, zona);
-
-  await renderListaValidacion();
-}
-
-async function renderListaValidacion() {
-  const zona = $('#zona-validacion');
-  if (!zona) return;
-
-  const dup = await bloqueDuplicados(S.periodo);
-  
-  let alertas = [];
-  try {
-    const { data } = await sb.from('v_alertas_duras').select('*').eq('periodo', S.periodo);
-    alertas = data || [];
-  } catch { /* ignorar */ }
-  const porLectura = {};
-  for (const a of alertas) (porLectura[a.lectura_id] ||= []).push(a);
-
-  const pendientes = S.lecturas.filter(l => !['validada', 'descartada'].includes(l.estado));
-  if (!pendientes.length) {
-    poner(zona, dup, el('p', { class: 'vacio', text: 'No hay lecturas por validar en este periodo.' }));
-    return;
-  }
-
-  const filas = pendientes.map(l => {
-    const v = S.catalogo.variables.find(x => x.id === l.variable_id);
-    if (!v) return null;
-    
-    const txt = `${gruposTexto(v.punto)} ${v.punto.nombre} ${v.nombre}`.toLowerCase();
-    if (S.filtroValidacion && !txt.includes(S.filtroValidacion)) return null;
-
-    const u = UNIDAD[v.unidad_reporte] || v.unidad_reporte;
-    const al = porLectura[l.id] || [];
-
-    const tieneAlertas = al.length > 0;
-    const severidadAlta = al.some(a => a.severidad === 'alta');
-    
-    return el('div', { 
-        class: 'fila-validacion' + (tieneAlertas ? (severidadAlta ? ' error' : ' alerta') : ''), 
-        onclick: () => revisarLectura(l, v, al) 
-      }, [
-      el('div', { class: 'info-principal' }, [
-        el('strong', { text: v.punto.nombre }),
-        el('span', { class: 'texto-secundario', text: ' — ' + v.nombre })
-      ]),
-      el('div', { class: 'info-secundaria' }, [
-        l.sin_dato ? el('span', { class: 'pill warn', text: 'sin dato' }) : el('span', { class: 'num', text: `${num(l.valor)} ${u}` }),
-        tieneAlertas 
-          ? el('span', { class: 'pill ' + (severidadAlta ? 'bad' : 'warn'), text: al.length + (al.length === 1 ? ' alerta' : ' alertas') })
-          : el('span', { class: 'pill ok', text: '✓' })
-      ])
-    ]);
-  }).filter(x => x !== null);
-
-  if (!filas.length) {
-    poner(zona, dup, el('p', { class: 'vacio', text: 'No hay coincidencias en la búsqueda.' }));
-    return;
-  }
-
-  const contenedorLista = el('div', { class: 'lista-validacion' }, filas);
-  poner(zona, dup, contenedorLista);
-}
-
-async function validarTodasSinAlertas(e) {
-  const pendientes = S.lecturas.filter(l => !['validada', 'descartada'].includes(l.estado));
-  if (!pendientes.length) return toast('No hay lecturas pendientes.');
-
-  const btn = e.target;
-  const textoOriginal = btn.textContent;
-  btn.textContent = 'Buscando alertas...';
-  btn.disabled = true;
-
-  let alertas = [];
-  try {
-    const { data } = await sb.from('v_alertas_duras').select('*').eq('periodo', S.periodo);
-    alertas = data || [];
-  } catch { /* ignorar */ }
-  const conAlerta = new Set(alertas.map(a => a.lectura_id));
-
-  const sinAlertas = pendientes.filter(l => !conAlerta.has(l.id));
-  if (!sinAlertas.length) {
-    btn.textContent = textoOriginal;
-    btn.disabled = false;
-    return toast('Todas las lecturas pendientes tienen alertas. Revísalas manualmente.');
-  }
-
-  if (!confirm(`¿Validar automáticamente ${sinAlertas.length} lecturas sin alertas ni errores?`)) {
-    btn.textContent = textoOriginal;
-    btn.disabled = false;
-    return;
-  }
-
-  btn.textContent = 'Validando...';
-
-  try {
-    let oks = 0;
-    for (const l of sinAlertas) {
-      const r = await sb.rpc('validar_lectura', { p_id: l.id, p_aprobar: true, p_obs: null });
-      if (!r.error) oks++;
-    }
-    toast(`${oks} lecturas validadas correctamente.`);
-    await refrescarDatos(); 
-    render();
-  } catch (err) {
-    toast('Error al validar algunas lecturas.', true);
-  } finally {
-    btn.textContent = textoOriginal;
-    btn.disabled = false;
-  }
-}
-
-async function revisarLectura(l, v, alertas) {
-  const u = v ? (UNIDAD[v.unidad_reporte] || v.unidad_reporte) : '';
-  const cuerpo = el('div');
-
-  // foto
-  if (l.fotos && l.fotos.length) {
-    for (const f of fotosOrdenadas(l)) {
-      const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
-      if (data?.signedUrl) cuerpo.append(el('img', { src: data.signedUrl, alt: 'Foto del medidor' }));
-    }
-  } else {
-    cuerpo.append(el('p', { class: 'banda warn', text: 'Esta lectura no tiene foto: no se puede contrastar el número contra el display.' }));
-  }
-
-  cuerpo.append(el('div', { class: 'anterior' }, [
-    el('span', { html: `<b>${esc(v?.punto.nombre || '')}</b><br><small>${esc(v?.nombre || '')}</small>` }),
-    el('span', { html: `<b>${l.sin_dato ? 'Sin dato' : num(l.valor) + ' ' + u}</b><br><small>${fechaHora(l.fecha_lectura)}</small>` })
-  ]));
-
-  for (const a of alertas) {
-    cuerpo.append(el('div', { class: 'banda ' + (a.severidad === 'alta' ? 'bad' : 'warn'), text: a.detalle }));
-  }
-  if (l.observacion) {
-    cuerpo.append(el('p', { class: 'ayuda', html: '<b>Observación de terreno:</b> ' + esc(l.observacion) }));
-  }
-
-  const nuevoValor = el('input', { type: 'number', value: l.valor_display ?? '', placeholder: 'Corregir valor' });
-  const motivo = el('input', { type: 'text', placeholder: 'Motivo de la corrección (obligatorio si cambias el valor)' });
-  const obsVal = el('textarea', { placeholder: 'Observación de la validación (opcional)' });
-
-  // --- reinicio del totalizador ---------------------------------------
-  const hayReinicio = alertas.some(x => x.regla === 'lectura_menor_que_anterior') || l.es_reset;
-  const consumoReal = el('input', { type: 'number', value: l.consumo_manual ?? '',
-                                    placeholder: `Consumo real del mes en ${u}` });
-  const tipoReset = el('select');
-  for (const [v_, t] of [['vuelta_contador','El display dio la vuelta'],
-                         ['cambio_equipo','Se cambió el medidor'],
-                         ['reprogramacion','Se reprogramó el equipo']]) {
-    tipoReset.append(el('option', { value: v_, selected: l.tipo_reset === v_ || null, text: t }));
-  }
-  const cajaReset = el('div', { class: 'card', style: 'margin:16px 0' }, [
-    el('h4', { style: 'margin-top:0', text: 'El totalizador se reinició' }),
-    el('p', { class: 'ayuda', text: 'La resta contra la lectura anterior no sirve. Escribe cuánto se consumió realmente ese mes y queda registrado con tu motivo.' }),
-    el('label', { text: 'Qué pasó' }, [tipoReset]),
-    el('label', { text: 'Consumo real del mes' }, [consumoReal]),
-    el('div', { class: 'fila' }, [
-      el('button', { class: 'btn chico', text: 'Registrar el reinicio', onclick: async () => {
-        if (!motivo.value.trim()) return toast('Escribe el motivo en el campo de abajo', true);
-        const r = await sb.rpc('marcar_reinicio', {
-          p_id: l.id, p_consumo: Number(consumoReal.value),
-          p_tipo: tipoReset.value, p_motivo: motivo.value.trim() });
-        if (r.error) return toast(r.error.message, true);
-        toast('Reinicio registrado'); cerrarModal();
-        await refrescarDatos(); render();
-      } }),
-      l.es_reset ? el('button', { class: 'btn chico peligro', text: 'Quitar la marca', onclick: async () => {
-        const r = await sb.rpc('quitar_reinicio', { p_id: l.id, p_motivo: motivo.value.trim() });
-        if (r.error) return toast(r.error.message, true);
-        toast('Marca quitada'); cerrarModal();
-        await refrescarDatos(); render();
-      } }) : null
-    ])
-  ]);
-
-  cuerpo.append(
-    hayReinicio ? cajaReset : null,
-    el('label', { text: 'Valor del display' }, [nuevoValor]),
-    el('label', { text: 'Motivo del cambio' }, [motivo]),
-    el('label', { text: 'Observación de validación' }, [obsVal]),
-    el('div', { class: 'fila', style: 'margin-top:16px' }, [
-      el('button', { class: 'btn ok crece', text: 'Validar', onclick: async () => {
-        if (String(nuevoValor.value) !== String(l.valor_display ?? '')) {
-          if (!motivo.value.trim()) return toast('Cambiaste el valor: escribe el motivo', true);
-          const r = await sb.rpc('corregir_lectura', {
-            p_id: l.id, p_valor_display: Number(nuevoValor.value), p_motivo: motivo.value.trim()
-          });
-          if (r.error) return toast(r.error.message, true);
-        }
-        const r2 = await sb.rpc('validar_lectura', { p_id: l.id, p_aprobar: true, p_obs: obsVal.value.trim() || null });
-        if (r2.error) return toast(r2.error.message, true);
-        cerrarModal(); toast('Lectura validada');
-        await refrescarDatos(); render();
-      } }),
-      el('button', { class: 'btn peligro', text: 'Rechazar', onclick: async () => {
-        if (!obsVal.value.trim()) return toast('Escribe por qué la rechazas', true);
-        const r = await sb.rpc('validar_lectura', { p_id: l.id, p_aprobar: false, p_obs: obsVal.value.trim() });
-        if (r.error) return toast(r.error.message, true);
-        cerrarModal(); toast('Lectura rechazada · vuelve a terreno');
-        await refrescarDatos(); render();
-      } })
-    ])
-  );
-  modal('Validar lectura', cuerpo);
 }
 
 /* ===================================================================
@@ -1921,6 +1636,9 @@ async function vistaConsumos(c) {
   ]);
   const zona = el('div');
   c.append(barra, barraMedir, acciones, zona);
+  // Puntos que dos personas tomaron en la toma actual: antes se resolvían en
+  // Tablero y Validación, que se retiraron.
+  bloqueDuplicados(S.periodo).then(d => { if (d && zona.isConnected) c.insertBefore(d, zona); }).catch(() => {});
 
   function opcionesMes(valorActual, alCambiar) {
     const hoy = new Date(); const sel = el('select', { onchange: e => { alCambiar(e.target.value); cargar(); } });
@@ -2755,7 +2473,6 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   // fecha y hora de Chile, en 24 h y sin "a. m.": se lee y se ordena mejor en Excel
   const fechaExcel = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago',
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
-  const alcanceTxt = filtros.grupo ? `grupo ${filtros.grupo}` : 'todos los grupos';
   const colMes0 = 5;                                // TAG, Grupo, Punto, Variable, Unidad, meses…
 
   // ---- 1 · Resumen anual: una fila por punto y lectura, en Tabla con filtros ----
@@ -2834,25 +2551,47 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       a.resuelto_en ? fechaExcel(a.resuelto_en) : '', a.resuelto_por_nombre || '', a.obs_resolucion || '']);
 
   const usados = new Set();
+  // Cada hoja dice de qué grupo es: en el título y en el encabezado al imprimir.
+  const grupoTxt = filtros.grupo || 'Todos los grupos';
+  const nPuntos = new Set(cons.map(c => c.punto_id)).size;
+  const portada = [
+    [{ v: 'Cierre de Mes · Informe de consumos', fuente: 'nota' }],
+    [{ v: grupoTxt, fuente: 'grande' }],
+    [{ v: rango.replace(/^./, c => c.toUpperCase()), fuente: 'titulo' }],
+    [],
+    [{ v: 'Puntos incluidos', fuente: 'b' }, String(nPuntos)],
+    [{ v: 'Generado', fuente: 'b' }, fechaExcel(new Date().toISOString())],
+    [{ v: 'Por', fuente: 'b' }, S.usuario.nombre],
+    [],
+    [{ v: 'Contenido', fuente: 'titulo' }],
+    [{ v: 'Resumen anual', fuente: 'b' }, 'Consumo de cada punto por mes, con totales filtrables y gráfico.'],
+    [{ v: 'Detalle mensual', fuente: 'b' }, 'Totalizador, consumo del mes y variación de cada punto.'],
+    [{ v: 'Lecturas', fuente: 'b' }, 'Cada lectura tomada en terreno, con fecha y autor.'],
+    [{ v: 'Avisos', fuente: 'b' }, 'Avisos de los puntos de este informe.'],
+    [],
+    [{ v: `Generado con la app Cierre de Mes (versión ${C.VERSION || '—'}, beta).`, fuente: 'nota' }]
+  ];
   const hojas = [
-    { nombre: nombreHoja('Resumen anual', usados), filas: resumen,
-      intro: [`Resumen anual · ${rango} · ${alcanceTxt}`,
+    { nombre: nombreHoja('Portada', usados), filas: portada, portada: true, anchos: [22, 70], encabezado: grupoTxt },
+    { nombre: nombreHoja('Resumen anual', usados), filas: resumen, encabezado: grupoTxt,
+      intro: [`${grupoTxt} · Resumen anual · ${rango}`,
         'Consumo de cada mes = lectura que cierra el mes − lectura anterior.',
         'Total filtrado y gráfico suman solo las filas visibles: filtra una sola Unidad.',
         `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.`],
       tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: colMes0 } },
       grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + meses.length - 1 } },
-    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle,
-      intro: [`Detalle mensual · ${rango} · ${alcanceTxt}`,
+    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle, encabezado: grupoTxt,
+      intro: [`${grupoTxt} · Detalle mensual · ${rango}`,
         'Totalizador: lo que marca el medidor al cerrar el mes. Consumo: diferencia con el mes anterior. Var. %: cambio del consumo.'],
       tabla: { nombre: 'Detalle', franjas: false } },
-    { nombre: nombreHoja('Lecturas', usados), filas: lecturas,
-      intro: ['Lecturas tomadas en terreno',
+    { nombre: nombreHoja('Lecturas', usados), filas: lecturas, encabezado: grupoTxt,
+      intro: [`${grupoTxt} · Lecturas tomadas en terreno`,
         'Una fila por lectura. El periodo es el mes de la toma: la lectura de octubre cierra septiembre.'],
       tabla: { nombre: 'Lecturas', anchoMax: 50 } },
     { nombre: nombreHoja('Avisos', usados), filas: hojaAvisos.length > 1 ? hojaAvisos
         : [...hojaAvisos, ['', '', '', '', '', 'Sin avisos para estos puntos en el periodo']],
-      intro: [`Avisos de los puntos · ${rango} · ${alcanceTxt}`,
+      encabezado: grupoTxt,
+      intro: [`${grupoTxt} · Avisos de los puntos · ${rango}`,
         'Pendientes y los abiertos dentro del periodo.'],
       tabla: { nombre: 'Avisos', anchoMax: 60 } }
   ];
@@ -4873,6 +4612,15 @@ function cambiarClaveUsuario(u) {
    VISTA · AUDITORÍA
    =================================================================== */
 async function vistaAuditoria(c) {
+  // Por ahora solo el admin la usa; el resto ve el aviso de página en construcción.
+  if (S.usuario.rol !== 'admin') {
+    c.append(el('div', { class: 'en-construccion-pag' }, [
+      el('div', { class: 'ico-obra', text: '🚧' }),
+      el('h2', { text: 'Auditoría · en construcción' }),
+      el('p', { class: 'ayuda', text: 'Esta sección se está rediseñando. Mientras tanto, los cambios siguen quedando registrados.' })
+    ]));
+    return;
+  }
   const selTabla = el('select', { onchange: cargar });
   selTabla.append(el('option', { value: '', text: 'Todas las tablas' }));
   for (const t of ['lecturas', 'equipos', 'puntos', 'variables', 'avisos', 'usuarios', 'periodos'])

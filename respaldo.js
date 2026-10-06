@@ -18,7 +18,8 @@ function col(n) {                       // 1 -> A, 27 -> AA
 }
 
 // ---------- .xlsx escrito a mano ----------
-// Una hoja puede ser una lista simple ({nombre, filas}) o una Tabla de Excel:
+// Una hoja puede ser una lista simple ({nombre, filas}), una portada ({portada: true,
+// filas con celdas { v, fuente: 'grande'|'titulo'|'b'|'nota' }}) o una Tabla de Excel:
 //   { nombre, filas, intro: [título, nota…], tabla: { nombre, franjas, totales: {etiqueta, desde} },
 //     grafico: { titulo, desde, hasta } }
 // filas[0] es el encabezado. Una celda puede ser un valor o { v, s: 'num'|'ent'|'pct'|'txt', oculto }.
@@ -35,7 +36,7 @@ const TIPO = t => `http://schemas.openxmlformats.org/officeDocument/2006/relatio
 // Paleta: grises neutros. Franja muy clara, encabezado un poco más oscuro.
 const GRIS = { franja: 'FFF5F5F5', cab: 'FFBFBFBF', tot: 'FFE7E7E7', linea: 'FF8C8C8C', texto: 'FF262626', nota: 'FF595959', barra: '7F7F7F', cons: 'FF1F5C99' };
 const FMT = { gen: 0, num: 164, ent: 3, pct: 165, oculto: 166 };
-const FUENTE = { n: 0, b: 1, titulo: 2, nota: 3, cons: 4 };
+const FUENTE = { n: 0, b: 1, titulo: 2, nota: 3, cons: 4, grande: 5 };
 const RELLENO = { no: 0, franja: 2, cab: 3, tot: 4 };
 const BORDE = { no: 0, cab: 1, tot: 2 };
 
@@ -86,7 +87,7 @@ function armarHoja(h, n, est) {
   filas.forEach((fila, i) => {
     const r = off + i + 1;
     const celdas = [];
-    if (i === 0) {
+    if (i === 0 && !h.portada) {
       for (let j = 0; j < (h.tabla ? ncol : fila.length); j++)
         // en una Tabla el encabezado no puede quedar vacío ni repetido
         celdas.push(celdaXml(col(j + 1) + r, h.tabla ? (fila[j] || `Col${j + 1}`) : fila[j],
@@ -96,7 +97,10 @@ function armarHoja(h, n, est) {
       for (let j = 0; j < (h.tabla ? ncol : fila.length); j++) {
         const c = fila[j];
         const v = valorDe(c);
-        if (!h.tabla) { celdas.push(celdaXml(col(j + 1) + r, v, 0)); continue; }
+        if (!h.tabla) {
+          const fu = c && typeof c === 'object' ? c.fuente : null;
+          celdas.push(celdaXml(col(j + 1) + r, v, fu ? est.de('gen', fu) : 0)); continue;
+        }
         const o = (c && typeof c === 'object') ? c : {};
         const fmt = o.oculto ? 'oculto' : (o.s || (typeof v === 'number' ? 'num' : 'gen'));
         const fuente = o.fuente || fila.fuente || 'n';
@@ -136,6 +140,7 @@ function armarHoja(h, n, est) {
     });
     anchos.push(Math.min(h.tabla ? (h.tabla.anchoMax || 42) : 60, Math.ceil(w)));
   }
+  if (h.anchos) h.anchos.forEach((w, j) => { if (w) anchos[j] = w; });
   const cols = `<cols>${anchos.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`;
 
   const rels = [];
@@ -188,9 +193,11 @@ function armarHoja(h, n, est) {
 
   const hoja = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${NS_R}">
-${h.tabla ? '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' : ''}<sheetViews><sheetView workbookViewId="0"${h.tabla ? ' showGridLines="0"' : ''}><pane ySplit="${filaCab}" topLeftCell="A${filaCab + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+${h.tabla || h.portada ? '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' : ''}<sheetViews><sheetView workbookViewId="0"${h.tabla || h.portada ? ' showGridLines="0"' : ''}>${h.portada ? '' : `<pane ySplit="${filaCab}" topLeftCell="A${filaCab + 1}" activePane="bottomLeft" state="frozen"/>`}</sheetView></sheetViews>
 ${cols}<sheetData>${xml.join('')}</sheetData>
-${h.tabla ? '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' : ''}
+${h.tabla || h.portada ? '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' : ''}${
+  // al imprimir, cada hoja lleva arriba el grupo y la hoja, y abajo el número de página
+  h.encabezado ? `<headerFooter><oddHeader>${xmlEsc('&L&"Calibri,Bold"' + h.encabezado.replace(/&/g, '&&') + '&R&A')}</oddHeader><oddFooter>${xmlEsc('&LCierre de Mes&RPágina &P de &N')}</oddFooter></headerFooter>` : ''}
 ${dibujoXml ? '<drawing r:id="rIdD"/>' : ''}${tablaXml ? '<tableParts count="1"><tablePart r:id="rIdT"/></tableParts>' : ''}</worksheet>`;
   return { hoja, rels, tablaXml, dibujoXml, graficoXml };
 }
@@ -234,7 +241,7 @@ ${hojas.map((h, i) => `<sheet name="${xmlEsc(h.nombre).slice(0, 31)}" sheetId="$
   xl.file('styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;;-0.0&quot;%&quot;;0.0&quot;%&quot;"/><numFmt numFmtId="166" formatCode=";;;"/></numFmts>
-<fonts count="5"><font><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="${GRIS.nota}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.cons}"/><name val="Calibri"/></font></fonts>
+<fonts count="6"><font><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="${GRIS.nota}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.cons}"/><name val="Calibri"/></font><font><b/><sz val="24"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font></fonts>
 <fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${solido(GRIS.franja)}${solido(GRIS.cab)}${solido(GRIS.tot)}</fills>
 <borders count="3"><border/>${linea('bottom', GRIS.linea)}${linea('top', GRIS.linea)}</borders>
 <cellStyleXfs count="1"><xf/></cellStyleXfs>

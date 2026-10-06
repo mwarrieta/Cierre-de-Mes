@@ -885,3 +885,14 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 @media print{.celda-cons{border:none;background:none!important;color:inherit!important;padding:0}}
 .kpi.ok .v{color:var(--ok)}
 .celda-cons.falta.pend{color:var(--warn);font-weight:700}
+
+/* ---- leyenda beta: chica, arriba de cada vista ---- */
+.aviso-beta{margin:0 0 12px;padding:5px 10px;border-radius:6px;font-size:11.5px;line-height:1.35;
+  color:var(--ink-3);background:var(--surface-2);border:1px dashed var(--line);text-align:center}
+@media print{.aviso-beta{display:none}}
+
+/* ---- Auditoría en construcción (no admin) ---- */
+[data-vista="auditoria"].en-construccion{color:var(--ink-3)!important;opacity:.6;font-style:italic}
+[data-vista="auditoria"].en-construccion::after{content:' · en construcción';font-size:11px}
+.en-construccion-pag{text-align:center;padding:48px 16px;max-width:520px;margin:0 auto}
+.en-construccion-pag .ico-obra{font-size:40px;filter:grayscale(1);opacity:.6}

@@ -19,30 +19,55 @@ function col(n) {                       // 1 -> A, 27 -> AA
 
 // ---------- .xlsx escrito a mano ----------
 // Una hoja puede ser una lista simple ({nombre, filas}) o una Tabla de Excel:
-//   { nombre, filas, intro: [título, nota…], tabla: { nombre, totales: {etiqueta, desde} },
-//     grafico: { titulo } }
-// filas[0] es el encabezado. Una celda puede ser un valor o { v, s: 'pct' | 'num' }.
-// La Tabla trae los botones de filtro, el encabezado de color y una fila de
-// totales con SUBTOTAL, que suma solo lo que queda visible al filtrar.
-const S_ = { normal: 0, negrita: 1, titulo: 2, nota: 3, num: 4, pct: 5, totEtiqueta: 6, totNum: 7, cab: 8 };
+//   { nombre, filas, intro: [título, nota…], tabla: { nombre, franjas, totales: {etiqueta, desde} },
+//     grafico: { titulo, desde, hasta } }
+// filas[0] es el encabezado. Una celda puede ser un valor o { v, s: 'num'|'ent'|'pct'|'txt', oculto }.
+// "oculto" deja el valor en la celda (el filtro lo sigue viendo) pero no lo muestra.
+// Una fila con la propiedad .gris lleva fondo gris claro (franjas por bloque).
 const NS_C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const TIPO = t => `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${t}`;
 
-const celdaXml = (ref, v, s) => {
-  if (v && typeof v === 'object') { s = S_[v.s] ?? s; v = v.v; }
+// Paleta: grises neutros. Franja muy clara, encabezado un poco más oscuro.
+const GRIS = { franja: 'FFF5F5F5', cab: 'FFD9D9D9', tot: 'FFEDEDED', linea: 'FFA6A6A6', texto: 'FF262626', nota: 'FF595959', barra: '7F7F7F' };
+const FMT = { gen: 0, num: 164, ent: 3, pct: 165, oculto: 166 };
+const FUENTE = { n: 0, b: 1, titulo: 2, nota: 3 };
+const RELLENO = { no: 0, franja: 2, cab: 3, tot: 4 };
+const BORDE = { no: 0, cab: 1, tot: 2 };
+
+// Registro de estilos: cada combinación usada se agrega una sola vez a cellXfs.
+function registroEstilos() {
+  const claves = ['gen|n|no|no', 'gen|b|no|no'];   // 0 normal · 1 negrita (listas simples)
+  const idx = new Map(claves.map((k, i) => [k, i]));
+  const de = (fmt = 'gen', fuente = 'n', relleno = 'no', borde = 'no') => {
+    const k = `${fmt}|${fuente}|${relleno}|${borde}`;
+    if (!idx.has(k)) { idx.set(k, claves.length); claves.push(k); }
+    return idx.get(k);
+  };
+  const xml = () => claves.map(k => {
+    const [f, fu, r, b] = k.split('|');
+    return `<xf xfId="0" numFmtId="${FMT[f]}" fontId="${FUENTE[fu]}" fillId="${RELLENO[r]}" borderId="${BORDE[b]}"` +
+      ` applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"` +
+      // los enteros cortos (fotos, N.º) van centrados: pegados a la derecha se leen con la columna vecina
+      (f === 'ent' ? ' applyAlignment="1"><alignment horizontal="center"/></xf>' : '/>');
+  }).join('');
+  return { de, xml, cuantos: () => claves.length };
+}
+
+const valorDe = v => (v && typeof v === 'object') ? v.v : v;
+const refHoja = nombre => `'${String(nombre).replace(/'/g, "''")}'`;
+
+function celdaXml(ref, v, s) {
   if (v === null || v === undefined || v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
   const st = s ? ` s="${s}"` : '';
   if (typeof v === 'number' && Number.isFinite(v)) return `<c r="${ref}"${st}><v>${v}</v></c>`;
   return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
-};
-const valorDe = v => (v && typeof v === 'object') ? v.v : v;
-const refHoja = nombre => `'${String(nombre).replace(/'/g, "''")}'`;
+}
 
 // Arma el XML de una hoja y, si corresponde, su tabla y su gráfico.
-function armarHoja(h, n) {
+function armarHoja(h, n, est) {
   const filas = h.filas;
   const ncol = Math.max(1, ...filas.map(f => f.length));
   const intro = h.intro || [];
@@ -53,33 +78,45 @@ function armarHoja(h, n) {
   const filaTot = tot ? ultimaDato + 1 : null;
   const xml = [];
 
-  intro.forEach((t, i) => xml.push(`<row r="${i + 1}">${celdaXml('A' + (i + 1), t, i === 0 ? S_.titulo : S_.nota)}</row>`));
+  intro.forEach((t, i) => xml.push(`<row r="${i + 1}">${celdaXml('A' + (i + 1), t,
+    est.de('gen', i === 0 ? 'titulo' : 'nota'))}</row>`));
 
   filas.forEach((fila, i) => {
     const r = off + i + 1;
-    const cab = i === 0;
     const celdas = [];
-    for (let j = 0; j < (cab && h.tabla ? ncol : fila.length); j++) {
-      const v = fila[j];
-      let s = 0;
-      if (cab) s = h.tabla ? S_.cab : S_.negrita;
-      else if (h.tabla && typeof valorDe(v) === 'number') s = S_.num;
-      // en una Tabla el encabezado no puede quedar vacío ni repetido
-      const val = cab && h.tabla ? (v || `Col${j + 1}`) : v;
-      celdas.push(celdaXml(col(j + 1) + r, val, s));
+    if (i === 0) {
+      for (let j = 0; j < (h.tabla ? ncol : fila.length); j++)
+        // en una Tabla el encabezado no puede quedar vacío ni repetido
+        celdas.push(celdaXml(col(j + 1) + r, h.tabla ? (fila[j] || `Col${j + 1}`) : fila[j],
+          h.tabla ? est.de('gen', 'b', 'cab', 'cab') : 1));
+    } else {
+      const relleno = fila.gris ? 'franja' : 'no';
+      for (let j = 0; j < (h.tabla ? ncol : fila.length); j++) {
+        const c = fila[j];
+        const v = valorDe(c);
+        if (!h.tabla) { celdas.push(celdaXml(col(j + 1) + r, v, 0)); continue; }
+        const o = (c && typeof c === 'object') ? c : {};
+        const fmt = o.oculto ? 'oculto' : (o.s || (typeof v === 'number' ? 'num' : 'gen'));
+        const s = (fmt === 'gen' && relleno === 'no') ? 0 : est.de(fmt === 'txt' ? 'gen' : fmt, 'n', relleno);
+        celdas.push(celdaXml(col(j + 1) + r, v, s));
+      }
     }
     xml.push(`<row r="${r}">${celdas.join('')}</row>`);
   });
 
+  // "Total filtrado" va justo debajo y FUERA de la Tabla: SUBTOTAL ignora igual las
+  // filas ocultas por el filtro, y así el gráfico la lee en Excel y en LibreOffice
+  // (LibreOffice no grafica la fila de totales integrada de una Tabla).
   if (tot) {
-    const celdas = [celdaXml(col(1) + filaTot, tot.etiqueta, S_.totEtiqueta)];
+    const sEt = est.de('gen', 'b', 'tot', 'tot'), sNum = est.de('num', 'b', 'tot', 'tot');
+    const celdas = [celdaXml(col(1) + filaTot, tot.etiqueta, sEt)];
     for (let j = 1; j < ncol; j++) {
       const ref = col(j + 1) + filaTot;
-      if (j < tot.desde) { celdas.push(`<c r="${ref}" s="${S_.totEtiqueta}"/>`); continue; }
+      if (j < tot.desde) { celdas.push(`<c r="${ref}" s="${sEt}"/>`); continue; }
       const rango = `${col(j + 1)}${filaCab + 1}:${col(j + 1)}${ultimaDato}`;
       // valor ya calculado (todo visible) para que se vea aunque el lector no recalcule
       const suma = filas.slice(1).reduce((a, f) => a + (typeof valorDe(f[j]) === 'number' ? valorDe(f[j]) : 0), 0);
-      celdas.push(`<c r="${ref}" s="${S_.totNum}"><f>SUBTOTAL(109,${rango})</f><v>${Math.round(suma * 100) / 100}</v></c>`);
+      celdas.push(`<c r="${ref}" s="${sNum}"><f>SUBTOTAL(109,${rango})</f><v>${Math.round(suma * 100) / 100}</v></c>`);
     }
     xml.push(`<row r="${filaTot}">${celdas.join('')}</row>`);
   }
@@ -94,24 +131,20 @@ function armarHoja(h, n) {
       const largo = typeof v === 'number' ? String(Math.round(v)).length * 1.35 + 4 : String(v).length;
       w = Math.max(w, largo + (i === 0 ? 4 : 1));
     });
-    anchos.push(Math.min(h.tabla ? 42 : 60, Math.ceil(w)));
+    anchos.push(Math.min(h.tabla ? (h.tabla.anchoMax || 42) : 60, Math.ceil(w)));
   }
   const cols = `<cols>${anchos.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`;
 
   const rels = [];
   let tablaXml = null, dibujoXml = null, graficoXml = null;
   if (h.tabla) {
-    // La fila "Total filtrado" va justo debajo, FUERA de la Tabla: SUBTOTAL ignora
-    // igual las filas ocultas por el filtro, y así el gráfico la lee en Excel y en
-    // LibreOffice (LibreOffice no grafica la fila de totales integrada de una Tabla).
-    const refTabla = `A${filaCab}:${col(ncol)}${ultimaDato}`;
     const columnas = filas[0].concat(Array(ncol - filas[0].length).fill(''))
       .map((c, j) => `<tableColumn id="${j + 1}" name="${xmlEsc(c || `Col${j + 1}`)}"/>`);
     tablaXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${n}" name="${h.tabla.nombre}" displayName="${h.tabla.nombre}" ref="${refTabla}">
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${n}" name="${h.tabla.nombre}" displayName="${h.tabla.nombre}" ref="A${filaCab}:${col(ncol)}${ultimaDato}">
 <autoFilter ref="A${filaCab}:${col(ncol)}${ultimaDato}"/>
 <tableColumns count="${ncol}">${columnas.join('')}</tableColumns>
-<tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>
+<tableStyleInfo name="CierreGris" showFirstColumn="0" showLastColumn="0" showRowStripes="${h.tabla.franjas === false ? 0 : 1}" showColumnStripes="0"/>
 </table>`;
     rels.push({ id: 'rIdT', tipo: TIPO('table'), destino: `../tables/table${n}.xml` });
   }
@@ -130,12 +163,12 @@ function armarHoja(h, n) {
 <c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>
 <c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>
 <c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>${xmlEsc(tot.etiqueta)}</c:v></c:tx>
-<c:spPr><a:solidFill><a:srgbClr val="2E6DA4"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/>
+<c:spPr><a:solidFill><a:srgbClr val="${GRIS.barra}"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/>
 <c:cat><c:strRef><c:f>${xmlEsc(fCats)}</c:f><c:strCache><c:ptCount val="${cats.length}"/>${cats.map((c, i) => `<c:pt idx="${i}"><c:v>${xmlEsc(c)}</c:v></c:pt>`).join('')}</c:strCache></c:strRef></c:cat>
 <c:val><c:numRef><c:f>${xmlEsc(fVals)}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${Math.round(v * 100) / 100}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val>
 </c:ser><c:gapWidth val="60"/><c:axId val="5001"/><c:axId val="5002"/></c:barChart>
 <c:catAx><c:axId val="5001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="5002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>
-<c:valAx><c:axId val="5002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln w="6350"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="5001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>
+<c:valAx><c:axId val="5002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln w="6350"><a:solidFill><a:srgbClr val="E0E0E0"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="5001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>
 </c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>`;
     // a la derecha de la tabla, a la altura del encabezado: queda a la vista al filtrar
     const c0 = ncol + 1, r0 = filaCab - 1;
@@ -152,8 +185,9 @@ function armarHoja(h, n) {
 
   const hoja = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${NS_R}">
-<sheetViews><sheetView workbookViewId="0"${h.tabla ? ' showGridLines="0"' : ''}><pane ySplit="${filaCab}" topLeftCell="A${filaCab + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+${h.tabla ? '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' : ''}<sheetViews><sheetView workbookViewId="0"${h.tabla ? ' showGridLines="0"' : ''}><pane ySplit="${filaCab}" topLeftCell="A${filaCab + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
 ${cols}<sheetData>${xml.join('')}</sheetData>
+${h.tabla ? '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>' : ''}
 ${dibujoXml ? '<drawing r:id="rIdD"/>' : ''}${tablaXml ? '<tableParts count="1"><tablePart r:id="rIdT"/></tableParts>' : ''}</worksheet>`;
   return { hoja, rels, tablaXml, dibujoXml, graficoXml };
 }
@@ -163,7 +197,8 @@ const relsXml = rels => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 function construirExcel(hojas) {         // hojas: [{nombre, filas, intro?, tabla?, grafico?}]
   const zip = new JSZip();
-  const partes = hojas.map((h, i) => armarHoja(h, i + 1));
+  const est = registroEstilos();
+  const partes = hojas.map((h, i) => armarHoja(h, i + 1, est));
   const extra = [];
   partes.forEach((p, i) => {
     if (p.tablaXml) extra.push(`<Override PartName="/xl/tables/table${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`);
@@ -190,17 +225,20 @@ ${hojas.map((h, i) => `<sheet name="${xmlEsc(h.nombre).slice(0, 31)}" sheetId="$
     ...hojas.map((_, i) => ({ id: `rId${i + 1}`, tipo: TIPO('worksheet'), destino: `worksheets/sheet${i + 1}.xml` })),
     { id: 'rIdS', tipo: TIPO('styles'), destino: 'styles.xml' }
   ]));
-  // 0 normal · 1 negrita · 2 título · 3 nota · 4 número · 5 porcentaje
-  // 6 etiqueta de totales · 7 número de totales · 8 encabezado de tabla (azul, letra blanca)
+  const solido = c => `<fill><patternFill patternType="solid"><fgColor rgb="${c}"/><bgColor indexed="64"/></patternFill></fill>`;
+  const linea = (lado, c) => `<border><${lado} style="thin"><color rgb="${c}"/></${lado}></border>`;
+  // La Tabla usa el estilo "CierreGris": encabezado gris medio y franjas gris muy claro.
   xl.file('styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;;-0.0&quot;%&quot;;0.0&quot;%&quot;"/></numFmts>
-<fonts count="5"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="FF1F3864"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF595959"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
-<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill></fills>
-<borders count="2"><border/><border><top style="thin"><color rgb="FF1F4E79"/></top></border></borders>
+<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;;-0.0&quot;%&quot;;0.0&quot;%&quot;"/><numFmt numFmtId="166" formatCode=";;;"/></numFmts>
+<fonts count="4"><font><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="${GRIS.nota}"/><name val="Calibri"/></font></fonts>
+<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${solido(GRIS.franja)}${solido(GRIS.cab)}${solido(GRIS.tot)}</fills>
+<borders count="3"><border/>${linea('bottom', GRIS.linea)}${linea('top', GRIS.linea)}</borders>
 <cellStyleXfs count="1"><xf/></cellStyleXfs>
-<cellXfs count="9"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/><xf xfId="0" fontId="2" applyFont="1"/><xf xfId="0" fontId="3" applyFont="1"/><xf xfId="0" numFmtId="164" applyNumberFormat="1"/><xf xfId="0" numFmtId="165" applyNumberFormat="1"/><xf xfId="0" fontId="1" fillId="3" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/><xf xfId="0" fontId="1" fillId="3" borderId="1" numFmtId="164" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/><xf xfId="0" fontId="4" fillId="2" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf></cellXfs>
+<cellXfs count="${est.cuantos()}">${est.xml()}</cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+<dxfs count="2"><dxf><font><b/><color rgb="${GRIS.texto}"/></font><fill><patternFill patternType="solid"><bgColor rgb="${GRIS.cab}"/></patternFill></fill><border><bottom style="thin"><color rgb="${GRIS.linea}"/></bottom></border></dxf><dxf><fill><patternFill patternType="solid"><bgColor rgb="${GRIS.franja}"/></patternFill></fill></dxf></dxfs>
+<tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"><tableStyle name="CierreGris" pivot="0" count="2"><tableStyleElement type="headerRow" dxfId="0"/><tableStyleElement type="firstRowStripe" dxfId="1"/></tableStyle></tableStyles>
 </styleSheet>`);
   const ws = xl.folder('worksheets');
   partes.forEach((p, i) => {

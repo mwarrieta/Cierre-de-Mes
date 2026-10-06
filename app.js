@@ -2451,27 +2451,45 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const colMes0 = 5;                                // TAG, Grupo, Punto, Variable, Unidad, meses…
 
   // ---- 1 · Resumen anual: una fila por punto y lectura, en Tabla con filtros ----
-  // Sin filas de subtotal intercaladas: romperían los filtros. La fila de totales
-  // de la Tabla usa SUBTOTAL, así suma solo lo que queda visible al filtrar.
+  // Sin filas de subtotal intercaladas: romperían los filtros. La fila "Total filtrado"
+  // usa SUBTOTAL, así suma solo lo que queda visible al filtrar.
   const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
   for (const v of filasVar)
     resumen.push([v.tag, (v.grupos.length ? v.grupos : [v.grupo]).join(' · '), v.punto, v.variable,
       UNIDAD[v.unidad] || v.unidad, ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
-  // Cada fila repite TAG, punto y variable: así el filtro nunca separa una fila de su punto.
-  // Importada (kWh+) y exportada (kWh-) quedan en bloques seguidos dentro del punto.
+  // TAG, grupo, punto y unidad se VEN una vez por punto, y la variable una vez por
+  // bloque de tres filas. El valor sigue en todas las celdas (oculto con formato ;;;)
+  // para que filtrar por punto o variable no deje filas huérfanas. Cada punto
+  // alterna fondo blanco / gris claro, así se lee como un bloque.
   const detalle = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses, 'TOTAL']];
+  let puntoPrev = null, uPrev = null, gris = true;
   for (const v of filasVar) {
-    const id = [v.tag, v.grupo, v.punto, v.variable, UNIDAD[v.unidad] || v.unidad];
-    detalle.push([...id, 'Totalizador', ...meses.map(m => redondear(v.lect[mesSiguiente(m)])), '']);
-    detalle.push([...id, 'Consumo del mes', ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
-    detalle.push([...id, 'Var. % vs mes anterior', ...meses.map((m, i) => {
-      if (i === 0) return '';
-      const a = v.cons[meses[i - 1]], b = v.cons[m];
-      // en puntos porcentuales: -62,8 se lee solo
-      return (a && b) ? { v: Number((100 * (b - a) / a).toFixed(1)), s: 'pct' } : '';
-    }), '']);
+    const nuevoPunto = v.punto !== puntoPrev;
+    if (nuevoPunto) { gris = !gris; puntoPrev = v.punto; }
+    const u = UNIDAD[v.unidad] || v.unidad;
+    const filasBloque = [
+      ['Totalizador', ...meses.map(m => redondear(v.lect[mesSiguiente(m)])), ''],
+      ['Consumo del mes', ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))],
+      ['Var. % vs mes anterior', ...meses.map((m, i) => {
+        if (i === 0) return '';
+        const a = v.cons[meses[i - 1]], b = v.cons[m];
+        return (a && b) ? { v: Number((100 * (b - a) / a).toFixed(1)), s: 'pct' } : '';   // en puntos %
+      }), '']
+    ];
+    filasBloque.forEach((resto, k) => {
+      const verPunto = nuevoPunto && k === 0;
+      const fila = [
+        { v: v.tag, oculto: !verPunto }, { v: v.grupo, oculto: !verPunto }, { v: v.punto, oculto: !verPunto },
+        { v: v.variable, oculto: k !== 0 },
+        // una vez por punto (o si cambia dentro del punto); la Var. % va en %, no en kWh
+        { v: u, oculto: !(k === 0 && (verPunto || u !== uPrev)) },
+        ...resto];
+      fila.gris = gris;
+      detalle.push(fila);
+    });
+    uPrev = u;
   }
 
   // ---- 3 · Lecturas: una fila por lectura, tal como se tomó ----
@@ -2483,27 +2501,52 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     lecturas.push([nombrePeriodo(f.periodo).replace(/^./, c => c.toUpperCase()), fechaExcel(f.fecha_lectura),
       f.grupo || '', f.punto, f.tag || '', f.variable, UNIDAD[f.unidad] || f.unidad,
       f.sin_dato ? 'sin dato' : (f.valor === null ? '' : Number(f.valor)),
-      f.observacion || '', Number(f.foto_total) || 0, gente[f.tomada_por] || '']);
+      f.observacion || '', { v: Number(f.foto_total) || 0, s: 'ent' },
+      // las cargadas desde la planilla histórica no tienen autor
+      gente[f.tomada_por] || (f.origen === 'importacion' ? 'Importado' : (f.tomada_por ? 'Usuario eliminado' : ''))]);
+
+  // ---- 4 · Avisos de los puntos de esta planilla ----
+  // Entran los que siguen pendientes y los abiertos desde el inicio del periodo.
+  paso('Consultando avisos…');
+  const puntosPlanilla = new Set(cons.map(c => c.punto_id));
+  const { data: avData, error: avErr } = await sb.from('v_avisos').select('*')
+    .order('abierto_en', { ascending: false }).limit(2000);
+  if (avErr) throw avErr;
+  const finPeriodo = mesSiguiente(mesSiguiente(hasta));      // incluye la toma que cierra el último mes
+  const avisos = (avData || []).filter(a => puntosPlanilla.has(a.punto_id) &&
+    (a.estado !== 'resuelto' || (a.abierto_en >= desde && a.abierto_en < finPeriodo)) &&
+    (a.abierto_en < finPeriodo));
+  const mayus = t => t ? String(t).replace(/^./, c => c.toUpperCase()) : '';
+  const hojaAvisos = [['N.º', 'Abierto', 'Grupo', 'Punto', 'Categoría', 'Descripción', 'Severidad',
+                       'Estado', 'Abierto por', 'Resuelto', 'Resuelto por', 'Resolución']];
+  for (const a of avisos)
+    hojaAvisos.push([{ v: a.id, s: 'ent' }, fechaExcel(a.abierto_en), (a.grupos || []).join(' · '), a.punto,
+      a.categoria || '', a.descripcion || '', mayus(a.severidad), mayus(a.estado), a.abierto_por_nombre || '',
+      a.resuelto_en ? fechaExcel(a.resuelto_en) : '', a.resuelto_por_nombre || '', a.obs_resolucion || '']);
 
   const usados = new Set();
   const hojas = [
     { nombre: nombreHoja('Resumen anual', usados), filas: resumen,
-      intro: [`Resumen anual de consumos · ${rango} · ${alcanceTxt}`,
-        'Cada mes es el consumo del mes: la diferencia entre la lectura que cierra el mes y la del mes anterior. TOTAL suma los meses del periodo.',
-        'Filtra con los botones ▼ del encabezado (Grupo, Punto, Variable: importada kWh+ / exportada kWh-). La fila final y el gráfico suman solo las filas visibles: filtra una sola Unidad para que el total tenga sentido.',
+      intro: [`Resumen anual · ${rango} · ${alcanceTxt}`,
+        'Consumo de cada mes = lectura que cierra el mes − lectura anterior.',
+        'Total filtrado y gráfico suman solo las filas visibles: filtra una sola Unidad.',
         `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.` +
-          (nProv ? ` ${nProv} valores son provisionales: falta la lectura del mes siguiente.` : '')],
+          (nProv ? ` ${nProv} valores provisionales (falta la lectura siguiente).` : '')],
       tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: colMes0 } },
       grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + meses.length - 1 } },
     { nombre: nombreHoja('Detalle mensual', usados), filas: detalle,
       intro: [`Detalle mensual · ${rango} · ${alcanceTxt}`,
-        'Por cada punto y lectura, tres filas: Totalizador (lo que marca el medidor al cerrar el mes), Consumo del mes (diferencia con el totalizador anterior) y Var. % (cambio del consumo respecto del mes anterior).',
-        'Filtra la columna Fila por "Consumo del mes" para ver solo los consumos. Importada (kWh+) y exportada (kWh-) van seguidas dentro de cada punto.'],
-      tabla: { nombre: 'Detalle' } },
+        'Totalizador: lo que marca el medidor al cerrar el mes. Consumo: diferencia con el mes anterior. Var. %: cambio del consumo.'],
+      tabla: { nombre: 'Detalle', franjas: false } },
     { nombre: nombreHoja('Lecturas', usados), filas: lecturas,
       intro: ['Lecturas tomadas en terreno',
-        'Cada fila es una lectura tal como se registró. El periodo es el mes de la toma: la lectura de octubre cierra el consumo de septiembre. Fotos indica cuántas fotos respaldan la lectura.'],
-      tabla: { nombre: 'Lecturas' } }
+        'Una fila por lectura. El periodo es el mes de la toma: la lectura de octubre cierra septiembre.'],
+      tabla: { nombre: 'Lecturas', anchoMax: 50 } },
+    { nombre: nombreHoja('Avisos', usados), filas: hojaAvisos.length > 1 ? hojaAvisos
+        : [...hojaAvisos, ['', '', '', '', '', 'Sin avisos para estos puntos en el periodo']],
+      intro: [`Avisos de los puntos · ${rango} · ${alcanceTxt}`,
+        'Pendientes y los abiertos dentro del periodo.'],
+      tabla: { nombre: 'Avisos', anchoMax: 60 } }
   ];
 
   paso('Escribiendo el archivo…');

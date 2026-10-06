@@ -23,7 +23,9 @@ function col(n) {                       // 1 -> A, 27 -> AA
 //     grafico: { titulo, desde, hasta } }
 // filas[0] es el encabezado. Una celda puede ser un valor o { v, s: 'num'|'ent'|'pct'|'txt', oculto }.
 // "oculto" deja el valor en la celda (el filtro lo sigue viendo) pero no lo muestra.
-// Una fila con la propiedad .gris lleva fondo gris claro (franjas por bloque).
+// Una fila con la propiedad .gris lleva fondo gris claro (franjas por bloque) y con
+// .fuente = 'cons' su texto va en azul sobrio. Los números se muestran sin decimales
+// (el valor guardado conserva sus decimales: las sumas no pierden precisión).
 const NS_C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -31,9 +33,9 @@ const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const TIPO = t => `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${t}`;
 
 // Paleta: grises neutros. Franja muy clara, encabezado un poco más oscuro.
-const GRIS = { franja: 'FFF5F5F5', cab: 'FFD9D9D9', tot: 'FFEDEDED', linea: 'FFA6A6A6', texto: 'FF262626', nota: 'FF595959', barra: '7F7F7F' };
+const GRIS = { franja: 'FFF5F5F5', cab: 'FFBFBFBF', tot: 'FFE7E7E7', linea: 'FF8C8C8C', texto: 'FF262626', nota: 'FF595959', barra: '7F7F7F', cons: 'FF1F5C99' };
 const FMT = { gen: 0, num: 164, ent: 3, pct: 165, oculto: 166 };
-const FUENTE = { n: 0, b: 1, titulo: 2, nota: 3 };
+const FUENTE = { n: 0, b: 1, titulo: 2, nota: 3, cons: 4 };
 const RELLENO = { no: 0, franja: 2, cab: 3, tot: 4 };
 const BORDE = { no: 0, cab: 1, tot: 2 };
 
@@ -97,7 +99,8 @@ function armarHoja(h, n, est) {
         if (!h.tabla) { celdas.push(celdaXml(col(j + 1) + r, v, 0)); continue; }
         const o = (c && typeof c === 'object') ? c : {};
         const fmt = o.oculto ? 'oculto' : (o.s || (typeof v === 'number' ? 'num' : 'gen'));
-        const s = (fmt === 'gen' && relleno === 'no') ? 0 : est.de(fmt === 'txt' ? 'gen' : fmt, 'n', relleno);
+        const fuente = o.fuente || fila.fuente || 'n';
+        const s = (fmt === 'gen' && relleno === 'no' && fuente === 'n') ? 0 : est.de(fmt === 'txt' ? 'gen' : fmt, fuente, relleno);
         celdas.push(celdaXml(col(j + 1) + r, v, s));
       }
     }
@@ -230,8 +233,8 @@ ${hojas.map((h, i) => `<sheet name="${xmlEsc(h.nombre).slice(0, 31)}" sheetId="$
   // La Tabla usa el estilo "CierreGris": encabezado gris medio y franjas gris muy claro.
   xl.file('styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;;-0.0&quot;%&quot;;0.0&quot;%&quot;"/><numFmt numFmtId="166" formatCode=";;;"/></numFmts>
-<fonts count="4"><font><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="${GRIS.nota}"/><name val="Calibri"/></font></fonts>
+<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="0.0&quot;%&quot;;-0.0&quot;%&quot;;0.0&quot;%&quot;"/><numFmt numFmtId="166" formatCode=";;;"/></numFmts>
+<fonts count="5"><font><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="${GRIS.texto}"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="${GRIS.nota}"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="${GRIS.cons}"/><name val="Calibri"/></font></fonts>
 <fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${solido(GRIS.franja)}${solido(GRIS.cab)}${solido(GRIS.tot)}</fills>
 <borders count="3"><border/>${linea('bottom', GRIS.linea)}${linea('top', GRIS.linea)}</borders>
 <cellStyleXfs count="1"><xf/></cellStyleXfs>

@@ -2756,7 +2756,6 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const fechaExcel = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago',
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
   const alcanceTxt = filtros.grupo ? `grupo ${filtros.grupo}` : 'todos los grupos';
-  const nProv = cons.filter(c => !c.completo).length;
   const colMes0 = 5;                                // TAG, Grupo, Punto, Variable, Unidad, meses…
 
   // ---- 1 · Resumen anual: una fila por punto y lectura, en Tabla con filtros ----
@@ -2796,6 +2795,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
         { v: u, oculto: !(k === 0 && (verPunto || u !== uPrev)) },
         ...resto];
       fila.gris = gris;
+      if (k === 1) fila.fuente = 'cons';      // el consumo del mes resalta, sutil
       detalle.push(fila);
     });
     uPrev = u;
@@ -2839,8 +2839,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       intro: [`Resumen anual · ${rango} · ${alcanceTxt}`,
         'Consumo de cada mes = lectura que cierra el mes − lectura anterior.',
         'Total filtrado y gráfico suman solo las filas visibles: filtra una sola Unidad.',
-        `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.` +
-          (nProv ? ` ${nProv} valores provisionales (falta la lectura siguiente).` : '')],
+        `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.`],
       tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: colMes0 } },
       grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + meses.length - 1 } },
     { nombre: nombreHoja('Detalle mensual', usados), filas: detalle,

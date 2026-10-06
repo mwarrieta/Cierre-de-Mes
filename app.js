@@ -2346,10 +2346,11 @@ async function imprimirInforme() {
 
 /* ===================================================================
    PLANILLA ANUAL EN EXCEL
-   Dos miradas del mismo dato, porque sirven para cosas distintas:
-   · Resumen anual  → una fila por punto, para leer y mandar.
+   Tres hojas, cada una como Tabla de Excel con filtros:
+   · Resumen anual  → una fila por punto y lectura, con totales filtrables y gráfico.
    · Detalle mensual → totalizador, consumo y variación, para revisar.
-   Más una pestaña por grupo, para mandarle a cada sector solo lo suyo.
+   · Lecturas        → cada lectura tal como se tomó.
+   El grupo se filtra dentro de la Tabla (o al descargar), ya no hay una hoja por grupo.
    =================================================================== */
 
 // PostgREST devuelve 1.000 filas como máximo. Con dos años de lecturas eso
@@ -2440,122 +2441,70 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
 
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
 
-  // ---- 1 · Resumen anual: bloques por grupo y unidad, con subtotal ----
-  const resumen = [['TAG', 'Punto', 'Variable', 'Unidad', 'Grupos', ...cabMeses, 'TOTAL']];
-  // Sumar kWh con m3 no significa nada: cada grupo cierra con una suma POR UNIDAD.
-  // Y no hay TOTAL GENERAL a propósito: los puntos tienen naturalezas distintas
-  // (unos en serie, otros en paralelo del mismo circuito), así que un gran total
-  // sería un número que nadie puede defender. Los grupos son vistas de reporte.
-  let grupoActual = null, acumGrupo = {};
-  const cerrarGrupo = () => {
-    if (grupoActual === null) return;
-    for (const [b, acum] of Object.entries(acumGrupo)) {
-      resumen.push(['', 'Suma del grupo (referencial)', b, acum.__u, '',
-        ...meses.map(m => redondear(acum[m])),
-        redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
-    }
-    resumen.push([]);
-  };
-  for (const v of filasVar) {
-    if (v.grupo !== grupoActual) {
-      cerrarGrupo();
-      grupoActual = v.grupo; acumGrupo = {};
-      resumen.push([`GRUPO: ${grupoActual}`]);
-    }
-    (acumGrupo[v.bloque] ||= { __u: v.unidad });
-    meses.forEach(m => { acumGrupo[v.bloque][m] = (acumGrupo[v.bloque][m] || 0) + (v.cons[m] || 0); });
-    resumen.push([v.tag, v.punto, v.variable, v.unidad, (v.grupos || []).join(' · '),
-      ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
-  }
-  cerrarGrupo();
+  const rango = desde.slice(0, 7) === hasta.slice(0, 7) ? nombrePeriodo(desde)
+              : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
+  // fecha y hora de Chile, en 24 h y sin "a. m.": se lee y se ordena mejor en Excel
+  const fechaExcel = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago',
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
+  const alcanceTxt = filtros.grupo ? `grupo ${filtros.grupo}` : 'todos los grupos';
+  const nProv = cons.filter(c => !c.completo).length;
+  const colMes0 = 5;                                // TAG, Grupo, Punto, Variable, Unidad, meses…
+
+  // ---- 1 · Resumen anual: una fila por punto y lectura, en Tabla con filtros ----
+  // Sin filas de subtotal intercaladas: romperían los filtros. La fila de totales
+  // de la Tabla usa SUBTOTAL, así suma solo lo que queda visible al filtrar.
+  const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
+  for (const v of filasVar)
+    resumen.push([v.tag, (v.grupos.length ? v.grupos : [v.grupo]).join(' · '), v.punto, v.variable,
+      UNIDAD[v.unidad] || v.unidad, ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
-  const detalle = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses]];
+  // Cada fila repite TAG, punto y variable: así el filtro nunca separa una fila de su punto.
+  // Importada (kWh+) y exportada (kWh-) quedan en bloques seguidos dentro del punto.
+  const detalle = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', 'Fila', ...cabMeses, 'TOTAL']];
   for (const v of filasVar) {
-    detalle.push([v.tag, v.grupo, v.punto, v.variable, v.unidad, 'Totalizador',
-      ...meses.map(m => redondear(v.lect[mesSiguiente(m)]))]);
-    detalle.push(['', '', '', '', '', 'Consumo del mes',
-      ...meses.map(m => redondear(v.cons[m]))]);
-    detalle.push(['', '', '', '', '', 'Var. % vs mes anterior', ...meses.map((m, i) => {
+    const id = [v.tag, v.grupo, v.punto, v.variable, UNIDAD[v.unidad] || v.unidad];
+    detalle.push([...id, 'Totalizador', ...meses.map(m => redondear(v.lect[mesSiguiente(m)])), '']);
+    detalle.push([...id, 'Consumo del mes', ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
+    detalle.push([...id, 'Var. % vs mes anterior', ...meses.map((m, i) => {
       if (i === 0) return '';
       const a = v.cons[meses[i - 1]], b = v.cons[m];
-      // en puntos porcentuales: -62,8 se lee solo; -0,628 obliga a formatear la celda
-      return (a && b) ? Number((100 * (b - a) / a).toFixed(1)) : '';
-    })]);
-    detalle.push(['', '', '', '', '', 'Estado', ...meses.map(m => v.estado[m] || '')]);
+      // en puntos porcentuales: -62,8 se lee solo
+      return (a && b) ? { v: Number((100 * (b - a) / a).toFixed(1)), s: 'pct' } : '';
+    }), '']);
   }
 
-  // ---- 3 · una hoja por grupo ----
+  // ---- 3 · Lecturas: una fila por lectura, tal como se tomó ----
+  const gente = S.catalogo?.gente || {};
+  const lecturas = [['Periodo', 'Fecha de lectura', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad',
+                     'Valor', 'Observación', 'Fotos', 'Usuario']];
+  // v_respaldo trae una fila por foto: acá basta una por lectura.
+  for (const f of new Map(lect.map(f => [f.lectura_id, f])).values())
+    lecturas.push([nombrePeriodo(f.periodo).replace(/^./, c => c.toUpperCase()), fechaExcel(f.fecha_lectura),
+      f.grupo || '', f.punto, f.tag || '', f.variable, UNIDAD[f.unidad] || f.unidad,
+      f.sin_dato ? 'sin dato' : (f.valor === null ? '' : Number(f.valor)),
+      f.observacion || '', Number(f.foto_total) || 0, gente[f.tomada_por] || '']);
+
   const usados = new Set();
   const hojas = [
-    { nombre: nombreHoja('Resumen anual', usados), filas: resumen },
-    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle }
+    { nombre: nombreHoja('Resumen anual', usados), filas: resumen,
+      intro: [`Resumen anual de consumos · ${rango} · ${alcanceTxt}`,
+        'Cada mes es el consumo del mes: la diferencia entre la lectura que cierra el mes y la del mes anterior. TOTAL suma los meses del periodo.',
+        'Filtra con los botones ▼ del encabezado (Grupo, Punto, Variable: importada kWh+ / exportada kWh-). La fila final y el gráfico suman solo las filas visibles: filtra una sola Unidad para que el total tenga sentido.',
+        `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.` +
+          (nProv ? ` ${nProv} valores son provisionales: falta la lectura del mes siguiente.` : '')],
+      tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: colMes0 } },
+      grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + meses.length - 1 } },
+    { nombre: nombreHoja('Detalle mensual', usados), filas: detalle,
+      intro: [`Detalle mensual · ${rango} · ${alcanceTxt}`,
+        'Por cada punto y lectura, tres filas: Totalizador (lo que marca el medidor al cerrar el mes), Consumo del mes (diferencia con el totalizador anterior) y Var. % (cambio del consumo respecto del mes anterior).',
+        'Filtra la columna Fila por "Consumo del mes" para ver solo los consumos. Importada (kWh+) y exportada (kWh-) van seguidas dentro de cada punto.'],
+      tabla: { nombre: 'Detalle' } },
+    { nombre: nombreHoja('Lecturas', usados), filas: lecturas,
+      intro: ['Lecturas tomadas en terreno',
+        'Cada fila es una lectura tal como se registró. El periodo es el mes de la toma: la lectura de octubre cierra el consumo de septiembre. Fotos indica cuántas fotos respaldan la lectura.'],
+      tabla: { nombre: 'Lecturas' } }
   ];
-  const grupos = [...new Set(filasVar.flatMap(v => v.grupos.length ? v.grupos : ['Sin grupo']))]
-                   .sort(compararGrupos);
-  for (const g of grupos) {
-    const suyas = filasVar.filter(v => (v.grupos.length ? v.grupos : ['Sin grupo']).includes(g));
-    const f = [[`GRUPO: ${g}`], [], ['TAG', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
-    for (const v of suyas)
-      f.push([v.tag, v.punto, v.variable, v.unidad,
-        ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
-    const porUnidad = {};
-    for (const v of suyas) { (porUnidad[v.bloque] ||= { __u: v.unidad }); meses.forEach(m => porUnidad[v.bloque][m] = (porUnidad[v.bloque][m] || 0) + (v.cons[m] || 0)); }
-    f.push([]);
-    for (const [b, acum] of Object.entries(porUnidad))
-      f.push(['', 'Suma del grupo (referencial)', b, acum.__u,
-        ...meses.map(m => redondear(acum[m])), redondear(meses.reduce((s, m) => s + (acum[m] || 0), 0))]);
-    hojas.push({ nombre: nombreHoja(g, usados), filas: f });
-  }
-
-  // ---- 4 · lecturas y 5 · consumos en formato largo ----
-  hojas.push({ nombre: nombreHoja('Lecturas', usados), filas: [
-    ['Periodo', 'Fecha de lectura', 'Fecha estimada', 'Grupo', 'Punto', 'TAG', 'Variable',
-     'Unidad', 'Valor', 'Sin dato', 'Reinicio', 'Consumo declarado', 'Estado', 'Origen',
-     'Observación', 'Obs. validación', 'Fotos'],
-    // v_respaldo trae una fila por foto: acá basta una por lectura.
-    ...[...new Map(lect.map(f => [f.lectura_id, f])).values()].map(f => [f.periodo, String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
-      f.fecha_estimada ? 'sí' : 'no', f.grupo || '', f.punto, f.tag || '', f.variable,
-      f.unidad, f.valor === null ? '' : Number(f.valor), f.sin_dato ? 'sí' : 'no',
-      f.es_reset ? (f.tipo_reset || 'sí') : 'no',
-      f.consumo_manual === null || f.consumo_manual === undefined ? '' : Number(f.consumo_manual),
-      f.estado, f.origen, f.observacion || '', f.obs_validacion || '', Number(f.foto_total) || 0])
-  ]});
-  hojas.push({ nombre: nombreHoja('Consumos', usados), filas: [
-    ['Mes', 'Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Consumo', 'Días', 'Método', 'Estado'],
-    ...cons.map(c => [c.mes, c.grupo || '', c.punto, c.tag || '', c.variable,
-      c.unidad_reporte, Number(c.consumo), c.dias_asignados, c.metodo,
-      c.completo ? 'cerrado' : 'provisional'])
-  ]});
-
-  // ---- 6 · calidad del dato ----
-  const cuenta = (arr, f) => arr.reduce((a, x) => { const k = f(x); a[k] = (a[k] || 0) + 1; return a; }, {});
-  const porMetodo = cuenta(cons, c => c.metodo);
-  const prov = cons.filter(c => !c.completo);
-  hojas.push({ nombre: nombreHoja('Calidad del dato', usados), filas: [
-    ['Concepto', 'Valor'],
-    ['Periodo', `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`],
-    ['Generado', new Date().toLocaleString('es-CL')],
-    ['Generado por', S.usuario.nombre],
-    ['Filtro de grupo', filtros.grupo || 'todos'],
-    ['Lecturas incluidas', 'las marcadas "Va al informe" en cada punto'],
-    ['Puntos', new Set(cons.map(c => c.punto_id)).size],
-    ['Valores de consumo', cons.length],
-    ['Lecturas incluidas', lect.length],
-    [],
-    ['Cómo se calculó cada consumo', ''],
-    ['directo (lectura del día 1)', porMetodo.directo || 0],
-    ['prorrateado (fecha corrida)', porMetodo.prorrateado || 0],
-    ['estimado (carga histórica)', porMetodo.estimado || 0],
-    [],
-    ['Valores provisionales', prov.length],
-    ['', 'Un mes queda cerrado cuando existe la lectura del mes siguiente.'],
-    [],
-    ['Cómo leer la planilla', ''],
-    ['', 'El consumo de un mes se reparte entre las lecturas que lo cubren, por días de calendario.'],
-    ['', 'En "Detalle mensual", el totalizador de un mes es la lectura tomada al comienzo del mes siguiente.'],
-    ...prov.slice(0, 200).map(c => ['provisional', `${c.mes} · ${c.punto} · ${c.variable}`])
-  ]});
 
   paso('Escribiendo el archivo…');
   const blob = await window.RESPALDO.construirExcel(hojas);
@@ -3886,8 +3835,8 @@ async function vistaGrupos(c) {
   const cuenta = {};
   for (const x of (gp || [])) cuenta[x.grupo_id] = (cuenta[x.grupo_id] || 0) + 1;
 
-  // Mover un grupo cambia el orden en que sale en TODOS lados: informes, Excel
-  // y las pestañas por grupo. Por eso se edita acá y no en cada pantalla.
+  // Mover un grupo cambia el orden en que sale en TODOS lados: informes y Excel.
+  // Por eso se edita acá y no en cada pantalla.
   async function mover(i, delta) {
     const j = i + delta;
     if (j < 0 || j >= grupos.length) return;
@@ -3905,8 +3854,7 @@ async function vistaGrupos(c) {
 
   zona.replaceChildren(
     el('p', { class: 'ayuda', text:
-      'El orden de esta lista es el orden en que salen los grupos en los informes, ' +
-      'en el Excel y en las pestañas por grupo.' }),
+      'El orden de esta lista es el orden en que salen los grupos en los informes y en el Excel.' }),
     tabla(
     ['#', 'Grupo', 'Qué incluye', 'Destinatario', 'Correos', 'Puntos', 'Frecuencia', ''],
     grupos.map((g, i) => [

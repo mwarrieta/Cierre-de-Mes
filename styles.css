@@ -1407,3 +1407,7 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .progreso-arriba{position:sticky;top:0;z-index:5;margin:0 0 12px;padding:12px 14px;font-weight:600;
   border:1px solid var(--acento);box-shadow:0 2px 8px rgba(0,0,0,.12)}
 .progreso-arriba[hidden]{display:none}
+
+/* n/c: no corresponde (apagado, distinto del s/d que sí falta) */
+.celda-cons.falta.nc{color:var(--ink-3);font-weight:400;font-style:italic;opacity:.7}
+.ficha-nc{margin-top:12px}

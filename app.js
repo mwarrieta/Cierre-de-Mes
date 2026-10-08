@@ -326,6 +326,7 @@ async function arrancar() {
   DB.pedirPersistencia();
   // Las bandas esperadas se refrescan solas, sin que nadie las espere.
   DB.refrescarBandas();
+  await cargarNC();
 
   await refrescarDatos();
   await actualizarConexion();
@@ -2132,7 +2133,10 @@ async function vistaConsumos(c) {
         .eq('sin_dato', true).gte('periodo', desde).lte('periodo', hasta);
       sinPoderLeer = new Set((r.data || []).map(x => x.variable_id));
     } catch { /* si falla, se listan todos juntos */ }
-    const faltantes = enAlcance.filter(v => !conDato.has(v.id) && !sinPoderLeer.has(v.id));
+    // Un punto que no corresponde en todo el periodo no es un faltante.
+    const mesesRango = []; for (let m = desde; m <= hasta; m = mesSiguiente(m)) mesesRango.push(m);
+    const todoNC = v => mesesRango.length > 0 && mesesRango.every(m => ncDe(v.punto.id, m));
+    const faltantes = enAlcance.filter(v => !conDato.has(v.id) && !sinPoderLeer.has(v.id) && !todoNC(v));
     const noLeidos = enAlcance.filter(v => !conDato.has(v.id) && sinPoderLeer.has(v.id));
 
     let avisos = [];
@@ -2346,13 +2350,15 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const avisosDe = new Map();
   for (const a of avisos) (avisosDe.get(a.punto_id) || avisosDe.set(a.punto_id, []).get(a.punto_id)).push(a);
   const juicios = new Map();
+  const porId0 = new Map(data.map(f => [f.variable_id, f]));
   for (const f of data) { const j = juzgarConsumo(f, bandas); if (j) juicios.set(f.variable_id + '|' + f.mes, j); }
   // Un mes sin valor dentro del periodo, para una lectura que sí tiene otros meses,
   // también es algo que revisar: falta una de las dos tomas que lo forman.
   const conValor = new Set(data.map(f => f.variable_id + '|' + f.mes));
   for (const id of new Set(data.map(f => f.variable_id)))
     for (const m of meses)
-      if (!conValor.has(id + '|' + m)) juicios.set(id + '|' + m, { nivel: 'warn', texto: 'sin dato', sinDato: true });
+      if (!conValor.has(id + '|' + m) && !ncDe(porId0.get(id)?.punto_id, m))
+        juicios.set(id + '|' + m, { nivel: 'warn', texto: 'sin dato', sinDato: true });
   // Pendiente = marcado y todavía sin corregir ni desestimar.
   const pend = [...juicios.keys()].filter(k => !revisiones.has(k));
   const mesCorto = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
@@ -2480,10 +2486,14 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const celda = (f, m, texto) => {
     const k = f.variable_id + '|' + m;
     const rev = revisiones.get(k), j = juicios.get(k);
+    // Sin valor: n/c si el punto no corresponde ese mes, s/d si el dato debía estar.
+    const vacia = texto === '—';
+    const nc = vacia ? ncDe(f.punto_id, m) : null;
+    if (vacia) texto = nc ? 'n/c' : 's/d';
     if (!abrir) return texto;
     return el('button', {
-      class: 'celda-cons' + (rev ? ' rev' : j && !j.sinDato ? ' ' + j.nivel : '') + (texto === '—' ? (rev ? ' falta' : ' falta pend') : ''),
-      title: rev ? `${nombreTipo[rev.tipo]}: ${rev.motivo}` : j ? j.texto : 'Ver lecturas',
+      class: 'celda-cons' + (rev ? ' rev' : j && !j.sinDato ? ' ' + j.nivel : '') + (vacia ? (nc ? ' falta nc' : rev ? ' falta' : ' falta pend') : ''),
+      title: nc ? 'No corresponde: ' + nc.motivo : rev ? `${nombreTipo[rev.tipo]}: ${rev.motivo}` : j ? j.texto : 'Ver lecturas',
       onclick: () => abrir({ variable_id: f.variable_id, mes: m })
     }, [el('span', { text: texto }),
         rev ? el('span', { class: 'marca-rev', title: 'Registro ' + (nombreTipo[rev.tipo] || 'revisado'), text: ' ✓' }) : null,
@@ -2604,7 +2614,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
               el('td', { class: 'd-fila', text: 'Totalizador' }),
               ...meses.map(m => {
                 const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(m));
-                return el('td', { class: 'num d-tot', text: t === undefined ? '—' : num(t) });
+                return el('td', { class: 'num d-tot', text: t === undefined ? vacioTxt(f.punto_id, m) : num(t) });
               }),
               vacio('num'),
               el('td', { class: 'd-rev' }, [circuloRev(f, meses, 2)])]),
@@ -2903,6 +2913,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
   cuerpo.append(el('div', { class: 'grid2 ficha-lecturas' }, [colAnterior, colEste]));
 
   // ---- 3 · la alerta de este registro ----
+  const pidNC = v ? v.punto.id : f?.punto_id;
+  const ncAqui = pidNC != null ? ncDe(pidNC, mes) : null;
   const caja = el('div', { class: 'card ficha-revision' });
   if (rev) {
     caja.append(
@@ -2924,7 +2936,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
         catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
       } }));
   }
-  if (!rev && puedo && (j || !f)) {
+  if (!rev && puedo && (j || !f) && !(ncAqui && !f)) {
     const motivo = el('textarea', { placeholder: f
       ? 'Por qué el valor está bien aunque salga del rango (obligatorio)'
       : 'Por qué no hay dato este mes (obligatorio)' });
@@ -2941,6 +2953,15 @@ async function verConsumo({ variable_id, mes }, ctx) {
       } }));
   }
   if (caja.childNodes.length) cuerpo.append(caja);
+
+  // ---- 3b · no corresponde (n/c) ----
+  if (pidNC != null && (ncAqui || (puedo && !f)))
+    cuerpo.append(el('div', { class: 'card ficha-nc' }, [
+      el('h4', { style: 'margin-top:0', text: ncAqui ? 'No corresponde este mes (n/c)' : '¿Este mes no corresponde?' }),
+      el('p', { class: 'ayuda', text: ncAqui ? ncAqui.motivo
+        : 'Si el equipo no estaba instalado o no estaba en faena, márcalo: la tabla muestra n/c en vez de s/d y no cuenta como pendiente.' }),
+      puedo ? el('button', { class: 'btn chico', text: ncAqui ? 'Ver o cambiar los meses n/c' : 'Marcar como no corresponde (n/c)',
+        onclick: () => gestionarNC(pidNC, puntoNombre, { mes, alCambiar: ctx.alCambiar }) }) : null]));
 
   // ---- 4 · avisos abiertos del punto ----
   const pid = v ? v.punto.id : f.punto_id;
@@ -3030,7 +3051,7 @@ async function imprimirInforme() {
       return el('tr', {}, [
         el('td', { text: f.punto }), el('td', { text: f.tag || '' }), el('td', { text: f.variable }),
         el('td', { text: UNIDAD[f.unidad_reporte] || f.unidad_reporte }),
-        ...meses.map((x, i) => el('td', { class: 'num', text: (m[x] === undefined ? '—' : num(m[x])) + (!conTotal && i === 0 ? marca : '') })),
+        ...meses.map((x, i) => el('td', { class: 'num', text: (m[x] === undefined ? vacioTxt(f.punto_id, x) : num(m[x])) + (!conTotal && i === 0 ? marca : '') })),
         conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null
       ]);
     });
@@ -3063,10 +3084,10 @@ async function imprimirInforme() {
       cuerpo.push(el('tbody', { class: 'd-bloque' }, [
         el('tr', { class: 'd-ini' }, [nombre, el('td', { class: 'd-fila', text: 'Totalizador' }),
           ...meses.map(x => { const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(x));
-            return el('td', { class: 'num', text: t === undefined ? '—' : num(t) }); }),
+            return el('td', { class: 'num', text: t === undefined ? vacioTxt(f.punto_id, x) : num(t) }); }),
           conTotal ? el('td', { class: 'num' }) : null]),
         el('tr', { class: 'd-cons' }, [el('td', { class: 'd-fila', text: filaConsumoTxt(f.grupo) }),
-          ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? '—' : num(m[x]) })),
+          ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? vacioTxt(f.punto_id, x) : num(m[x]) })),
           conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null]),
         el('tr', { class: 'd-fin' }, [el('td', { class: 'd-fila', text: 'Var. % vs mes anterior' }),
           ...meses.map((x, i) => {
@@ -3150,6 +3171,64 @@ const mesSiguiente = m => {
   d.setUTCMonth(d.getUTCMonth() + 1);
   return d.toISOString().slice(0, 10);
 };
+/* ---------- "No corresponde" (n/c) y "sin dato" (s/d) ----------
+   s/d: el dato debía existir y no está (o no se pudo leer).
+   n/c: el punto no existía, no estaba instalado o el equipo no estaba en faena ese mes.
+   Los meses n/c se guardan por punto (un generador es un punto) como rangos de meses. */
+async function cargarNC() {
+  try {
+    const { data, error } = await sb.from('no_corresponde').select('*').order('desde');
+    if (!error) S.nc = data || [];
+  } catch { /* sin conexión: se usa lo último que se tenía */ }
+  S.nc = S.nc || [];
+}
+const ncDe = (punto_id, mes) => (S.nc || []).find(r =>
+  r.punto_id === punto_id && mes >= r.desde && (!r.hasta || mes <= r.hasta)) || null;
+const vacioTxt = (punto_id, mes) => ncDe(punto_id, mes) ? 'n/c' : 's/d';
+
+function gestionarNC(punto_id, nombre, { mes = null, alCambiar = null } = {}) {
+  const hoy = new Date();
+  const meses = [];
+  for (let i = 0; i < 60; i++) meses.push(primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1)));
+  const ini = mes || meses[0];
+  if (!meses.includes(ini)) meses.push(ini);
+  const selDesde = el('select', {}, meses.map(m => el('option', { value: m, selected: m === ini || null, text: nombrePeriodo(m) })));
+  const selHasta = el('select', {}, [
+    el('option', { value: '', selected: !mes || null, text: 'Sin fecha de término (en adelante)' }),
+    ...meses.map(m => el('option', { value: m, selected: (mes && m === ini) || null, text: nombrePeriodo(m) }))]);
+  const motivo = el('input', { type: 'text', placeholder: 'Ej.: equipo no instalado · generador fuera de faena' });
+  const existentes = (S.nc || []).filter(r => r.punto_id === punto_id);
+  const cuerpo = el('div', {}, [
+    el('p', { class: 'ayuda', text:
+      'Marca los meses en que este punto no corresponde: no existía, no estaba instalado o el equipo no estaba en faena. ' +
+      'En las tablas y los informes aparece n/c (no corresponde) y no cuenta como pendiente. s/d es distinto: el dato debía estar y falta.' }),
+    existentes.length ? el('div', { class: 'seccion' }, [
+      el('h4', { text: 'Ya marcado' }),
+      ...existentes.map(r => el('div', { class: 'fila entre aviso-linea' }, [
+        el('span', { text: `${nombrePeriodo(r.desde)} → ${r.hasta ? nombrePeriodo(r.hasta) : 'en adelante'} · ${r.motivo}` }),
+        el('button', { class: 'btn chico peligro', text: 'Quitar', onclick: async () => {
+          const { error } = await sb.from('no_corresponde').delete().eq('id', r.id);
+          if (error) return toast(error.message, true);
+          await cargarNC(); toast('Marca n/c quitada');
+          cerrarModal(); if (alCambiar) await alCambiar();
+        } })]))]) : null,
+    el('h4', { text: 'Agregar' }),
+    el('div', { class: 'fila' }, [el('label', { class: 'crece', text: 'Desde' }, [selDesde]), el('label', { class: 'crece', text: 'Hasta' }, [selHasta])]),
+    el('label', { text: 'Motivo (obligatorio)' }, [motivo]),
+    el('button', { class: 'btn primario', text: 'Marcar como n/c', onclick: async e => {
+      if (!motivo.value.trim()) return toast('Escribe el motivo', true);
+      const hasta = selHasta.value || null;
+      if (hasta && hasta < selDesde.value) return toast('"Hasta" no puede ser anterior a "Desde"', true);
+      e.target.disabled = true;
+      const { error } = await sb.from('no_corresponde').insert({ punto_id, desde: selDesde.value, hasta, motivo: motivo.value.trim() });
+      if (error) { e.target.disabled = false; return toast(error.message, true); }
+      await cargarNC(); cerrarModal(); toast('Marcado como no corresponde (n/c)');
+      if (alCambiar) await alCambiar();
+    } })
+  ]);
+  modal('No corresponde · ' + nombre, cuerpo, { subtitulo: 'Meses en que este punto no aplica' });
+}
+
 // Excel no acepta : \ / ? * [ ] en el nombre de una hoja, ni más de 31 caracteres.
 const nombreHoja = (s, usados) => {
   let base = String(s).replace(/[:\\\/\?\*\[\]]/g, '-').slice(0, 31) || 'Hoja';
@@ -3192,8 +3271,8 @@ async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
     const total = meses.reduce((a, m) => a + (v.cons[m] || 0), 0);
     const u = UNIDAD[v.unidad] || v.unidad || '';
     body.push([{ content: `${v.punto}\n${[v.tag, v.variable, u].filter(Boolean).join(' · ')}`, rowSpan: 3 },
-      'Totalizador', ...meses.map(m => fmt(v.lect[mesSiguiente(m)])), '']);
-    body.push([filaConsumoTxt(v.grupo), ...meses.map(m => fmt(v.cons[m])), fmt(total)]);
+      'Totalizador', ...meses.map(m => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.lect[mesSiguiente(m)])), '']);
+    body.push([filaConsumoTxt(v.grupo), ...meses.map(m => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.cons[m])), fmt(total)]);
     body.push(['Var. % vs mes anterior', ...meses.map((m, i) => {
       const a = i ? v.cons[meses[i - 1]] : undefined, b = v.cons[m];
       return a && b ? (b > a ? '+' : '') + (100 * (b - a) / a).toFixed(1).replace('.', ',') + '%' : '';
@@ -3268,7 +3347,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   for (const c of cons) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
       tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
-      variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
+      punto_id: c.punto_id, variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
       bloque: claveSuma(c.variable, c.unidad_reporte),
       principal: c.principal !== false, cons: {}, estado: {}, metodo: {}, lect: {}
     });
@@ -3284,6 +3363,9 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const filasVar = [...porVar.values()].sort(ordenFilaInforme);
 
   const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
+  // celdas sin valor: s/d (debía estar) o n/c (no corresponde ese mes)
+  const vc = (v, m) => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : redondear(v.cons[m]);
+  const vl = (v, m) => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : redondear(v.lect[mesSiguiente(m)]);
 
   const rango = desde.slice(0, 7) === hasta.slice(0, 7) ? nombrePeriodo(desde)
               : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
@@ -3298,7 +3380,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
   for (const v of filasVar)
     resumen.push([v.tag, (v.grupos.length ? v.grupos : [v.grupo]).join(' · '), v.punto, v.variable,
-      UNIDAD[v.unidad] || v.unidad, ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))]);
+      UNIDAD[v.unidad] || v.unidad, ...meses.map(m => vc(v, m)), redondear(totalFila(v))]);
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
   // TAG, grupo, punto y unidad se VEN una vez por punto, y la variable una vez por
@@ -3312,8 +3394,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     if (nuevoPunto) { gris = !gris; puntoPrev = v.punto; }
     const u = UNIDAD[v.unidad] || v.unidad;
     const filasBloque = [
-      ['Totalizador', ...meses.map(m => redondear(v.lect[mesSiguiente(m)])), ''],
-      [filaConsumoTxt(v.grupo), ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))],
+      ['Totalizador', ...meses.map(m => vl(v, m)), ''],
+      [filaConsumoTxt(v.grupo), ...meses.map(m => vc(v, m)), redondear(totalFila(v))],
       ['Var. % vs mes anterior', ...meses.map((m, i) => {
         if (i === 0) return '';
         const a = v.cons[meses[i - 1]], b = v.cons[m];
@@ -5228,6 +5310,12 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
       ['Cuándo','Tabla','Registro','Acción','Campos','Motivo'],
       ...auditoria.map(a => [String(a.ocurrido_en).slice(0,19).replace('T',' '), a.tabla,
         a.registro_id, a.accion, (a.campos_cambiados || []).join(', '), a.motivo || ''])
+    ]},
+    { nombre: 'No corresponde', filas: [
+      ['Punto', 'Desde', 'Hasta', 'Motivo'],
+      ...(S.nc || []).map(r => [
+        (S.catalogo.variables.find(v => v.punto.id === r.punto_id)?.punto.nombre) || ('Punto ' + r.punto_id),
+        nombrePeriodo(r.desde), r.hasta ? nombrePeriodo(r.hasta) : 'en adelante', r.motivo])
     ]}
   ];
 }
@@ -6054,6 +6142,7 @@ function resumenGenerador(g, mes, d) {
     horAcum: lh && !lh.sin_dato ? Number(lh.valor) : null,
     kw: lw && !lw.sin_dato ? Number(lw.valor) : null,
     toma: lk || lh || lw || null,
+    vacio: vacioTxt(g.punto_id, mes),
     tomado: !!(lk || lh)
   };
 }
@@ -6160,7 +6249,7 @@ async function vistaCierreCF(c) {
       el('h3', { text: `Energía generada por mes · ${S.anioCF} (kWh)` }),
       tabla(['N° int.', 'Equipo', ...MES_CORTO.map(m => m[0].toUpperCase() + m.slice(1)), 'Total'],
         [...filas.map(x => [x.g.n_interno || '—', x.g.n_equipo,
-            ...x.por.map(r => r.kwhMes != null ? num(r.kwhMes) : '—'), el('b', { text: x.nMeses ? num(x.kwh) : '—' })]),
+            ...x.por.map(r => r.kwhMes != null ? num(r.kwhMes) : r.vacio), el('b', { text: x.nMeses ? num(x.kwh) : '—' })]),
          ['Total', '', ...meses.map((m, i) => {
             const t = filas.reduce((a, x) => a + (x.por[i].kwhMes || 0), 0);
             return t ? num(t) : '—'; }), el('b', { text: num(kwhTot) })]],
@@ -6205,10 +6294,10 @@ async function vistaCierreCF(c) {
     const fila = ({ g, r }) => [
       el('button', { class: 'celda-cons', text: g.n_interno || '—', onclick: () => fichaGenerador(g) }),
       el('button', { class: 'celda-cons', text: g.n_equipo, onclick: () => fichaGenerador(g) }),
-      num(g.potencia_nominal_kw), r.kw != null ? num(r.kw) : '—',
-      r.kwhAcum != null ? num(r.kwhAcum) : (g.activo ? el('span', { class: 'pill warn', text: 'sin toma' }) : '—'),
-      r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : '—',
-      r.horAcum != null ? num(r.horAcum) : '—', r.horasMes != null ? num(r.horasMes) : '—',
+      num(g.potencia_nominal_kw), r.kw != null ? num(r.kw) : r.vacio,
+      r.kwhAcum != null ? num(r.kwhAcum) : (r.vacio === 'n/c' ? 'n/c' : g.activo ? el('span', { class: 'pill warn', text: 'sin toma' }) : 's/d'),
+      r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : r.vacio,
+      r.horAcum != null ? num(r.horAcum) : r.vacio, r.horasMes != null ? num(r.horasMes) : r.vacio,
       r.factor != null ? el('span', { class: 'pill ' + (r.factor > 85 ? 'warn' : r.factor < 30 ? 'neutro' : 'ok'), text: num(r.factor) + '%' }) : '—',
       r.litros != null ? num(r.litros) : '—', r.lPorKwh != null ? num(r.lPorKwh, 3) : '—',
       pillEstadoGen(g.estado), g.sincronismo || '—', g.ubicacion || '—',
@@ -6273,9 +6362,9 @@ async function fichaGenerador(g) {
       { titulo: 'Energía generada por mes', unidad: 'kWh' }),
     tabla(['Mes', 'Toma', 'kW', 'kWh acumulado', 'kWh del mes', 'Horómetro', 'Horas del mes', 'Factor carga', 'Litros', 'L/kWh', 'Tomada por'],
       [...filas].reverse().map(({ m, r }) => [
-        nombrePeriodo(m), r.toma ? fechaCorta(r.toma.fecha_lectura) : '—', r.kw != null ? num(r.kw) : '—',
-        r.kwhAcum != null ? num(r.kwhAcum) : '—', r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : '—',
-        r.horAcum != null ? num(r.horAcum) : '—', r.horasMes != null ? num(r.horasMes) : '—',
+        nombrePeriodo(m), r.toma ? fechaCorta(r.toma.fecha_lectura) : '—', r.kw != null ? num(r.kw) : r.vacio,
+        r.kwhAcum != null ? num(r.kwhAcum) : r.vacio, r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : r.vacio,
+        r.horAcum != null ? num(r.horAcum) : r.vacio, r.horasMes != null ? num(r.horasMes) : r.vacio,
         r.factor != null ? num(r.factor) + '%' : '—', r.litros != null ? num(r.litros) : '—',
         r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', autor(r.toma)]),
       { num: [2, 3, 4, 5, 6, 7, 8, 9] }),
@@ -6283,7 +6372,9 @@ async function fichaGenerador(g) {
       el('button', { class: 'btn chico', text: 'PDF de la ficha', onclick: () => imprimirFichaGenerador(g, filas, ingreso, devol, autor) }),
       el('button', { class: 'btn chico', text: 'Registrar ingreso / devolución', onclick: () => movimientoGenerador(g) }),
       ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol)
-        ? el('button', { class: 'btn chico', text: 'Editar datos', onclick: () => editarGenerador(g) }) : null
+        ? el('button', { class: 'btn chico', text: 'Editar datos', onclick: () => editarGenerador(g) }) : null,
+      esSupervisor() ? el('button', { class: 'btn chico', text: 'No corresponde (n/c)…',
+        onclick: () => gestionarNC(g.punto_id, genNombre(g), { alCambiar: () => fichaGenerador(g) }) }) : null
     ])
   ]);
   modal(genNombre(g), cuerpo, { completo: true, subtitulo: `${g.propiedad || ''} · ${g.proveedor || ''}` });
@@ -6332,10 +6423,10 @@ async function imprimirCierreCF(mes, d) {
     if (!arr.length) continue;
     cuerpo.push(el('tr', { class: 'grupo' }, [el('td', { colspan: 13, text: titulo })]));
     for (const { g, r } of arr) cuerpo.push(el('tr', {}, [
-      tdx(g.n_interno || '—'), tdx(g.n_equipo), tdx(num(g.potencia_nominal_kw), 1), tdx(r.kw != null ? num(r.kw) : '—', 1),
-      tdx(r.kwhAcum != null ? num(r.kwhAcum) : (g.activo ? 'sin toma' : '—'), 1),
-      tdx(r.kwhMes != null ? num(r.kwhMes) : '—', 1, 'total'), tdx(r.horAcum != null ? num(r.horAcum) : '—', 1),
-      tdx(r.horasMes != null ? num(r.horasMes) : '—', 1), tdx(r.factor != null ? num(r.factor) + '%' : '—', 1),
+      tdx(g.n_interno || '—'), tdx(g.n_equipo), tdx(num(g.potencia_nominal_kw), 1), tdx(r.kw != null ? num(r.kw) : r.vacio, 1),
+      tdx(r.kwhAcum != null ? num(r.kwhAcum) : (r.vacio === 'n/c' ? 'n/c' : g.activo ? 'sin toma' : 's/d'), 1),
+      tdx(r.kwhMes != null ? num(r.kwhMes) : r.vacio, 1, 'total'), tdx(r.horAcum != null ? num(r.horAcum) : r.vacio, 1),
+      tdx(r.horasMes != null ? num(r.horasMes) : r.vacio, 1), tdx(r.factor != null ? num(r.factor) + '%' : '—', 1),
       tdx(r.litros != null ? num(r.litros) : '—', 1), tdx(r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', 1),
       tdx(g.estado || '—'), tdx(g.ubicacion || '—')]));
     cuerpo.push(el('tr', { class: 'suma' }, [el('td', { colspan: 5, text: 'Subtotal' }), tdx(num(suma(arr, 'kwhMes')), 1),
@@ -6390,9 +6481,9 @@ function imprimirFichaGenerador(g, filas, ingreso, devol, autor) {
       el('thead', {}, [el('tr', {}, [thx('Mes'), thx('Toma'), thx('kW', 1), thx('kWh acumulado', 1), thx('kWh del mes', 1),
         thx('Horómetro', 1), thx('Horas del mes', 1), thx('F. carga', 1), thx('Litros', 1), thx('L/kWh', 1), thx('Tomada por')])]),
       el('tbody', {}, [...filas].reverse().map(({ m, r }) => el('tr', {}, [
-        tdx(nombrePeriodo(m)), tdx(r.toma ? fechaCorta(r.toma.fecha_lectura) : '—'), tdx(r.kw != null ? num(r.kw) : '—', 1),
-        tdx(r.kwhAcum != null ? num(r.kwhAcum) : '—', 1), tdx(r.kwhMes != null ? num(r.kwhMes) : '—', 1, 'total'),
-        tdx(r.horAcum != null ? num(r.horAcum) : '—', 1), tdx(r.horasMes != null ? num(r.horasMes) : '—', 1),
+        tdx(nombrePeriodo(m)), tdx(r.toma ? fechaCorta(r.toma.fecha_lectura) : '—'), tdx(r.kw != null ? num(r.kw) : r.vacio, 1),
+        tdx(r.kwhAcum != null ? num(r.kwhAcum) : r.vacio, 1), tdx(r.kwhMes != null ? num(r.kwhMes) : r.vacio, 1, 'total'),
+        tdx(r.horAcum != null ? num(r.horAcum) : r.vacio, 1), tdx(r.horasMes != null ? num(r.horasMes) : r.vacio, 1),
         tdx(r.factor != null ? num(r.factor) + '%' : '—', 1), tdx(r.litros != null ? num(r.litros) : '—', 1),
         tdx(r.lPorKwh != null ? num(r.lPorKwh, 3) : '—', 1), tdx(autor(r.toma))])))
     ]),

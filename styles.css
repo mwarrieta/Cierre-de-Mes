@@ -1472,3 +1472,59 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .gen-celda .gen-titulo{font-weight:700;margin-left:-6px;text-align:left}
 .gen-acc{display:flex;gap:2px;flex-wrap:wrap;margin-left:-6px}
 .gen-acc .btn-texto.chico{padding:2px 6px;font-size:12.5px}
+
+/* ===================================================================
+   COMBUSTIBLE · bitácora del día (como la hoja del camión)
+   =================================================================== */
+.tabs-cf .seg-op{min-height:46px;font-size:15px;padding:0 20px}
+.filtros-bitacora{grid-template-columns:minmax(160px,200px) minmax(160px,220px) minmax(200px,1fr) minmax(160px,220px)}
+.card.bitacora{align-items:stretch;padding:16px 18px}
+.tabla-bitacora{max-height:none;overflow:visible}
+.tabla-bitacora table{min-width:820px}
+.tabla-bitacora td{padding:4px 8px;vertical-align:middle}
+.tabla-bitacora input{margin-top:0;min-height:40px}
+.tabla-bitacora .in-gen{width:130px}
+.tabla-bitacora .in-lit{width:110px;text-align:right}
+.tabla-bitacora .in-hora{width:120px}
+.tabla-bitacora .in-hor{width:120px}
+.tabla-bitacora td:nth-child(2){display:flex;align-items:center;gap:10px}
+.tabla-bitacora td:nth-child(4) input{min-width:200px}
+.chip-gen{font-size:12.5px;color:var(--ink-3);white-space:nowrap}
+.chip-gen.ok{color:var(--ok);font-weight:600}
+.chip-gen.bad{color:var(--bad);font-weight:700}
+.tabla-bitacora tr.con-error td{background:var(--bad-bg)}
+.pie-bitacora{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.pie-bitacora .btn.guardar.grande{width:auto;min-width:220px}
+.total-hoja{font-size:16px}
+.total-hoja b{font-size:20px;font-variant-numeric:tabular-nums}
+.chips-gen{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+
+/* ===================================================================
+   ADMINISTRACIÓN · usuarios y sugerencias a pantalla completa
+   =================================================================== */
+.filtros-admin{grid-template-columns:auto minmax(150px,200px) minmax(150px,220px) minmax(200px,1fr) auto}
+.tabla-admin{max-height:calc(100dvh - 300px)}
+.tabla-admin td{vertical-align:top;padding:8px 10px}
+.tabla-admin .seg-op{min-height:32px;font-size:12.5px;padding:0 10px}
+.sug-msg{min-width:320px;max-width:640px;white-space:pre-wrap;line-height:1.4}
+.tabla-admin tr.sug-nueva td:first-child{box-shadow:inset 4px 0 0 var(--warn)}
+.tabla-admin tr.sug-resuelta td{color:var(--ink-3)}
+.persona{display:flex;flex-direction:column;gap:1px}
+.persona .pill{align-self:flex-start;margin-top:3px}
+.chips-acceso{display:flex;flex-wrap:wrap;gap:4px;max-width:420px}
+.acciones-fila{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+.tabla-informe td.c-centro,.tabla-informe th.c-centro{text-align:center}
+.switch{position:relative;display:inline-flex;align-items:center;cursor:pointer;margin:0}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch-pista{width:40px;height:22px;border-radius:999px;background:var(--line-2);position:relative;transition:background .15s}
+.switch-pista::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--surface);
+  box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.switch input:checked + .switch-pista{background:var(--acento)}
+.switch input:checked + .switch-pista::after{transform:translateX(18px)}
+.switch input:focus-visible + .switch-pista{outline:2px solid var(--acento);outline-offset:2px}
+@media (max-width:1180px){
+  .filtros-admin,.filtros-bitacora{grid-template-columns:1fr 1fr}
+  .filtros-admin .f-buscar,.filtros-admin .f-acciones{grid-column:1/-1;justify-content:flex-start}
+}
+@media (max-width:820px){ .filtros-admin,.filtros-bitacora{grid-template-columns:1fr} }
+.tabla-bitacora td:nth-child(2) .in-gen{flex:0 0 140px;width:140px}

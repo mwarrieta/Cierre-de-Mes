@@ -576,7 +576,7 @@ function ir(vista) {
 
 const TITULOS = {
   inicio: 'Cierre de Mes',
-  terreno: 'Terreno', cierrecf: 'Cierre de generadores',
+  terreno: 'Terreno', cierrecf: 'Cierre de generadores', consumoscf: 'Casa de Fuerza · Consumos de generadores',
   consumos: 'Consumos e informes', avisos: 'Avisos', equipos: 'Equipos',
   dispositivo: 'Este dispositivo',
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
@@ -628,7 +628,7 @@ function render() {
   marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['inicio','sugerencias','equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
+    ['inicio','sugerencias','equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','consumoscf','dispositivo','generadores','etiquetas','cierrecf','recargas'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? ''
       : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -637,12 +637,12 @@ function render() {
   // en vez de pisar la vista nueva.
   const c = el('div');
   // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
-  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria', 'respaldo', 'cierrecf', 'generadores', 'recargas'].includes(S.vista));
+  $('#contenido').classList.toggle('ancho', ['consumos', 'consumoscf', 'auditoria', 'respaldo', 'cierrecf', 'generadores', 'recargas', 'usuarios', 'sugerencias'].includes(S.vista));
   $('#contenido').replaceChildren(c, avisoBeta());
   ({
     inicio: vistaInicio,
     terreno: vistaTerreno, cierrecf: vistaCierreCF,
-    consumos: vistaConsumos, avisos: vistaAvisos, equipos: vistaEquipos,
+    consumos: vistaConsumos, consumoscf: c => vistaConsumos(c, { cf: true }), avisos: vistaAvisos, equipos: vistaEquipos,
     dispositivo: vistaDispositivo,
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
     usuarios: vistaUsuarios, sugerencias: vistaSugerencias, auditoria: vistaAuditoria,
@@ -1942,8 +1942,15 @@ const MODOS = { mes: 'Un mes', anio: 'Un año', rango: 'Un rango' };
 // sale prorrateado con lecturas parciales y muestra caídas que no existen: no entra a los informes.
 const ultimoMesCerrado = () => mesAnterior(primerDiaDelMes(new Date()));
 
-async function vistaConsumos(c) {
-  S.rep = S.rep || {
+// Los grupos de generadores se informan en Casa de Fuerza; Consumos e informes muestra el resto.
+const esGrupoGen = n => /^generadores/.test(normGrupo(n));
+async function vistaConsumos(c, opts = {}) {
+  const cf = !!opts.cf;
+  const clave = cf ? 'repCF' : 'rep';
+  const permitido = n => cf ? esGrupoGen(n) : !esGrupoGen(n);
+  // Una fila o un punto pertenece a esta pantalla si alguno de sus grupos es de aquí.
+  const gruposOk = gs => (gs && gs.length ? gs : ['Sin grupo']).some(permitido);
+  S[clave] = S[clave] || {
     vista: 'totales',
     modo: 'anio',
     mes: S.periodoConsumo,
@@ -1951,10 +1958,12 @@ async function vistaConsumos(c) {
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
     // Al abrir, el grupo de todos los días: ANSA - Servicios (si el usuario lo ve).
-    grupo: (S.catalogo.grupos.find(g => normGrupo(g.nombre).replace(/[^a-z]/g, '') === 'ansaservicios') || {}).nombre || '',
+    grupo: cf ? ((S.catalogo.grupos.filter(g => esGrupoGen(g.nombre)).sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999))[0] || {}).nombre || '')
+              : (S.catalogo.grupos.find(g => normGrupo(g.nombre).replace(/[^a-z]/g, '') === 'ansaservicios') || {}).nombre || '',
     puntos: []
   };
-  const R = S.rep;
+  const R = S[clave];
+  S.repActual = R;                                  // lo usa la vista para imprimir
   R.puntos = R.puntos || [];
   R.graf = R.graf || { variable: null, metrica: 'consumo', tipo: 'barras', capas: { promedio: true, tendencia: true } };
 
@@ -1964,19 +1973,21 @@ async function vistaConsumos(c) {
 
   const gruposVisibles = new Set(S.catalogo.variables.flatMap(v => v.punto.grupos || []));
   const selGrupo = el('select', { onchange: e => { R.grupo = e.target.value; R.puntos = []; textoPuntos(); cargar(); } });
-  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.nombre))
+  for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.nombre) && permitido(g.nombre))
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
-  selGrupo.append(el('option', { value: '', selected: !R.grupo || null, text: 'Todos los grupos' }));
+  selGrupo.append(el('option', { value: '', selected: !R.grupo || null, text: cf ? 'Todos los de generadores' : 'Todos los grupos' }));
   if (R.grupo && !gruposVisibles.has(R.grupo)) { R.grupo = ''; selGrupo.value = ''; }
 
   // ---- filtro de puntos: uno, varios o todos (los del grupo elegido) ----
   const puntosDelGrupo = () => {
     const m = new Map();
     for (const v of S.catalogo.variables)
-      if ((v.en_informe ?? v.principal) && (!R.grupo || (v.punto.grupos || []).includes(R.grupo))) m.set(v.punto.id, v.punto);
+      if ((v.en_informe ?? v.principal) && (R.grupo ? (v.punto.grupos || []).includes(R.grupo) : gruposOk(v.punto.grupos))) m.set(v.punto.id, v.punto);
     return [...m.values()].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
   };
+  // Sin grupo elegido, el Excel lleva solo los puntos de esta pantalla.
+  const puntosExcel = () => R.puntos.length ? R.puntos : (R.grupo ? [] : puntosDelGrupo().map(p => p.id));
   const btnPuntos = el('button', { type: 'button', class: 'sel-multi', 'aria-haspopup': 'true', onclick: () => abrirPuntos() });
   const cajaPuntos = el('div', { class: 'multi-caja' }, [btnPuntos]);
   function textoPuntos() {
@@ -2048,7 +2059,7 @@ async function vistaConsumos(c) {
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo, puntos: R.puntos }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo, puntos: puntosExcel() }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -2058,7 +2069,7 @@ async function vistaConsumos(c) {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
         await descargarPlanilla(primero, ultimoMesCerrado(),
-          { grupo: R.grupo, puntos: R.puntos });
+          { grupo: R.grupo, puntos: puntosExcel() });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -2117,12 +2128,13 @@ async function vistaConsumos(c) {
     const r0 = await q;
     if (r0.error) { zona.replaceChildren(el('p', { class: 'error', text: r0.error.message })); return; }
     const filtroPuntos = R.puntos.length ? new Set(R.puntos) : null;
-    const data = r0.data.filter(f => !filtroPuntos || filtroPuntos.has(f.punto_id)).sort(ordenFilaInforme);
+    const data = r0.data.filter(f => (!filtroPuntos || filtroPuntos.has(f.punto_id)) && (R.grupo || gruposOk(f.grupos || [f.grupo])))
+      .sort(ordenFilaInforme);
 
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
       (v.en_informe ?? v.principal) &&
-      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
+      (R.grupo ? (v.punto.grupos || []).includes(R.grupo) : gruposOk(v.punto.grupos)) &&
       (!filtroPuntos || filtroPuntos.has(v.punto.id)));
     const conDato = new Set(data.map(f => f.variable_id));
     // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
@@ -2990,7 +3002,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
   const { filas, desde, hasta, bandas = {} } = S.repDatos;
-  const R = S.rep;
+  const R = S.repActual || S.rep;
   // Imprime lo mismo que hay en pantalla: la tabla elegida (Totales o Detalle mensual),
   // con el periodo (un mes, un año o un rango) y el grupo del filtro.
   const detalle = R.vista === 'detalle';
@@ -5135,6 +5147,21 @@ async function vistaRespaldo(c) {
         archivosGrupo.push({ grupo: g, excel: `${carpetaDe(g)}/${nXlsx}`, pdf: r.pdf ? `${carpetaDe(g)}/${nPdf}` : null });
       }
 
+      // ---- Casa de Fuerza: informe de generación y combustible del mismo periodo ----
+      // (las tomas y fotos de los generadores ya van en las carpetas de sus grupos)
+      const dirCF = `${String(gruposZip.length + 1).padStart(2, '0')} Casa de Fuerza`;
+      try {
+        paso('Casa de Fuerza · generación…');
+        const mesesCF = listaMeses(desdeC, hastaC);
+        const dCF = await datosGeneradores(mesesCF);
+        const xg = await excelGeneracion({ meses: mesesCF, d: dCF, filas: filasGeneracion(dCF, mesesCF) }, { equipos: [], propiedad: '' },
+          t => paso('Casa de Fuerza · ' + t), { devolver: true });
+        zip.file(`${dirCF}/${xg.nombre}`, xg.blob);
+        paso('Casa de Fuerza · combustible…');
+        const xc = await excelCombustibleRango(desdeC, hastaC);
+        zip.file(`${dirCF}/${xc.nombre}`, xc.blob);
+      } catch (e) { console.warn('Casa de Fuerza en el respaldo', e); toast('El respaldo sigue, pero sin la carpeta de Casa de Fuerza: ' + (e.message || e), true); }
+
       // ---- Excel técnico con todos los datos (lecturas, inventario, avisos, auditoría) ----
       paso('Armando el Excel técnico…');
       const xlsx = await R.construirExcel(armarHojas(filas, consumos, inv.data || [], avs.data || [],
@@ -5189,6 +5216,7 @@ async function vistaRespaldo(c) {
         '  Detalle_mensual_....pdf   Totalizador, consumo y variación por punto, en carta horizontal.',
         '  Fotos/Año/Mes             Las fotos, en el MES QUE CIERRAN: la toma del 1 de octubre va en septiembre.',
         '',
+        'NN Casa de Fuerza/            Informe de generación (kWh, horas, litros, L/kWh, factor) y combustible del periodo.',
         '00 Datos completos_....xlsx  Todo en un libro: lecturas, consumos, inventario, avisos y auditoría.',
         '00 Indice de fotos.xlsx      Una fila por foto con su ruta: filtra por punto, mes o persona.',
         '',
@@ -5400,111 +5428,167 @@ function formSugerencia() {
   setTimeout(() => msg.focus(), 50);
 }
 
+/* ===================================================================
+   ADMINISTRACIÓN · SUGERENCIAS (PC, pantalla completa)
+   Lo que el equipo cuenta desde el pie de cada pantalla. Filtros arriba,
+   cifras, y cada aviso como fila con su estado cambiable en un clic.
+   =================================================================== */
 async function vistaSugerencias(c) {
-  let filtro = 'pendientes';
-  const sel = el('select', { onchange: e => { filtro = e.target.value; cargar(); } });
-  for (const [k, v] of [['pendientes', 'Por revisar'], ['resueltas', 'Resueltas'], ['todas', 'Todas']])
-    sel.append(el('option', { value: k, text: v }));
-  const zona = el('div');
-  c.append(el('div', { class: 'fila entre seccion' }, [
-    el('label', { text: 'Ver' }, [sel]),
-    el('p', { class: 'ayuda crece', text: 'Lo que el equipo cuenta desde el pie de cada pantalla. Solo tú lo ves.' })
-  ]), zona);
+  S.sug = S.sug || { estado: 'pendientes', tipo: '', seccion: '', buscar: '' };
+  const F = S.sug;
+  const zonaF = el('div'), kpis = el('div'), zona = el('div');
+  c.append(zonaF, kpis, zona);
+  let datos = [];
+  const ESTADOS = { nueva: 'Nueva', vista: 'Vista', resuelta: 'Resuelta' };
+  const buscar = el('input', { type: 'search', value: F.buscar, placeholder: 'Texto del mensaje o persona…',
+    oninput: e => { F.buscar = e.target.value; clearTimeout(buscar._t); buscar._t = setTimeout(pintar, 200); } });
 
   async function cargar() {
     zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando…' }));
-    let q = sb.from('sugerencias').select('*, usuarios(nombre)').order('creado_en', { ascending: false }).limit(500);
-    if (filtro === 'pendientes') q = q.in('estado', ['nueva', 'vista']);
-    else if (filtro === 'resueltas') q = q.eq('estado', 'resuelta');
-    const { data, error } = await q;
+    const { data, error } = await sb.from('sugerencias').select('*, usuarios(nombre)').order('creado_en', { ascending: false }).limit(1000);
     if (error) return zona.replaceChildren(el('p', { class: 'error', text: error.message }));
-    if (!data.length) return zona.replaceChildren(el('p', { class: 'ayuda', text: 'No hay nada en esta lista.' }));
-    const filas = data.map(r => {
-      const estado = el('select', { onchange: async e => {
-        const { error } = await sb.from('sugerencias').update({ estado: e.target.value }).eq('id', r.id);
-        toast(error ? error.message : 'Actualizado', !!error);
-      } });
-      for (const [k, v] of [['nueva', 'Nueva'], ['vista', 'Vista'], ['resuelta', 'Resuelta']])
-        estado.append(el('option', { value: k, selected: r.estado === k || null, text: v }));
-      return [
-        fechaCorta(r.creado_en), r.usuarios?.nombre || '—', r.seccion,
-        el('span', { class: 'pill ' + (r.tipo === 'falla' ? 'bad' : 'warn'), text: r.tipo === 'falla' ? 'Falla' : 'Mejora' }),
-        el('span', { class: 'msg-sugerencia', text: r.mensaje }),
-        r.version || '—', estado,
-        el('button', { class: 'btn chico peligro', text: 'Borrar', onclick: async () => {
-          if (!confirm('¿Borrar este aviso?')) return;
-          const { error } = await sb.from('sugerencias').delete().eq('id', r.id);
-          if (error) toast(error.message, true); else cargar();
-        } })
-      ];
-    });
-    zona.replaceChildren(tabla(['Fecha', 'Quién', 'Sección', 'Tipo', 'Mensaje', 'Versión', 'Estado', ''], filas));
+    datos = data || [];
+    pintarF(); pintar();
+  }
+  function pintarF() {
+    const secciones = [...new Set(datos.map(r => r.seccion).filter(Boolean))].sort();
+    zonaF.replaceChildren(el('div', { class: 'filtros-rep filtros-admin seccion' }, [
+      campoF('', 'Ver', segF([['pendientes', 'Por revisar'], ['resueltas', 'Resueltas'], ['todas', 'Todas']], F.estado, k => { F.estado = k; pintarF(); pintar(); })),
+      campoF('', 'Tipo', selF([['', 'Fallas y mejoras'], ['falla', 'Solo fallas'], ['mejora', 'Solo mejoras']], F.tipo, v => { F.tipo = v; pintar(); })),
+      campoF('', 'Sección', selF([['', 'Todas'], ...secciones.map(s => [s, s])], F.seccion, v => { F.seccion = v; pintar(); })),
+      campoF('f-buscar', 'Buscar', buscar),
+      el('div', { class: 'f-acciones' }, [el('button', { class: 'btn', text: 'Marcar nuevas como vistas', onclick: async () => {
+        const ids = datos.filter(r => r.estado === 'nueva').map(r => r.id);
+        if (!ids.length) return toast('No hay nuevas');
+        const { error } = await sb.from('sugerencias').update({ estado: 'vista' }).in('id', ids);
+        if (error) toast(error.message, true); else cargar(); } })])]));
+  }
+  const pasa = r => (F.estado === 'todas' || (F.estado === 'pendientes' ? r.estado !== 'resuelta' : r.estado === 'resuelta')) &&
+    (!F.tipo || (F.tipo === 'falla') === (r.tipo === 'falla')) && (!F.seccion || r.seccion === F.seccion) &&
+    (!F.buscar || `${r.mensaje} ${r.usuarios?.nombre || ''}`.toLowerCase().includes(F.buscar.toLowerCase()));
+  async function cambiar(r, estado) {
+    const { error } = await sb.from('sugerencias').update({ estado }).eq('id', r.id);
+    if (error) return toast(error.message, true);
+    r.estado = estado; pintar();
+  }
+  function pintar() {
+    const n = e => datos.filter(r => r.estado === e).length;
+    kpis.replaceChildren(el('div', { class: 'kpis seccion kpis-cf' }, [
+      kpi(n('nueva'), 'nuevas', n('nueva') ? 'aviso' : ''), kpi(n('vista'), 'vistas, sin resolver'),
+      kpi(datos.filter(r => r.tipo === 'falla' && r.estado !== 'resuelta').length, 'fallas abiertas',
+        datos.some(r => r.tipo === 'falla' && r.estado !== 'resuelta') ? 'alerta' : 'ok'),
+      kpi(n('resuelta'), 'resueltas')]));
+    const vis = datos.filter(pasa);
+    if (!vis.length) return zona.replaceChildren(el('p', { class: 'vacio', text: 'No hay nada con esos filtros.' }));
+    zona.replaceChildren(el('div', { class: 'tabla-caja tabla-admin' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, ['Fecha', 'Quién', 'Sección', 'Tipo', 'Mensaje', 'Versión', 'Estado', ''].map(h => el('th', { text: h })))]),
+      el('tbody', {}, vis.map(r => el('tr', { class: 'sug-' + r.estado }, [
+        el('td', { class: 'nowrap', text: fechaHora(r.creado_en) }),
+        el('td', { class: 'nowrap', text: r.usuarios?.nombre || '—' }),
+        el('td', { text: r.seccion || '—' }),
+        el('td', {}, [el('span', { class: 'pill ' + (r.tipo === 'falla' ? 'bad' : 'warn'), text: r.tipo === 'falla' ? 'Falla' : 'Mejora' })]),
+        el('td', { class: 'sug-msg' }, [el('span', { text: r.mensaje })]),
+        el('td', { class: 'nowrap tenue-b', text: r.version || '—' }),
+        el('td', {}, [segF(Object.entries(ESTADOS), r.estado, k => cambiar(r, k))]),
+        el('td', { class: 'nowrap' }, [
+          el('button', { class: 'btn-texto chico', text: 'Copiar', title: 'Copiar el texto', onclick: async () => {
+            try { await navigator.clipboard.writeText(`[${r.tipo}] ${r.seccion}: ${r.mensaje}`); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }),
+          el('button', { class: 'btn-texto chico peligro', text: 'Borrar', onclick: async () => {
+            if (!confirm('¿Borrar este aviso?')) return;
+            const { error } = await sb.from('sugerencias').delete().eq('id', r.id);
+            if (error) toast(error.message, true); else { datos = datos.filter(x => x.id !== r.id); pintar(); } } })])])))])]));
   }
   cargar();
 }
 
+/* ===================================================================
+   ADMINISTRACIÓN · USUARIOS (PC, pantalla completa)
+   Una fila por persona: rol, qué puntos ve, permisos y acciones a la vista.
+   Lo que más se olvida (dar acceso) se marca en rojo y tiene su propio filtro.
+   =================================================================== */
+const ROLES_DESC = {
+  admin: 'Todo, incluido usuarios', supervisor: 'Valida, ve informes y configura sus puntos',
+  colaborador: 'Toma lecturas en terreno', casa_fuerza: 'Generadores y combustible', visualizador: 'Solo mira'
+};
 async function vistaUsuarios(c) {
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
-  c.append(el('div', { class: 'fila entre seccion' }, [
-    el('p', { class: 'ayuda crece', text:
-      'El rol define qué puede hacer cada persona; los grupos, qué puntos ve. ' +
-      'El admin ve todo. Cualquier otro rol sin grupos ni puntos asignados no ve ningún punto.' }),
-    el('button', { class: 'btn guardar', text: '+ Persona nueva', onclick: () => nuevoUsuario() })
-  ]), zona);
-
+  S.usr = S.usr || { rol: '', estado: 'activos', acceso: '', buscar: '' };
+  const F = S.usr;
+  const zonaF = el('div'), kpis = el('div'), zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
+  c.append(zonaF, kpis, zona);
   const [{ data, error }, { data: ug }, { data: up }] = await Promise.all([
-    sb.from('usuarios').select('*').order('rol').order('nombre'),
+    sb.from('usuarios').select('*').order('nombre'),
     sb.from('usuario_grupos').select('usuario_id, grupo_id'),
     sb.from('usuario_puntos').select('usuario_id, punto_id')
   ]);
   if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
+  const usuarios = data || [];
   const nombreGrupo = Object.fromEntries((S.catalogo.grupos || []).map(g => [g.id, g.nombre]));
-  const gruposDeU = id => (ug || []).filter(x => x.usuario_id === id).map(x => nombreGrupo[x.grupo_id]).filter(Boolean);
+  const gruposDeU = id => (ug || []).filter(x => x.usuario_id === id).map(x => nombreGrupo[x.grupo_id]).filter(Boolean).sort(compararGrupos);
   const puntosDeU = id => (up || []).filter(x => x.usuario_id === id).length;
+  const sinAcceso = u => u.rol !== 'admin' && !gruposDeU(u.id).length && !puntosDeU(u.id);
+  const buscar = el('input', { type: 'search', value: F.buscar, placeholder: 'Nombre o correo…',
+    oninput: e => { F.buscar = e.target.value; clearTimeout(buscar._t); buscar._t = setTimeout(pintar, 200); } });
 
-  const ROLES = ['admin', 'supervisor', 'colaborador', 'casa_fuerza', 'visualizador'];
-  const filas = data.map(u => {
-    const sel = el('select', { onchange: async e => {
-      const { error } = await sb.from('usuarios').update({ rol: e.target.value }).eq('id', u.id);
-      toast(error ? error.message : `${u.nombre} ahora es ${e.target.value}`, !!error);
-      if (!error) vistaUsuariosRefrescar();
-    } });
-    for (const r of ROLES) sel.append(el('option', { value: r, selected: r === u.rol || null, text: r }));
-    const act = el('input', { type: 'checkbox', checked: u.activo || null, onchange: async e => {
-      const { error } = await sb.from('usuarios').update({ activo: e.target.checked }).eq('id', u.id);
-      toast(error ? error.message : 'Actualizado', !!error);
-    } });
-    // Qué puntos ve: lo que más se olvida al dar de alta a alguien.
-    const gs = gruposDeU(u.id), np = puntosDeU(u.id);
-    const acceso = u.rol === 'admin'
-      ? el('span', { class: 'pill ok', text: 'todo (admin)' })
-      : (gs.length || np)
-        ? el('span', { text: [gs.join(' · '), np ? `${np} punto(s) suelto(s)` : null].filter(Boolean).join(' + ') })
-        : el('span', { class: 'pill bad', text: 'sin acceso: no ve ningún punto' });
-    const btnAcceso = u.rol === 'admin' ? null
-      : el('button', { class: 'btn chico', text: 'Grupos', onclick: () => editarAccesoUsuario(u) });
-    const borrar = (S.usuario.rol === 'admin' && u.id !== S.usuario.id)
-      ? el('button', { class: 'btn chico peligro', text: 'Eliminar',
-          onclick: () => eliminarCosa({
-            rpc: 'eliminar_usuario', id: { p_id: u.id }, nombre: u.nombre, que: 'al usuario',
-            alTerminar: () => render(),
-            desactivar: async () => (await sb.from('usuarios').update({ activo: false }).eq('id', u.id)).error
-          }) })
-      : null;
-    const clave = (S.usuario.rol === 'admin')
-      ? el('button', { class: 'btn chico', text: 'Cambiar clave', onclick: () => cambiarClaveUsuario(u) })
-      : null;
-    return [u.nombre, u.correo, sel, el('div', { class: 'fila' }, [acceso, btnAcceso].filter(Boolean)),
-            act, u.casa_fuerza ? 'sí' : 'no',
-            el('div', { class: 'fila' }, [clave, borrar].filter(Boolean))];
-  });
-  const sinAcceso = data.filter(u => u.activo && u.rol !== 'admin' && !gruposDeU(u.id).length && !puntosDeU(u.id));
-  zona.replaceChildren(
-    sinAcceso.length ? el('p', { class: 'banda warn', text:
-      `${sinAcceso.length} persona(s) activa(s) sin grupos ni puntos: entran a la app pero no ven ningún punto. ` +
-      'Asígnales grupos con el botón "Grupos".' }) : '',
-    tabla(['Nombre', 'Correo', 'Rol', 'Qué puntos ve', 'Activo', 'Casa de Fuerza', ''], filas, { etiquetas: true }));
+  zonaF.replaceChildren(el('div', { class: 'filtros-rep filtros-admin seccion' }, [
+    campoF('', 'Estado', selF([['activos', 'Activos'], ['inactivos', 'Inactivos'], ['', 'Todos']], F.estado, v => { F.estado = v; pintar(); })),
+    campoF('', 'Rol', selF([['', 'Todos los roles'], ...Object.keys(ROLES_DESC).map(r => [r, r])], F.rol, v => { F.rol = v; pintar(); })),
+    campoF('', 'Acceso', selF([['', 'Cualquiera'], ['sin', 'Sin acceso a puntos']], F.acceso, v => { F.acceso = v; pintar(); })),
+    campoF('f-buscar', 'Buscar', buscar),
+    el('div', { class: 'f-acciones' }, [el('button', { class: 'btn primario', text: '＋ Persona nueva', onclick: () => nuevoUsuario() })])]));
+
+  const actualizar = async (u, cambio, txt) => {
+    const { error } = await sb.from('usuarios').update(cambio).eq('id', u.id);
+    if (error) { toast(error.message, true); return false; }
+    Object.assign(u, cambio); toast(txt || 'Actualizado'); pintar(); return true;
+  };
+  const interruptor = (u, campo, titulo) => el('label', { class: 'switch', title: titulo }, [
+    el('input', { type: 'checkbox', checked: u[campo] || null, onchange: e => actualizar(u, { [campo]: e.target.checked }, `${u.nombre}: ${titulo.toLowerCase()} ${e.target.checked ? 'sí' : 'no'}`) }),
+    el('span', { class: 'switch-pista' })]);
+
+  function pintar() {
+    const activos = usuarios.filter(u => u.activo);
+    const porRol = r => activos.filter(u => u.rol === r).length;
+    kpis.replaceChildren(el('div', { class: 'kpis seccion kpis-cf' }, [
+      kpi(activos.length, 'personas activas'),
+      kpi(porRol('admin') + porRol('supervisor'), 'admin y supervisores'),
+      kpi(porRol('colaborador'), 'colaboradores'),
+      kpi(activos.filter(u => u.rol === 'casa_fuerza' || u.casa_fuerza).length, 'en Casa de Fuerza'),
+      kpi(activos.filter(sinAcceso).length, 'sin acceso a puntos', activos.some(sinAcceso) ? 'alerta' : 'ok')]));
+    const vis = usuarios.filter(u => (F.estado === '' || (F.estado === 'activos') === !!u.activo) && (!F.rol || u.rol === F.rol) &&
+      (!F.acceso || sinAcceso(u)) && (!F.buscar || `${u.nombre} ${u.correo}`.toLowerCase().includes(F.buscar.toLowerCase())));
+    const orden = Object.keys(ROLES_DESC);
+    const grupos = orden.map(r => ({ nombre: `${r} · ${ROLES_DESC[r]}`, filas: vis.filter(u => u.rol === r).map(u => {
+      const rol = selF(orden.map(x => [x, x]), u.rol, async v => {
+        if (u.id === S.usuario.id && v !== 'admin' && !confirm('Te vas a quitar el rol de admin a ti mismo. ¿Seguro?')) return pintar();
+        await actualizar(u, { rol: v }, `${u.nombre} ahora es ${v}`); });
+      const gs = gruposDeU(u.id), np = puntosDeU(u.id);
+      const acceso = u.rol === 'admin' ? el('span', { class: 'pill ok', text: 'Todo (admin)' })
+        : sinAcceso(u) ? el('span', { class: 'pill bad', text: 'Sin acceso: no ve ningún punto' })
+        : el('div', { class: 'chips-acceso' }, [...gs.map(g => el('span', { class: 'pill neutro', text: g })), np ? el('span', { class: 'pill acento', text: `+${np} punto(s)` }) : null]);
+      return [
+        el('div', { class: 'persona' }, [el('b', { text: u.nombre }), el('small', { class: 'tenue-b', text: u.correo }),
+          u.id === S.usuario.id ? el('span', { class: 'pill acento', text: 'tú' }) : null]),
+        rol, acceso,
+        interruptor(u, 'casa_fuerza', 'Casa de Fuerza'), interruptor(u, 'ver_historico', 'Ve meses anteriores'), interruptor(u, 'activo', 'Activo'),
+        el('div', { class: 'acciones-fila' }, [
+          u.rol !== 'admin' ? el('button', { class: 'btn chico', text: 'Acceso…', onclick: () => editarAccesoUsuario(u) }) : null,
+          el('button', { class: 'btn chico', text: 'Clave…', onclick: () => cambiarClaveUsuario(u) }),
+          u.id !== S.usuario.id ? el('button', { class: 'btn-texto chico peligro', text: 'Eliminar', onclick: () => eliminarCosa({
+            rpc: 'eliminar_usuario', id: { p_id: u.id }, nombre: u.nombre, que: 'al usuario', alTerminar: () => render(),
+            desactivar: async () => (await sb.from('usuarios').update({ activo: false }).eq('id', u.id)).error }) }) : null])];
+    }) })).filter(g => g.filas.length);
+    const cab = ['Persona', 'Rol', 'Qué puntos ve', 'Casa de Fuerza', 'Meses anteriores', 'Activo', ''];
+    poner(zona,
+      activos.some(sinAcceso) && F.acceso !== 'sin' ? el('p', { class: 'banda warn', text:
+        `${activos.filter(sinAcceso).length} persona(s) activa(s) sin grupos ni puntos: entran a la app pero no ven ningún punto. Usa "Acceso…" para asignarles grupos.` }) : null,
+      grupos.length ? tablaInforme(cab, grupos, ['c-punto c-ancha', '', '', 'c-centro', 'c-centro', 'c-centro', ''])
+        : el('p', { class: 'vacio', text: 'Nadie con esos filtros.' }),
+      el('p', { class: 'ayuda', text: 'El rol define qué puede hacer cada persona; los grupos, qué puntos ve. El admin ve todo. ' +
+        'Los supervisores siempre ven los meses anteriores. Los cambios de rol y de interruptores se guardan al instante.' }));
+  }
+  pintar();
 }
+
 const vistaUsuariosRefrescar = () => { if (S.vista === 'usuarios') render(); };
 
 // Casillas de grupos (y, plegado, puntos sueltos) para dar acceso a una persona.
@@ -6229,18 +6313,7 @@ async function vistaCierreCF(c) {
   function pintar() {
     if (!datos) return;
     const { meses, d } = datos;
-    const sel = new Set(F.equipos);
-    const filas = d.gens.map(g => ({ g, por: meses.map(m => ({ m, r: resumenGenerador(g, m, d) })) }))
-      .filter(x => !F.propiedad || (F.propiedad === 'Propio') === (x.g.propiedad === 'Propio'))
-      .filter(x => !sel.size || sel.has(x.g.id))
-      .filter(x => x.g.activo || x.por.some(p => p.r.kwhMes != null || p.r.tomado))
-      .sort((a, b) => ordenGen(a.g, b.g));
-    for (const x of filas) {
-      const it = x.por.map(p => ({ g: x.g, r: p.r }));
-      x.tot = Object.fromEntries(Object.keys(METRICAS_GEN).map(k => [k, agregarGen(it, k)]));
-      x.nMeses = x.por.filter(p => p.r.kwhMes != null).length;
-      x.ultimo = x.por[x.por.length - 1].r;
-    }
+    const filas = filasGeneracion(d, meses, F);
     datos.filas = filas;
     const todos = filas.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r })));
     const tot = k => agregarGen(todos, k);
@@ -6318,6 +6391,24 @@ async function vistaCierreCF(c) {
   cargar();
 }
 
+
+// Equipos con su resumen por mes y sus totales del periodo (lo usan la pantalla, el Excel y el respaldo).
+function filasGeneracion(d, meses, F = { propiedad: '', equipos: [] }) {
+    const sel = new Set(F.equipos);
+    const filas = d.gens.map(g => ({ g, por: meses.map(m => ({ m, r: resumenGenerador(g, m, d) })) }))
+      .filter(x => !F.propiedad || (F.propiedad === 'Propio') === (x.g.propiedad === 'Propio'))
+      .filter(x => !sel.size || sel.has(x.g.id))
+      .filter(x => x.g.activo || x.por.some(p => p.r.kwhMes != null || p.r.tomado))
+      .sort((a, b) => ordenGen(a.g, b.g));
+    for (const x of filas) {
+      const it = x.por.map(p => ({ g: x.g, r: p.r }));
+      x.tot = Object.fromEntries(Object.keys(METRICAS_GEN).map(k => [k, agregarGen(it, k)]));
+      x.nMeses = x.por.filter(p => p.r.kwhMes != null).length;
+      x.ultimo = x.por[x.por.length - 1].r;
+    }
+  return filas;
+}
+
 // Gráfico + cifras de la generación: de un equipo (uno) o de todo lo filtrado.
 function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }) {
   const met = METRICAS_GEN[cfg.metrica] ? cfg.metrica : 'kwh', M = METRICAS_GEN[met];
@@ -6357,7 +6448,7 @@ function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }
 }
 
 // ---------- Excel del informe de generación (lo que está en pantalla) ----------
-async function excelGeneracion(datos, F, paso) {
+async function excelGeneracion(datos, F, paso, opts = {}) {
   await cargarJSZip();
   const R = window.RESPALDO;
   const { meses, d, filas } = datos;
@@ -6424,7 +6515,9 @@ async function excelGeneracion(datos, F, paso) {
   for (const h of hojas) if (h.filas.length === 1) h.filas.push(['', 'Sin datos en el periodo']);
   paso('Escribiendo el archivo…');
   const blob = await R.construirExcel(hojas);
-  descargar(blob, `Generacion_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}_${R.limpio(sel)}.xlsx`);
+  const nombre = `Generacion_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}_${R.limpio(sel)}.xlsx`;
+  if (opts.devolver) return { blob, nombre };
+  descargar(blob, nombre);
 }
 
 // ---------- vista para imprimir del informe de generación ----------
@@ -7048,7 +7141,7 @@ function editarGenerador(g) {
     el('label', { text: 'Estado' }, [f.estado]),
     el('label', { text: 'Sincronismo' }, [f.sincronismo]),
     el('label', { text: 'Combustible' }, [f.combustible]),
-    el('label', { class: 'fila' }, [f.recargas, el('span', { text: 'Registra recargas de combustible' })]),
+    el('label', { class: 'fila' }, [f.recargas, el('span', { text: 'Registra cada carga en la bitácora (si no, se mide una vez al mes en Combustible → Medición mensual)' })]),
     el('label', { text: 'Observaciones' }, [f.obs]),
     el('label', { class: 'fila' }, [f.activo, el('span', { text: 'Activo (aparece en el parque)' })]),
     el('p', { class: 'ayuda', text:
@@ -7254,111 +7347,247 @@ const ORIGENES = ['BBA.4', 'BBA.5', 'Camión externo', 'Otro'];
    grilla del mes (generador × día) para comparar contra el papel. */
 const hoyISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 
+/* ===================================================================
+   CASA DE FUERZA · COMBUSTIBLE
+   Tres pestañas, en el orden en que se usan:
+   1. Bitácora del día · se transcribe la hoja del camión (o las dos hojas) tal cual:
+      generador, litros, operador y hora. Se escribe el N° interno como viene en la hoja
+      ("96", "G-96", "6.96"): la app lo reconoce contra el parque.
+   2. Medición mensual · para los equipos que no anotan cada carga (registra_recargas =
+      false): lectura inicial y final del medidor; la diferencia es el consumo del mes.
+   3. Resumen del mes · litros por día y equipo, gráfico, Excel e impresión.
+   =================================================================== */
+// Reconoce el código escrito en la hoja: "96", "6.96", "G96", "g-96" → G-96.
+function buscarGenerador(txt, gens) {
+  const lim = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const t = lim(txt);
+  if (!t) return null;
+  const exacto = gens.find(g => lim(g.n_interno) === t || lim(g.n_equipo) === t);
+  if (exacto) return exacto;
+  const dig = t.replace(/^\D*6?(?=\d{2,3}$)/, '').replace(/^\D+/, '');   // "696" de "6.96" → "96"
+  const porNum = gens.filter(g => { const n = lim(g.n_interno).replace(/^\D+/, ''); return n && (n === dig || n === t.replace(/^\D+/, '')); });
+  return porNum.length === 1 ? porNum[0] : null;
+}
+const etiquetaGen = g => g ? (g.n_interno ? `${g.n_interno} · ${g.n_equipo}` : g.n_equipo) : '';
+
+async function guardarRecargas(nuevas) {
+  let ok = 0, enCola = 0, err = null;
+  for (const f of nuevas) {
+    if (navigator.onLine) {
+      const { error } = await sb.rpc('registrar_recarga', {
+        p_generador_id: f.generador_id, p_fecha_hora: f.fecha_hora, p_litros: f.litros, p_combustible: f.combustible || 'Diesel',
+        p_origen: f.origen, p_guia: f.guia || null, p_camion: f.camion || null, p_horometro: f.horometro ?? null,
+        p_operador: f.operador || null, p_obs: f.observaciones || null, p_dispositivo: f.dispositivo });
+      if (error) { err = error; await DB.encolar({ tipo: 'recarga', ...f }); enCola++; } else ok++;
+    } else { await DB.encolar({ tipo: 'recarga', ...f }); enCola++; }
+  }
+  await actualizarConexion();
+  return { ok, enCola, err };
+}
+
 async function vistaRecargas(c) {
-  S.diaCF = S.diaCF || hoyISO();
-  const dia = S.diaCF, mes = dia.slice(0, 7) + '-01';
-  const inDia = el('input', { type: 'date', value: dia, max: hoyISO(), onchange: e => { if (e.target.value) { S.diaCF = e.target.value; render(); } } });
-  const operador = el('input', { type: 'text', value: S.operadorCF || '', placeholder: 'Quién anotó la hoja (operador / turno)',
-    oninput: e => { S.operadorCF = e.target.value; } });
-  c.append(el('div', { class: 'fila entre seccion' }, [
-    el('label', { text: 'Día de la planilla' }, [inDia]),
-    el('label', { class: 'crece', text: 'Anotó' }, [operador]),
-    el('button', { class: 'btn', text: 'Carga con guía o camión', onclick: () => nuevaRecarga() })
-  ]));
-  const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
-  c.append(zona);
-
+  S.combTab = S.combTab || 'bitacora';
+  const tabs = el('div', { class: 'tabs-cf seccion' }, [segF([['bitacora', 'Bitácora del día'], ['mensual', 'Medición mensual'], ['resumen', 'Resumen del mes']],
+    S.combTab, k => { S.combTab = k; render(); })]);
   const cola = (await DB.pendientes()).filter(x => x.tipo === 'recarga');
-  let recargas = [], sinRed = false;
+  c.append(tabs,
+    cola.length ? el('p', { class: 'banda warn', text: `${cola.length} carga(s) guardadas en este dispositivo, todavía sin enviar: se envían solas con señal.` }) : '');
+  const zona = el('div'); c.append(zona);
+  if (S.combTab === 'resumen') return resumenCombustible(zona);
+  if (S.combTab === 'mensual') return medicionMensual(zona);
+  return bitacoraDia(zona);
+}
+
+async function bitacoraDia(c) {
+  S.diaCF = S.diaCF || hoyISO();
+  const dia = S.diaCF;
+  const gens = (S.catalogo.generadores || []).filter(g => g.activo !== false).sort(ordenGen);
+  const dlGen = el('datalist', { id: 'dl-gen' }, gens.map(g => el('option', { value: g.n_interno || g.n_equipo, text: etiquetaGen(g) })));
+  // Operadores de cargas anteriores, para autocompletar el nombre.
+  let previas = [], operadores = [];
   try {
-    const { data, error } = await sb.from('v_recargas').select('*').eq('periodo', mes).order('fecha_hora');
-    if (error) throw error;
-    recargas = (data || []).filter(r => !r.anulada);
-  } catch { sinRed = true; }
+    const desde = new Date(Date.now() - 90 * 864e5).toISOString();
+    const { data } = await sb.from('v_recargas').select('*').gte('fecha_hora', desde).order('fecha_hora');
+    previas = (data || []).filter(r => !r.anulada);
+    operadores = [...new Set(previas.map(r => r.operador).filter(Boolean))].sort();
+  } catch { /* sin red: igual se puede anotar */ }
+  const dlOp = el('datalist', { id: 'dl-op' }, operadores.map(o => el('option', { value: o })));
 
-  // Diésel: los de gas no se abastecen con esta planilla.
-  const gens = (S.catalogo.generadores || [])
-    .filter(g => g.activo !== false && !/gnl|gas/i.test(g.combustible || ''))
-    .sort(ordenGen);
-  const delDia = r => r.fecha_dia === dia;
-  const horaDe = r => new Date(r.fecha_hora).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const inDia = el('input', { type: 'date', value: dia, max: hoyISO(), onchange: e => { if (e.target.value) { S.diaCF = e.target.value; render(); } } });
+  const inCamion = el('input', { type: 'text', placeholder: 'Ej. GYCV-40', value: S.camionCF || '', oninput: e => { S.camionCF = e.target.value; } });
+  const inConductor = el('input', { type: 'text', placeholder: 'Nombre del conductor', value: S.conductorCF || '', oninput: e => { S.conductorCF = e.target.value; } });
+  const inHoja = el('input', { type: 'text', placeholder: 'N° de hoja (opcional)', value: '' });
+  c.append(dlGen, dlOp, el('div', { class: 'filtros-rep filtros-bitacora seccion' }, [
+    campoF('', 'Fecha de la hoja', inDia), campoF('', 'Patente del camión', inCamion),
+    campoF('', 'Conductor', inConductor), campoF('', 'Hoja', inHoja)]));
 
-  // ---- planilla del día ----
-  const entradas = new Map();          // generador → [{ litros, hora }]
-  const casilla = (g, cont) => {
-    const litros = el('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', placeholder: 'L', class: 'carga-l' });
-    const hora = el('input', { type: 'time', class: 'carga-h', title: 'Hora (opcional)' });
-    entradas.get(g.id).push({ litros, hora });
-    cont.append(el('span', { class: 'carga' }, [litros, hora]));
-    return litros;
-  };
-  const filas = gens.map(g => {
-    entradas.set(g.id, []);
-    const ya = recargas.filter(r => r.generador_id === g.id && delDia(r));
-    const cont = el('div', { class: 'cargas' });
-    casilla(g, cont);
-    const totalYa = ya.reduce((a, r) => a + Number(r.litros), 0);
-    return [
-      el('span', { html: `<b>${esc(g.n_interno || '—')}</b> <small class="tenue-b">${esc(g.n_equipo)}</small>` }),
-      ya.length ? el('div', { class: 'marcas' }, ya.map(r => el(esSupervisor() ? 'button' : 'span', {
-        class: 'pill neutro', title: `${r.registrado_por_nombre || ''}${r.operador ? ' · anotó ' + r.operador : ''}`,
-        text: `${num(r.litros)} L · ${horaDe(r)}`, onclick: esSupervisor() ? () => anularRecarga(r) : null }))) : '—',
-      el('div', { class: 'fila' }, [cont, el('button', { class: 'btn chico', text: '+', title: 'Otra carga del mismo día',
-        onclick: () => casilla(g, cont).focus() })]),
-      totalYa ? num(totalYa) : '—'
-    ];
-  });
+  // ---- filas de la hoja ----
+  const cuerpo = el('tbody');
+  const filas = [];
+  const total = el('b'), resumen = el('div', { class: 'chips-gen' });
+  function recalcular() {
+    let t = 0; const porGen = new Map();
+    for (const f of filas) {
+      const g = buscarGenerador(f.gen.value, gens), l = Number(f.litros.value);
+      f.chip.textContent = f.gen.value ? (g ? etiquetaGen(g) : 'No es un generador del parque') : '';
+      f.chip.className = 'chip-gen ' + (f.gen.value ? (g ? 'ok' : 'bad') : '');
+      f.tr.classList.toggle('con-error', !!f.gen.value && !g);
+      if (g && l > 0) { t += l; porGen.set(g, (porGen.get(g) || 0) + l); }
+    }
+    total.textContent = num(t) + ' L';
+    resumen.replaceChildren(...[...porGen].sort((a, b) => ordenGen(a[0], b[0])).map(([g, l]) =>
+      el('span', { class: 'pill neutro', text: `${g.n_interno || g.n_equipo}: ${num(l)} L` })));
+  }
+  function agregarFila(foco = false) {
+    const i = filas.length;
+    const f = {
+      gen: el('input', { list: 'dl-gen', placeholder: 'G-96', autocomplete: 'off', class: 'in-gen' }),
+      litros: el('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', placeholder: 'L', class: 'in-lit' }),
+      operador: el('input', { list: 'dl-op', placeholder: 'Nombre', autocomplete: 'off' }),
+      hora: el('input', { type: 'time', class: 'in-hora' }),
+      horometro: el('input', { type: 'number', step: '0.1', inputmode: 'decimal', placeholder: 'opcional', class: 'in-hor' }),
+      chip: el('span', { class: 'chip-gen' })
+    };
+    f.tr = el('tr', {}, [
+      el('td', { class: 'num tenue-b', text: String(i + 1) }),
+      el('td', {}, [f.gen, f.chip]), el('td', {}, [f.litros]), el('td', {}, [f.operador]), el('td', {}, [f.hora]), el('td', {}, [f.horometro]),
+      el('td', {}, [el('button', { type: 'button', class: 'btn-texto chico', text: 'Quitar', title: 'Vaciar la fila',
+        onclick: () => { for (const k of ['gen', 'litros', 'operador', 'hora', 'horometro']) f[k].value = ''; recalcular(); } })])]);
+    for (const k of ['gen', 'litros']) f[k].addEventListener('input', recalcular);
+    // En la hoja el operador se repite fila a fila: si se deja vacío, toma el de la fila anterior.
+    f.gen.addEventListener('change', () => { if (f.gen.value && !f.operador.value && i > 0) f.operador.value = filas[i - 1].operador.value; });
+    // Enter avanza como en una planilla; en el último campo crea la fila siguiente.
+    const orden = [f.gen, f.litros, f.operador, f.hora, f.horometro];
+    orden.forEach((inp, j) => inp.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return; e.preventDefault();
+      if (j < orden.length - 1) return orden[j + 1].focus();
+      if (i === filas.length - 1) agregarFila(true); else filas[i + 1].gen.focus();
+    }));
+    filas.push(f); cuerpo.append(f.tr);
+    if (foco) f.gen.focus();
+  }
+  for (let i = 0; i < 12; i++) agregarFila();
 
-  const guardar = el('button', { class: 'btn guardar grande', text: 'Guardar planilla del día', onclick: async () => {
+  const btnGuardar = el('button', { class: 'btn guardar grande', text: 'Guardar la hoja', onclick: async () => {
+    const malas = filas.filter(f => f.gen.value && !buscarGenerador(f.gen.value, gens));
+    if (malas.length) return toast(`${malas.length} fila(s) con un código que no es un generador del parque: corrígelas o vacíalas.`, true);
+    const sinLitros = filas.filter(f => f.gen.value && !(Number(f.litros.value) > 0));
+    if (sinLitros.length) return toast(`${sinLitros.length} fila(s) sin litros.`, true);
     const nuevas = [];
-    for (const g of gens) {
-      (entradas.get(g.id) || []).forEach((x, k) => {
-        const l = Number(x.litros.value);
-        if (!x.litros.value || !(l > 0)) return;
-        // sin hora: 08:00, 08:01… así dos cargas iguales del mismo día no se toman por duplicado
-        const hh = x.hora.value || `08:${String(k).padStart(2, '0')}`;
-        nuevas.push({ tipo: 'recarga', generador_id: g.id, fecha_hora: new Date(`${dia}T${hh}:00`).toISOString(),
-          litros: l, combustible: 'Diesel', origen: 'Planilla diaria', guia: null, camion: null, horometro: null,
-          operador: operador.value.trim() || null, observaciones: null, dispositivo: 'Planilla diaria · ' + navigator.userAgent.slice(0, 90) });
-      });
-    }
-    if (!nuevas.length) return toast('No hay litros escritos', true);
-    guardar.disabled = true;
-    let ok = 0, enCola = 0;
-    for (const f of nuevas) {
-      if (navigator.onLine) {
-        const { error } = await sb.rpc('registrar_recarga', {
-          p_generador_id: f.generador_id, p_fecha_hora: f.fecha_hora, p_litros: f.litros, p_combustible: f.combustible,
-          p_origen: f.origen, p_guia: null, p_camion: null, p_horometro: null, p_operador: f.operador,
-          p_obs: null, p_dispositivo: f.dispositivo });
-        if (error) { await DB.encolar(f); enCola++; } else ok++;
-      } else { await DB.encolar(f); enCola++; }
-    }
-    await actualizarConexion();
-    toast(`${ok} carga(s) guardadas` + (enCola ? ` · ${enCola} en el dispositivo, se enviarán con señal` : ''));
+    filas.forEach((f, k) => {
+      const g = buscarGenerador(f.gen.value, gens), l = Number(f.litros.value);
+      if (!g || !(l > 0)) return;
+      // Sin hora: 08:00, 08:01… para que dos cargas iguales del día no se tomen por la misma.
+      const hh = f.hora.value || `08:${String(k).padStart(2, '0')}`;
+      nuevas.push({ generador_id: g.id, fecha_hora: new Date(`${dia}T${hh}:00`).toISOString(), litros: l,
+        combustible: g.combustible || 'Diesel', origen: 'Bitácora camión', camion: inCamion.value.trim() || null,
+        guia: inHoja.value.trim() || null, horometro: f.horometro.value ? Number(f.horometro.value) : null,
+        operador: f.operador.value.trim() || null,
+        observaciones: inConductor.value.trim() ? 'Conductor: ' + inConductor.value.trim() : null,
+        dispositivo: 'Bitácora · ' + navigator.userAgent.slice(0, 80) });
+    });
+    if (!nuevas.length) return toast('La hoja está vacía', true);
+    btnGuardar.disabled = true;
+    const r = await guardarRecargas(nuevas);
+    toast(`${r.ok} carga(s) guardadas` + (r.enCola ? ` · ${r.enCola} quedaron en el dispositivo y se envían con señal` : ''), !!r.err && !r.ok);
     render();
   } });
 
-  const totDia = recargas.filter(delDia).reduce((a, r) => a + Number(r.litros), 0);
+  const yaDelDia = previas.filter(r => r.fecha_dia === dia);
+  c.append(
+    el('div', { class: 'card bitacora seccion' }, [
+      el('div', { class: 'fila entre' }, [el('h3', { style: 'margin:0', text: `Hoja del ${fechaCorta(dia)}` }),
+        el('span', { class: 'ayuda', text: 'Escribe el N° interno como viene en la hoja (96, 6.96 o G-96). Enter pasa al campo siguiente.' })]),
+      el('div', { class: 'tabla-caja tabla-bitacora' }, [el('table', {}, [
+        el('thead', {}, [el('tr', {}, ['#', 'Generador', 'Litros', 'Operador', 'Hora', 'Horómetro', ''].map(h => el('th', { text: h })))]), cuerpo])]),
+      el('div', { class: 'pie-bitacora' }, [
+        el('button', { type: 'button', class: 'btn', text: '+ 5 filas', onclick: () => { for (let i = 0; i < 5; i++) agregarFila(); } }),
+        el('div', { class: 'crece' }, [el('div', { class: 'total-hoja' }, [el('span', { text: 'Total de la hoja: ' }), total]), resumen]),
+        btnGuardar])]),
+    el('div', { class: 'seccion' }, [
+      el('h3', { class: 'titulo-seccion', text: `Ya registrado el ${fechaCorta(dia)}` + (yaDelDia.length ? ` · ${num(yaDelDia.reduce((a, r) => a + Number(r.litros), 0))} L` : '') }),
+      yaDelDia.length ? tabla(['Hora', 'Generador', 'Litros', 'Operador', 'Origen', 'Camión', 'Registró', ''],
+        yaDelDia.map(r => [new Date(r.fecha_hora).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          etiquetaGen(gens.find(g => g.id === r.generador_id)) || r.n_equipo, num(r.litros), r.operador || '—', r.origen || '—', r.camion || '—',
+          r.registrado_por_nombre || '—',
+          esSupervisor() ? el('button', { class: 'btn chico', text: 'Anular', onclick: () => anularRecarga(r) }) : '']), { num: [2] })
+        : el('p', { class: 'ayuda', text: 'Nada todavía para este día.' })]));
+  recalcular();
+}
 
-  poner(zona,
-    cola.length ? el('p', { class: 'banda warn', text: `${cola.length} carga(s) guardadas en este dispositivo, todavía sin enviar.` }) : null,
-    sinRed ? el('p', { class: 'banda warn', text: 'Sin señal: no se pudo traer lo ya enviado. Igual puedes anotar: se guarda en el dispositivo.' }) : null,
-    el('div', { class: 'kpis seccion kpis-cf' }, [
-      kpi(num(totDia) + ' L', 'cargados el ' + fechaCorta(dia)),
-      kpi(num(recargas.reduce((a, r) => a + Number(r.litros), 0)) + ' L', 'en ' + nombrePeriodo(mes)),
-      kpi(recargas.length, 'cargas del mes')
-    ]),
-    el('div', { class: 'card seccion' }, [
-      el('h3', { style: 'margin-top:0', text: `Planilla del ${fechaCorta(dia)}` }),
-      el('p', { class: 'ayuda', text: 'Escribe los litros de cada carga. Si un generador cargó más de una vez, toca + para otra casilla. ' +
-        'La hora es opcional. Lo ya guardado aparece en gris' + (esSupervisor() ? ' (tócalo para anularlo).' : '.') }),
-      tabla(['Generador', 'Ya guardado', 'Nuevas cargas (L)', 'Total del día'], filas, { num: [3] }),
-      el('div', { class: 'fila', style: 'margin-top:12px' }, [guardar])
-    ]),
-  );
-  // Resumen del mes: litros por día y equipo, con filtros, gráfico, Excel e impresión.
-  resumenCombustible(c);
+// Excel del combustible de varios meses (para el respaldo): cada carga y el total por equipo y mes.
+async function excelCombustibleRango(desde, hasta) {
+  await cargarJSZip();
+  const R = window.RESPALDO;
+  const rs = (await traerTodo(() => sb.from('v_recargas').select('*').gte('periodo', desde).lte('periodo', hasta).order('fecha_hora').order('id'))).filter(r => !r.anulada);
+  const meses = listaMeses(desde, hasta);
+  const gens = (S.catalogo.generadores || []).slice().sort(ordenGen).filter(g => rs.some(r => r.generador_id === g.id));
+  const lit = (gid, m) => rs.filter(r => r.generador_id === gid && r.periodo === m).reduce((a, r) => a + Number(r.litros), 0);
+  const hojas = [
+    { nombre: 'Por equipo y mes', encabezado: 'Casa de Fuerza', tabla: { nombre: 'PorMes', totales: { etiqueta: 'Total', desde: 1 } },
+      intro: [`Combustible · ${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`, 'Litros cargados por generador y mes (bitácora, guías y mediciones mensuales).'],
+      filas: [['Generador', ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3) + '-' + m.slice(2, 4)), 'Total'],
+        ...gens.map(g => [etiquetaGen(g), ...meses.map(m => lit(g.id, m) || ''), meses.reduce((a, m) => a + lit(g.id, m), 0)])] },
+    { nombre: 'Cargas', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Cargas', totales: { etiqueta: 'Total', desde: 3, hasta: 4 } },
+      intro: ['Combustible · cada carga', 'Origen: bitácora del camión, guía o medición mensual.'],
+      filas: [['Fecha', 'Generador', 'Combustible', 'Litros', 'Origen', 'Hoja / guía', 'Camión', 'Operador', 'Observaciones', 'Registró'],
+        ...rs.map(r => [fechaHoraCL(r.fecha_hora), r.n_equipo, r.combustible || '', Number(r.litros), r.origen || '', r.guia || '',
+          r.camion || '', r.operador || '', r.observaciones || '', r.registrado_por_nombre || ''])] }];
+  for (const h of hojas) if (h.filas.length === 1) h.filas.push(['Sin cargas en el periodo']);
+  return { blob: await R.construirExcel(hojas), nombre: `Combustible_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}.xlsx` };
+}
+
+// Equipos sin bitácora de cargas: una vez al mes, lectura inicial y final del medidor.
+async function medicionMensual(c) {
+  S.mesMed = S.mesMed || ultimoMesCerrado();
+  const gensTodos = (S.catalogo.generadores || []).filter(g => g.activo !== false).sort(ordenGen);
+  const propios = gensTodos.filter(g => g.registra_recargas === false);
+  const meses = mesesCerrados(12);
+  if (!meses.includes(primerDiaDelMes(new Date()))) meses.unshift(primerDiaDelMes(new Date()));
+  const finMes = m => { const d = new Date(+m.slice(0, 4), +m.slice(5, 7), 0); return `${m.slice(0, 8)}${String(d.getDate()).padStart(2, '0')}`; };
+  let regs = [];
+  try {
+    const { data } = await sb.from('v_recargas').select('*').eq('periodo', S.mesMed).eq('origen', 'Medición mensual');
+    regs = (data || []).filter(r => !r.anulada);
+  } catch { /* sin red */ }
+  const filas = (propios.length ? propios : []).map(g => {
+    const ya = regs.find(r => r.generador_id === g.id);
+    const ini = el('input', { type: 'number', step: '0.1', placeholder: 'Inicial' });
+    const fin = el('input', { type: 'number', step: '0.1', placeholder: 'Final' });
+    const dif = el('b', { text: '—' });
+    const calc = () => { const d = Number(fin.value) - Number(ini.value); dif.textContent = ini.value && fin.value ? (d >= 0 ? num(d) + ' L' : 'final menor que inicial') : '—'; };
+    ini.addEventListener('input', calc); fin.addEventListener('input', calc);
+    return { g, ya, ini, fin, dif };
+  });
+  const btn = el('button', { class: 'btn guardar', text: 'Guardar mediciones', onclick: async () => {
+    const nuevas = [];
+    for (const f of filas) {
+      if (!f.ini.value || !f.fin.value) continue;
+      const l = Number(f.fin.value) - Number(f.ini.value);
+      if (!(l > 0)) return toast(`${etiquetaGen(f.g)}: la lectura final debe ser mayor que la inicial`, true);
+      nuevas.push({ generador_id: f.g.id, fecha_hora: new Date(`${finMes(S.mesMed)}T23:00:00`).toISOString(), litros: l,
+        combustible: f.g.combustible || 'Diesel', origen: 'Medición mensual', operador: S.usuario.nombre,
+        observaciones: `Medidor: ${f.ini.value} → ${f.fin.value}`, dispositivo: 'Medición mensual · ' + navigator.userAgent.slice(0, 80) });
+    }
+    if (!nuevas.length) return toast('No hay mediciones completas', true);
+    btn.disabled = true;
+    const r = await guardarRecargas(nuevas);
+    toast(`${r.ok} medición(es) guardadas` + (r.enCola ? ` · ${r.enCola} en el dispositivo` : ''));
+    render();
+  } });
+  c.append(
+    el('div', { class: 'filtros-rep filtros-comb seccion' }, [
+      campoF('f-ver', 'Mes', selF(meses.map(m => [m, nombrePeriodo(m)]), S.mesMed, v => { S.mesMed = v; render(); })),
+      el('p', { class: 'ayuda', style: 'grid-column:span 2;margin:0', text:
+        'Para los equipos que no anotan cada carga: se lee el medidor (o el estanque) al inicio y al final del mes, y la diferencia queda como el consumo del mes. ' +
+        'Qué equipos aparecen aquí se define en la ficha del generador ("Registra cada carga").' })]),
+    propios.length ? el('div', { class: 'card seccion' }, [
+      tabla(['Generador', 'Ya registrado', 'Lectura inicial', 'Lectura final', 'Consumo del mes'],
+        filas.map(f => [el('b', { text: etiquetaGen(f.g) }),
+          f.ya ? el('span', { class: 'pill ok', title: f.ya.observaciones || '', text: `${num(f.ya.litros)} L` }) : '—',
+          f.ini, f.fin, f.dif])),
+      el('div', { class: 'fila', style: 'margin-top:12px' }, [btn])])
+      : el('p', { class: 'vacio', text: 'Todos los generadores registran cada carga en la bitácora. Si alguno se mide una vez al mes, desmarca "Registra cada carga" en su ficha.' }));
 }
 
 function nuevaRecarga() {

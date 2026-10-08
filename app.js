@@ -513,37 +513,51 @@ document.addEventListener('touchmove', e => {
 }, { passive: false });
 
 // ------------------------------------------------------------------ tema claro / oscuro
+const TEMAS = {
+  light: { nombre: 'Claro', desc: 'Fondo claro con verde azulado.', meta: '#0f2226', mues: ['#f2f4f3', '#ffffff', '#0e6f68'] },
+  dark:  { nombre: 'Oscuro', desc: 'Para poca luz.', meta: '#0b1517', mues: ['#0b1517', '#122124', '#4fbdaf'] },
+  clean: { nombre: 'Limpio', desc: 'Grises, blanco y negro: plano y de alto contraste.', meta: '#e9e9e6', mues: ['#e9e9e6', '#ffffff', '#111111'] }
+};
+
 function esTemaOscuroActivo() {
   const m = document.documentElement.getAttribute('data-modo');
   if (m === 'dark') return true;
-  if (m === 'light') return false;
+  if (m === 'light' || m === 'clean') return false;
   return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
+const temaActual = () => {
+  const m = document.documentElement.getAttribute('data-modo');
+  return TEMAS[m] ? m : (esTemaOscuroActivo() ? 'dark' : 'light');
+};
 
 function fijarTema(modo) {
-  if (modo === 'dark') {
-    document.documentElement.setAttribute('data-modo', 'dark');
-  } else {
-    document.documentElement.setAttribute('data-modo', 'light');
-  }
+  if (!TEMAS[modo]) modo = 'light';
+  document.documentElement.setAttribute('data-modo', modo);
   try { localStorage.setItem('cierre_mes_modo', modo); } catch (e) {}
-
   const metaTheme = $('meta[name="theme-color"]');
-  if (metaTheme) metaTheme.setAttribute('content', modo === 'dark' ? '#0b1517' : '#0f2226');
+  if (metaTheme) metaTheme.setAttribute('content', TEMAS[modo].meta);
 }
 
-function alternarTema() {
-  const nuevoModo = esTemaOscuroActivo() ? 'light' : 'dark';
-  fijarTema(nuevoModo);
-  toast(nuevoModo === 'dark' ? 'Modo oscuro activado' : 'Modo claro activado');
+// Un toque abre las tres opciones y otro toque elige.
+function elegirTema() {
+  const actual = temaActual();
+  const lista = Object.entries(TEMAS).map(([k, t]) => el('button', {
+    type: 'button', class: 'tema-op' + (k === actual ? ' sel' : ''), 'aria-pressed': k === actual ? 'true' : 'false',
+    onclick: () => { fijarTema(k); cerrarModal(); }
+  }, [
+    el('span', { class: 'tema-mues' }, t.mues.map(c => el('i', { style: `background:${c}` }))),
+    el('span', { class: 'tema-txt' }, [el('b', { text: t.nombre }), el('small', { text: t.desc })]),
+    k === actual ? el('span', { class: 'tema-ok', text: '✓' }) : null
+  ]));
+  modal('Tema de colores', el('div', { class: 'tema-lista' }, lista));
 }
 
 // Sincronizar theme-color inicial
 const metaTheme = $('meta[name="theme-color"]');
-if (metaTheme) metaTheme.setAttribute('content', esTemaOscuroActivo() ? '#0b1517' : '#0f2226');
+if (metaTheme) metaTheme.setAttribute('content', TEMAS[temaActual()].meta);
 
-$('#btn-tema')?.addEventListener('click', alternarTema);
-$('#btn-tema-login')?.addEventListener('click', alternarTema);
+$('#btn-tema')?.addEventListener('click', elegirTema);
+$('#btn-tema-login')?.addEventListener('click', elegirTema);
 
 $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));

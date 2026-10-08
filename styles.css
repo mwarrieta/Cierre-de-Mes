@@ -1104,3 +1104,47 @@ tr.fila-rev:hover{background:none}
 .ficha-col .ficha-form{background:var(--surface);border:1px solid var(--line);border-radius:var(--radio);padding:10px}
 #modal-cuerpo .ficha-col .ficha-fotos img{max-width:150px;max-height:150px}
 .ficha-revision h4{font-size:15px}
+
+/* ===== Tema "Limpio": grises, blanco y negro, plano y de alto contraste ===== */
+:root[data-modo="clean"]{
+  color-scheme:light;
+  --ground:#e9e9e6; --surface:#ffffff; --surface-2:#f4f4f1;
+  --ink:#111111; --ink-2:#444444; --ink-3:#6b6b6b;
+  --line:#e2e2de; --line-2:#c9c9c4;
+  --acento:#111111; --acento-ink:#111111; --acento-suave:#ececE8;
+  --ok:#1f7a55; --ok-bg:#e3f0ea;
+  --warn:#8a5a00; --warn-bg:#f5ecd5;
+  --bad:#9b2c1a; --bad-bg:#f6e4df;
+  --guardar:#111111; --guardar-borde:#000000;
+  --marca:#111111; --marca-suave:#11111122;
+  --radio:2px;
+  --sombra:0 1px 8px rgba(0,0,0,.12);
+}
+:root[data-modo="clean"] .barra{border-bottom:1px solid var(--ink)}
+:root[data-modo="clean"] .modal-caja,
+:root[data-modo="clean"] .login-caja{border-radius:2px}
+:root[data-modo="clean"] .btn{font-weight:600}
+:root[data-modo="clean"] .pill,
+:root[data-modo="clean"] .chip,
+:root[data-modo="clean"] .chip-var{border-radius:2px}
+:root[data-modo="clean"] th{background:var(--surface-2);color:var(--ink-2);border-bottom:1px solid var(--ink)}
+:root[data-modo="clean"] .ficha-col.anterior{background:var(--surface-2)}
+:root[data-modo="clean"] .ficha-col.actual{background:var(--surface);border:1.5px solid var(--ink);box-shadow:none}
+:root[data-modo="clean"] .ficha-resultado{border-left-color:var(--ink)}
+:root[data-modo="clean"] .ficha-resultado.warn{border-left-color:var(--warn)}
+:root[data-modo="clean"] .ficha-resultado.bad{border-left-color:var(--bad)}
+:root[data-modo="clean"] .kpi-btn.sel{background:var(--surface);box-shadow:inset 0 0 0 1px var(--ink)}
+:root[data-modo="clean"] .seg-op.sel{background:var(--ink);color:#fff}
+:root[data-modo="clean"] .aviso-beta{background:var(--warn-bg);color:var(--warn);border-color:var(--warn)}
+
+/* Selector de tema */
+.tema-lista{display:grid;gap:10px}
+.tema-op{display:flex;align-items:center;gap:14px;width:100%;text-align:left;font:inherit;color:var(--ink);
+  background:var(--surface);border:1px solid var(--line-2);border-radius:var(--radio);padding:12px 14px;cursor:pointer}
+.tema-op:hover{border-color:var(--ink-3)}
+.tema-op.sel{border-color:var(--acento);box-shadow:inset 0 0 0 1px var(--acento)}
+.tema-mues{display:flex;flex:none;border:1px solid var(--line-2);border-radius:4px;overflow:hidden}
+.tema-mues i{display:block;width:22px;height:34px}
+.tema-txt{display:flex;flex-direction:column;flex:1;min-width:0}
+.tema-txt small{color:var(--ink-3);font-size:13px}
+.tema-ok{font-weight:700;color:var(--acento)}

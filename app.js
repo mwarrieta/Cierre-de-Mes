@@ -1654,6 +1654,7 @@ const MODOS = { mes: 'Un mes', anio: 'Un año', rango: 'Un rango' };
 
 async function vistaConsumos(c) {
   S.rep = S.rep || {
+    vista: 'totales',
     modo: 'anio',
     mes: S.periodoConsumo,
     anio: String(new Date().getFullYear()),
@@ -1675,10 +1676,24 @@ async function vistaConsumos(c) {
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
 
   const zonaFiltros = el('div', { class: 'fila crece' });
+  R.vista = R.vista || 'totales';
+  const segVista = el('div', { class: 'seg', role: 'group', 'aria-label': 'Tipo de tabla' },
+    [['totales', 'Totales'], ['detalle', 'Detalle mensual']].map(([k, t]) =>
+      el('button', { type: 'button', class: 'seg-op' + (R.vista === k ? ' sel' : ''), 'data-vista': k,
+        'aria-pressed': R.vista === k ? 'true' : 'false', text: t,
+        onclick: () => {
+          R.vista = k;
+          $$('.seg-op', segVista).forEach(b => {
+            const on = b.dataset.vista === k;
+            b.classList.toggle('sel', on); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+          });
+          pintar();
+        } })));
   const barra = el('div', { class: 'fila seccion' }, [
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
-    el('label', { text: 'Grupo' }, [selGrupo])
+    el('label', { text: 'Grupo' }, [selGrupo]),
+    el('div', { class: 'seg-caja' }, [el('span', { class: 'seg-tit', text: 'Tabla' }), segVista])
   ]);
   const acciones = el('div', { class: 'fila entre seccion acciones-rep' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
@@ -1801,9 +1816,18 @@ async function vistaConsumos(c) {
 
   // Pinta lo ya consultado: abrir una caja o volver no repite la consulta.
   let ultimo = null;
-  function pintar() {
+  async function pintar() {
     if (!ultimo || !zona.isConnected) return;
-    poner(zona, ...armarInforme(ultimo.data, ultimo.desde, ultimo.hasta, { ...ultimo.extra, caja: R.caja || null }));
+    const actual = ultimo;
+    // El detalle mensual necesita el totalizador de cada mes: se trae solo cuando se pide.
+    if (R.vista === 'detalle' && !R.caja && !actual.extra.totalizadores) {
+      zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando totalizadores…' }));
+      try { actual.extra.totalizadores = await traerTotalizadores(actual.data); }
+      catch (e) { toast('No se pudieron traer los totalizadores: ' + (e.message || e), true); actual.extra.totalizadores = new Map(); }
+      if (actual !== ultimo || !zona.isConnected) return;
+    }
+    poner(zona, ...armarInforme(actual.data, actual.desde, actual.hasta,
+      { ...actual.extra, caja: R.caja || null, vista: R.vista }));
   }
 
   pintarFiltros();
@@ -1841,6 +1865,58 @@ const rangoNombre = nombre => rangoVar({ nombre });
 const ordenFilaInforme = (a, b) => compararGrupos(a.grupo, b.grupo) ||
   String(a.punto).localeCompare(String(b.punto)) ||
   rangoNombre(a.variable) - rangoNombre(b.variable) || String(a.variable).localeCompare(String(b.variable));
+
+// Lo que se ve en la columna Variable: solo la unidad. El nombre completo va en el tooltip.
+const SIGLA_MEDICION = { imp: 'kWh+', exp: 'kWh-', gen: 'kWh', kw: 'kW', hrs: 'h', agua: 'm³', gas: 'm³', lt: 'L' };
+const siglaDe = (variable, unidad) =>
+  SIGLA_MEDICION[medicionDe(variable, unidad)] || UNIDAD[unidad] || unidad || '—';
+
+// Tooltip flotante propio: el atributo title no sirve en tablet y un tooltip dentro de la
+// tabla quedaría recortado por su scroll. Con mouse aparece al pasar; con el dedo, al tocar.
+let _tipNodo, _tipTimer;
+function ponerTip(nodo, texto) {
+  const ocultar = () => { clearTimeout(_tipTimer); if (_tipNodo) _tipNodo.hidden = true; };
+  const mostrar = () => {
+    if (!_tipNodo) {
+      _tipNodo = el('div', { class: 'tip-flotante', role: 'tooltip', hidden: '' });
+      document.body.append(_tipNodo);
+      document.addEventListener('pointerdown', e => { if (!e.target.closest?.('.chip-var')) ocultar(); }, true);
+      window.addEventListener('scroll', ocultar, true);
+    }
+    _tipNodo.textContent = texto; _tipNodo.hidden = false;
+    _tipNodo.style.left = '0px'; _tipNodo.style.top = '0px';
+    const r = nodo.getBoundingClientRect(), w = _tipNodo.offsetWidth, h = _tipNodo.offsetHeight;
+    const x = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), window.innerWidth - w - 8);
+    const y = r.top - h - 8 >= 8 ? r.top - h - 8 : r.bottom + 8;
+    _tipNodo.style.left = x + 'px'; _tipNodo.style.top = y + 'px';
+  };
+  nodo.addEventListener('mouseenter', mostrar);
+  nodo.addEventListener('mouseleave', ocultar);
+  nodo.addEventListener('focus', mostrar);
+  nodo.addEventListener('blur', ocultar);
+  nodo.addEventListener('click', () => { mostrar(); clearTimeout(_tipTimer); _tipTimer = setTimeout(ocultar, 3000); });
+}
+const chipVar = f => {
+  const b = el('button', { type: 'button', class: 'chip-var', 'aria-label': f.variable,
+    text: siglaDe(f.variable, f.unidad_reporte) });
+  ponerTip(b, f.variable);
+  return b;
+};
+
+// Totalizador de cada mes = la lectura del mes siguiente (misma regla que la planilla).
+async function traerTotalizadores(data) {
+  const out = new Map();
+  const ids = [...new Set(data.map(f => f.variable_id))];
+  const periodos = [...new Set(data.map(f => mesSiguiente(f.mes)))];
+  if (!ids.length) return out;
+  const filas = await traerTodo(() => sb.from('lecturas').select('id, variable_id, periodo, valor')
+    .in('variable_id', ids).in('periodo', periodos).neq('estado', 'descartada').order('id'));
+  for (const l of filas) if (l.valor !== null && l.valor !== undefined) out.set(l.variable_id + '|' + l.periodo, Number(l.valor));
+  return out;
+}
+
+// Variables con el detalle de "Revisar" desplegado: sobrevive a los repintados.
+const revAbiertas = new Set();
 
 /* ---------- armado del informe (se reutiliza en pantalla y al imprimir) ---------- */
 // Fuera de rango: se compara contra la banda EWMA que ya está en el dispositivo.
@@ -1894,7 +1970,8 @@ function tablaInforme(cab, grupos, clases = []) {
 
 function armarInforme(data, desde, hasta, extra = {}) {
   const { enAlcance = [], faltantes = [], noLeidos = [], avisos = [], bandas = {},
-          revisiones = new Map(), abrir, alCaja, caja = null } = extra;
+          revisiones = new Map(), abrir, alCaja, caja = null,
+          vista = 'totales', totalizadores = new Map() } = extra;
   const meses = [...new Set(data.map(f => f.mes))].sort();
   const partes = [];
 
@@ -2027,7 +2104,9 @@ function armarInforme(data, desde, hasta, extra = {}) {
       'Un mes se puede calcular recién cuando existe la lectura del mes siguiente.' }));
     return partes;
   }
-  if (abrir) partes.push(el('p', { class: 'ayuda pista-rep', text: 'Toca un valor para ver sus lecturas, fotos y avisos. Toca una caja para ver sus registros.' }));
+  if (abrir) partes.push(el('p', { class: 'ayuda pista-rep', text:
+    'Toca un valor para ver sus lecturas, fotos y avisos. El círculo de Revisar cuenta lo pendiente: tócalo para ver qué es. ' +
+    'Toca la unidad para ver el nombre completo de la lectura.' }));
 
   // Un valor de la tabla: botón que abre la ficha, con el color de su estado.
   const celda = (f, m, texto) => {
@@ -2060,6 +2139,49 @@ function armarInforme(data, desde, hasta, extra = {}) {
         text: 'aviso: ' + (a.categoria?.categoria || a.descripcion || 'abierto').slice(0, 28) }));
     return out.length ? el('div', { class: 'marcas' }, out) : el('span', { class: 'pill ok', text: 'ok' });
   };
+  // Revisar: un círculo con el número de revisiones pendientes (consumos marcados sin revisar
+  // + avisos abiertos del punto). Al tocarlo se despliega debajo de la fila el detalle.
+  const pendientesDe = (f, mesesFila) => {
+    let n = 0, nivel = 'warn';
+    for (const m of mesesFila) {
+      const k = f.variable_id + '|' + m, j = juicios.get(k);
+      if (j && !revisiones.has(k)) { n++; if (j.nivel === 'bad') nivel = 'bad'; }
+    }
+    n += (avisosDe.get(f.punto_id) || []).length;
+    return { n, nivel };
+  };
+  const alternarRev = (b, f, mesesFila, filasDebajo) => {
+    let ancla = b.closest('tr');
+    for (let i = 0; i < filasDebajo; i++) ancla = ancla.nextElementSibling || ancla;
+    const sig = ancla.nextElementSibling;
+    if (sig && sig.classList.contains('fila-rev') && sig.dataset.id === String(f.variable_id)) {
+      sig.remove(); b.setAttribute('aria-expanded', 'false'); revAbiertas.delete(f.variable_id); return;
+    }
+    const cols = ancla.closest('table').tHead.rows[0].cells.length;
+    const det = el('tr', { class: 'fila-rev', 'data-id': String(f.variable_id) }, [
+      el('td', { colspan: String(cols) }, [el('div', { class: 'rev-cont' }, [
+        el('strong', { text: `${f.punto} · ${siglaDe(f.variable, f.unidad_reporte)}` }),
+        marcas(f, mesesFila, mesesFila.length > 1)])])]);
+    ancla.after(det); b.setAttribute('aria-expanded', 'true'); revAbiertas.add(f.variable_id);
+  };
+  const circuloRev = (f, mesesFila, filasDebajo = 0) => {
+    const { n, nivel } = pendientesDe(f, mesesFila);
+    const b = el('button', { type: 'button', class: 'rev-circulo ' + (n ? nivel : 'ok'),
+      'data-id': String(f.variable_id), 'aria-expanded': 'false',
+      title: n ? `${n} por revisar · toca para ver` : 'Sin pendientes · toca para ver el historial',
+      'aria-label': n ? `${n} por revisar` : 'Sin pendientes', text: n ? String(n) : '✓' });
+    b.addEventListener('click', () => alternarRev(b, f, mesesFila, filasDebajo));
+    return b;
+  };
+  // Tras armar una tabla, vuelve a abrir los detalles que estaban abiertos.
+  const empujar = t => {
+    for (const b of t.querySelectorAll('button.rev-circulo'))
+      if (revAbiertas.has(Number(b.dataset.id))) b.click();
+    partes.push(t);
+  };
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const cabMes = m => variosAnios ? `${mesCorto(m)}-${m.slice(2, 4)}` : mesCorto(m);
+
   // Agrupa las filas bajo su grupo, en el orden de los grupos.
   const agrupar = filas => {
     const g = new Map();
@@ -2067,15 +2189,76 @@ function armarInforme(data, desde, hasta, extra = {}) {
     return [...g].map(([nombre, filas]) => ({ nombre, filas }));
   };
 
-  if (meses.length === 1) {
+  if (vista === 'detalle') {
+    // Como la hoja "Detalle mensual" del Excel: por cada lectura, totalizador, consumo y variación.
+    const claves = new Map();
+    for (const f of data) {
+      if (!claves.has(f.variable_id)) claves.set(f.variable_id, { f, cons: {} });
+      claves.get(f.variable_id).cons[f.mes] = Number(f.consumo);
+    }
+    const bloques = [...claves.values()].sort((a, b) => ordenFilaInforme(a.f, b.f));
+    const porGrupo = new Map();
+    for (const b of bloques) {
+      const g = b.f.grupo || 'Sin grupo';
+      if (!porGrupo.has(g)) porGrupo.set(g, new Map());
+      const pm = porGrupo.get(g);
+      if (!pm.has(b.f.punto_id)) pm.set(b.f.punto_id, []);
+      pm.get(b.f.punto_id).push(b);
+    }
+    const ncols = 3 + meses.length + 2;
+    const thead = el('thead', {}, [el('tr', {}, [
+      el('th', { class: 'd-punto', text: 'Punto' }), el('th', { class: 'd-var', text: 'Variable' }), el('th', { text: '' }),
+      ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
+      el('th', { class: 'num', text: 'Total' }), el('th', { text: 'Revisar' })])]);
+    const tb = el('tbody');
+    for (const [gNombre, puntos] of porGrupo) {
+      tb.append(el('tr', { class: 'fila-grupo' }, [
+        el('td', { colspan: String(ncols) }, [el('span', { text: `${gNombre} · ${puntos.size}` })])]));
+      let gris = false;
+      for (const vars of puntos.values()) {
+        gris = !gris;
+        vars.forEach((b, vi) => {
+          const f = b.f, mm = b.cons;
+          const total = meses.reduce((s2, m) => s2 + (mm[m] || 0), 0);
+          const cl = (x = '') => 'd-fila-tr' + (gris ? ' gris' : '') + x;
+          const vacio = c => el('td', { class: c });
+          tb.append(
+            el('tr', { class: cl() }, [
+              el('td', { class: 'd-punto' }, vi === 0 ? [el('b', { text: f.punto }), f.tag ? el('small', { text: f.tag }) : null] : []),
+              el('td', { class: 'd-var' }, [chipVar(f)]),
+              el('td', { class: 'd-fila', text: 'Totalizador' }),
+              ...meses.map(m => {
+                const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(m));
+                return el('td', { class: 'num d-tot', text: t === undefined ? '—' : num(t) });
+              }),
+              vacio('num'),
+              el('td', { class: 'd-rev' }, [circuloRev(f, meses, 2)])]),
+            el('tr', { class: cl(' d-cons') }, [
+              vacio('d-punto'), vacio('d-var'), el('td', { class: 'd-fila', text: 'Consumo del mes' }),
+              ...meses.map(m => el('td', { class: 'num' }, [celda(f, m, mm[m] === undefined ? '—' : num(mm[m]))])),
+              el('td', { class: 'num', text: num(total) }), vacio('d-rev')]),
+            el('tr', { class: cl(' fin') }, [
+              vacio('d-punto'), vacio('d-var'), el('td', { class: 'd-fila', text: 'Var. % vs mes anterior' }),
+              ...meses.map((m, i) => {
+                const a = i > 0 ? mm[meses[i - 1]] : undefined, c2 = mm[m];
+                if (!a || !c2) return el('td', { class: 'num', text: '' });
+                const p = 100 * (c2 - a) / a;
+                return el('td', { class: 'num d-var-pct', text: (p > 0 ? '+' : '') + num(p, 1) + '%' });
+              }),
+              vacio('num'), vacio('d-rev')]));
+        });
+      }
+    }
+    empujar(el('div', { class: 'tabla-caja tabla-detalle' }, [el('table', {}, [thead, tb])]));
+  } else if (meses.length === 1) {
     const filas = data.map(f => ({ grupo: f.grupo || 'Sin grupo', celdas: [
-      f.punto, f.tag || '—', f.variable,
-      celda(f, f.mes, num(f.consumo)), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
-      marcas(f, [f.mes], false),
+      f.punto, f.tag || '—', chipVar(f),
+      celda(f, f.mes, num(f.consumo)), f.dias_asignados,
+      circuloRev(f, [f.mes]),
       el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })] }));
-    partes.push(tablaInforme(
-      ['Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'], agrupar(filas),
-      ['c-punto c-ancha', 'c-tag', 'c-var c-ancha', 'num c-mes', 'c-un', 'num c-mes', 'c-rev c-ancha', 'c-est']));
+    empujar(tablaInforme(
+      ['Punto', 'TAG', 'Variable', 'Consumo', 'Días', 'Revisar', 'Estado'], agrupar(filas),
+      ['c-punto c-ancha', 'c-tag', 'c-var', 'num c-mes', 'num c-mes', 'c-rev', 'c-est']));
   } else {
     // pivote: una fila por punto·variable, una columna por mes
     const claves = new Map();
@@ -2087,13 +2270,13 @@ function armarInforme(data, desde, hasta, extra = {}) {
       const vals = meses.map(m => mm[m]);
       const total = vals.reduce((a, v) => a + (v || 0), 0);
       return { grupo: f.grupo || 'Sin grupo', celdas: [
-        f.punto, f.tag || '—', f.variable, UNIDAD[f.unidad_reporte] || f.unidad_reporte,
+        f.punto, f.tag || '—', chipVar(f),
         ...meses.map((m, i) => celda(f, m, vals[i] === undefined ? '—' : num(vals[i]))),
-        num(total), marcas(f, meses, true)] };
+        num(total), circuloRev(f, meses)] };
     });
-    partes.push(tablaInforme(
-      ['Punto', 'TAG', 'Variable', 'Un.', ...meses.map(mesCorto), 'Total', 'Revisar'], agrupar(filas),
-      ['c-punto c-ancha', 'c-tag', 'c-var c-ancha', 'c-un', ...meses.map(() => 'num c-mes'), 'num c-mes c-total', 'c-rev c-ancha']));
+    empujar(tablaInforme(
+      ['Punto', 'TAG', 'Variable', ...meses.map(cabMes), 'Total', 'Revisar'], agrupar(filas),
+      ['c-punto c-ancha', 'c-tag', 'c-var', ...meses.map(() => 'num c-mes'), 'num c-mes c-total', 'c-rev']));
   }
   return partes;
 }

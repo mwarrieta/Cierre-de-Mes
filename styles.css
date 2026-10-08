@@ -1180,3 +1180,8 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .impresion table.detalle-imp tbody.d-bloque{break-inside:avoid;page-break-inside:avoid}
   .impresion .pie-informe{break-inside:avoid;margin-top:8px;font-size:8.5px;color:#444}
 }
+
+/* Indicadores de estado del dato: solo en pantalla, nunca en lo impreso */
+.ico-foto{display:inline-flex;vertical-align:-1px;margin-left:3px;opacity:.45}
+.celda-cons:hover .ico-foto{opacity:.8}
+@media print{.marca-rev,.ico-foto{display:none!important}}

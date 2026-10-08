@@ -1815,11 +1815,20 @@ async function vistaConsumos(c) {
       for (const x of (r.data || [])) revisiones.set(x.variable_id + '|' + x.mes, x);
     } catch { /* sin revisiones, todo lo marcado sigue por revisar */ }
 
+    // Registros con foto: la foto de un mes cuelga de la lectura de cierre (periodo del mes siguiente).
+    const conFoto = new Set();
+    try {
+      const fl = await traerTodo(() => sb.from('lecturas').select('variable_id, periodo, fotos!inner(id)')
+        .gte('periodo', mesSiguiente(desde)).lte('periodo', mesSiguiente(hasta)).neq('estado', 'descartada')
+        .order('id'));
+      for (const x of fl) conFoto.add(x.variable_id + '|' + x.periodo);
+    } catch { /* sin el indicador de fotos, la tabla igual sirve */ }
+
     const bandas = await DB.bandasCache().catch(() => ({}));
     S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, revisiones };
-    const ctx = { filas: data, hasta, avisos, bandas, revisiones, alCambiar: cargar };
+    const ctx = { filas: data, hasta, avisos, bandas, revisiones, conFoto, alCambiar: cargar, repintar: () => pintar() };
     ultimo = { data, desde, hasta, extra: {
-      enAlcance, faltantes, noLeidos, avisos, bandas, revisiones,
+      enAlcance, faltantes, noLeidos, avisos, bandas, revisiones, conFoto,
       abrir: clave => verConsumo(clave, ctx),
       alCaja: k => { R.caja = k; pintar(); acciones.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
     } };
@@ -1934,6 +1943,7 @@ async function traerTotalizadores(data) {
 
 // Variables con el detalle de "Revisar" desplegado: sobrevive a los repintados.
 const revAbiertas = new Set();
+const ICONO_FOTO = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>';
 
 /* ---------- armado del informe (se reutiliza en pantalla y al imprimir) ---------- */
 // Fuera de rango: se compara contra la banda EWMA que ya está en el dispositivo.
@@ -1987,7 +1997,7 @@ function tablaInforme(cab, grupos, clases = []) {
 
 function armarInforme(data, desde, hasta, extra = {}) {
   const { enAlcance = [], faltantes = [], noLeidos = [], avisos = [], bandas = {},
-          revisiones = new Map(), abrir, alCaja, caja = null,
+          revisiones = new Map(), conFoto = new Set(), abrir, alCaja, caja = null,
           vista = 'totales', totalizadores = new Map() } = extra;
   const meses = [...new Set(data.map(f => f.mes))].sort();
   const partes = [];
@@ -2005,7 +2015,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
   // Pendiente = marcado y todavía sin corregir ni desestimar.
   const pend = [...juicios.keys()].filter(k => !revisiones.has(k));
   const mesCorto = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
-  const nombreTipo = { corregido: 'corregido', desestimado: 'desestimado' };
+  const nombreTipo = { corregido: 'corregido', desestimado: 'desestimado', validado: 'validado' };
 
   // Datos de una lectura, venga del informe o del catálogo (si no tiene consumo).
   const porId = new Map();
@@ -2134,7 +2144,9 @@ function armarInforme(data, desde, hasta, extra = {}) {
       class: 'celda-cons' + (rev ? ' rev' : j && !j.sinDato ? ' ' + j.nivel : '') + (texto === '—' ? (rev ? ' falta' : ' falta pend') : ''),
       title: rev ? `${nombreTipo[rev.tipo]}: ${rev.motivo}` : j ? j.texto : 'Ver lecturas',
       onclick: () => abrir({ variable_id: f.variable_id, mes: m })
-    }, [el('span', { text: texto }), rev ? el('span', { class: 'marca-rev', text: ' ✓' }) : null]);
+    }, [el('span', { text: texto }),
+        rev ? el('span', { class: 'marca-rev', title: 'Registro ' + (nombreTipo[rev.tipo] || 'revisado'), text: ' ✓' }) : null,
+        conFoto.has(f.variable_id + '|' + mesSiguiente(m)) ? el('span', { class: 'ico-foto', title: 'Tiene registro fotográfico', html: ICONO_FOTO }) : null]);
   };
   // La columna Revisar dice QUÉ pasa y en qué mes; cada marca abre su ficha.
   const marcas = (f, mesesFila, conMes) => {
@@ -2326,7 +2338,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const nMes = cap(nombrePeriodo(mes)), nAnt = cap(nombrePeriodo(ant)), nSig = cap(nombrePeriodo(sig));
   const diaToma = `1 de ${nombrePeriodo(sig).split(' ')[0]}`;
   const gente = S.catalogo?.gente || {};
-  const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado' };
+  const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado', validado: 'Validado' };
 
   const cuerpo = el('div', { class: 'ficha-consumo' });
   const opcionesModal = { subtitulo: `${puntoNombre} · ${varNombre}`, completo: true, tituloGrande: true };
@@ -2460,6 +2472,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
           ok++;
         }
         toast(ok === 1 ? 'Foto agregada' : `${ok} fotos agregadas`);
+        if (ok && ctx.conFoto) { ctx.conFoto.add(variable_id + '|' + mes); if (ctx.repintar) ctx.repintar(); }
       } catch (err) {
         toast(`${ok ? ok + ' subida(s). ' : ''}No se pudo subir la foto: ${err.message || err}`, true);
       } finally {
@@ -2555,12 +2568,22 @@ async function verConsumo({ variable_id, mes }, ctx) {
       el('h4', { style: 'margin-top:0', text: 'Revisión hecha' }),
       el('p', { html: `<b>${tipoTxt[rev.tipo]}</b> por ${esc(gente[rev.por] || '—')} el ${fechaHora(rev.en)}` }),
       el('p', { class: 'ayuda', text: rev.motivo }),
-      puedo ? el('button', { class: 'btn chico peligro', text: 'Quitar la marca (vuelve a por revisar)', onclick: async () => {
+      puedo ? el('button', { class: 'btn chico peligro', text: rev.tipo === 'validado' ? 'Quitar validación' : 'Quitar la marca (vuelve a por revisar)', onclick: async () => {
         const { error: e3 } = await sb.from('revisiones_consumo').delete().eq('id', rev.id);
         if (e3) return toast(e3.message, true);
-        await terminar('Marca quitada');
+        await terminar(rev.tipo === 'validado' ? 'Validación quitada' : 'Marca quitada');
       } }) : null);
-  } else if (puedo && (j || !f)) {
+  } else if (puedo && (j || !f || f)) {
+    if (f) caja.append(
+      el('h4', { style: 'margin-top:0', text: '¿El registro está bien?' }),
+      el('p', { class: 'ayuda', text: 'Márcalo como validado y aparecerá con ✓ en la tabla. No pide nota.' }),
+      el('button', { class: 'btn', text: '✓ Registro validado', onclick: async e => {
+        e.target.disabled = true;
+        try { await registrar('validado', 'Validado'); await terminar('Registro validado'); }
+        catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+      } }));
+  }
+  if (!rev && puedo && (j || !f)) {
     const motivo = el('textarea', { placeholder: f
       ? 'Por qué el valor está bien aunque salga del rango (obligatorio)'
       : 'Por qué no hay dato este mes (obligatorio)' });

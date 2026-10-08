@@ -274,7 +274,7 @@ async function arrancar() {
   await refrescarDatos();
   await actualizarConexion();
   revisarVersion();
-  // Al abrir la app se muestra una portada sin datos; "Entrar" lleva a Consumos (supervisor) o Terreno.
+  // Al abrir la app se muestra una portada sin datos; se navega desde el menú.
   ir('inicio');
   if (navigator.onLine) sincronizar(true);
 }
@@ -565,6 +565,8 @@ function render() {
   // después de que el usuario cambió de sección, escribe en un nodo ya desechado
   // en vez de pisar la vista nueva.
   const c = el('div');
+  // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
+  $('#contenido').classList.toggle('ancho', S.vista === 'consumos');
   $('#contenido').replaceChildren(avisoBeta(), c);
   ({
     inicio: vistaInicio,
@@ -579,15 +581,13 @@ function render() {
 }
 
 // ------------------------------------------------------------------ portada
-// Pantalla de bienvenida: no muestra ningún dato, solo da paso a la app.
+// Pantalla de bienvenida: no muestra ningún dato; se sale de ella con el menú.
 function vistaInicio(c) {
-  const destino = esSupervisor() ? 'consumos' : 'terreno';
   const nombre = String(S.usuario?.nombre || '').trim().split(/\s+/)[0];
   c.append(el('section', { class: 'portada' }, [
     el('img', { src: 'icon-192.png', alt: '', width: 72, height: 72 }),
     el('h2', { text: nombre ? `Bienvenido, ${nombre}` : 'Bienvenido' }),
-    el('p', { class: 'ayuda', text: 'Cierre de Mes · Lecturas de energía, agua y gas' }),
-    el('button', { class: 'btn primario grande', type: 'button', text: 'Entrar', onclick: () => ir(destino) })
+    el('p', { class: 'ayuda', text: 'Cierre de Mes · Lecturas de energía, agua y gas' })
   ]));
 }
 
@@ -1626,10 +1626,7 @@ async function vistaConsumos(c) {
     zonaFiltros,
     el('label', { text: 'Grupo' }, [selGrupo])
   ]);
-  const barraMedir = el('p', { class: 'ayuda seccion', text:
-    'Cada punto aporta las lecturas marcadas "Va al informe" en su ficha (Configuración → Puntos de medición). ' +
-    'Las sumas de cada grupo se separan por medición: kWh+, kWh-, horas, m³…' });
-  const acciones = el('div', { class: 'fila entre seccion' }, [
+  const acciones = el('div', { class: 'fila entre seccion acciones-rep' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
     el('span', { class: 'ayuda', id: 'planilla-paso' }),
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
@@ -1652,7 +1649,7 @@ async function vistaConsumos(c) {
     el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => imprimirInforme() })
   ]);
   const zona = el('div');
-  c.append(barra, barraMedir, acciones, zona);
+  c.append(barra, acciones, zona);
   // Puntos que dos personas tomaron en la toma actual: antes se resolvían en
   // Tablero y Validación, que se retiraron.
   bloqueDuplicados(S.periodo).then(d => { if (d && zona.isConnected) c.insertBefore(d, zona); }).catch(() => {});
@@ -1736,16 +1733,23 @@ async function vistaConsumos(c) {
     const bandas = await DB.bandasCache().catch(() => ({}));
     S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, revisiones };
     const ctx = { filas: data, hasta, avisos, bandas, revisiones, alCambiar: cargar };
-    poner(zona, ...armarInforme(data, desde, hasta, {
-      faltantes, noLeidos, avisos, bandas, revisiones,
-      soloRevisar: R.soloRevisar,
-      alFiltrar: v => { R.soloRevisar = v; cargar(); },
-      abrir: clave => verConsumo(clave, ctx)
-    }));
+    ultimo = { data, desde, hasta, extra: {
+      enAlcance, faltantes, noLeidos, avisos, bandas, revisiones,
+      abrir: clave => verConsumo(clave, ctx),
+      alCaja: k => { R.caja = k; pintar(); acciones.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    } };
+    pintar();
     const r = $('#resumen-rango');
     if (r) r.textContent = data.length
       ? `${new Set(data.map(f => f.punto_id)).size} puntos · ${data.length} valores calculados`
       : '';
+  }
+
+  // Pinta lo ya consultado: abrir una caja o volver no repite la consulta.
+  let ultimo = null;
+  function pintar() {
+    if (!ultimo || !zona.isConnected) return;
+    poner(zona, ...armarInforme(ultimo.data, ultimo.desde, ultimo.hasta, { ...ultimo.extra, caja: R.caja || null }));
   }
 
   pintarFiltros();
@@ -1799,19 +1803,47 @@ function juzgarConsumo(f, bandas) {
   return null;
 }
 
-function armarInforme(data, desde, hasta, extra = {}) {
-  if (!data.length) {
-    return [el('p', { class: 'vacio', html:
-      `No hay consumos calculados en ese periodo.<br>` +
-      'Un mes se puede calcular recién cuando existe la lectura del mes siguiente.' })];
-  }
+/* Las cajas de Consumos e informes. Cada una cuenta algo y, al tocarla, abre la
+   lista de los puntos o registros que cuenta. Tocarla de nuevo o "Volver" regresa
+   a la tabla principal. */
+const CAJAS_REP = {
+  puntos:    { titulo: 'Cantidad de puntos', clase: '',
+               ayuda: 'Todos los puntos que van al informe con el filtro elegido, y en qué estado está cada lectura.' },
+  noleidos:  { titulo: 'No se pudo leer', clase: 'aviso',
+               ayuda: 'Alguien fue al punto y dejó constancia de que no se pudo tomar la lectura: display apagado, tablero cerrado, equipo retirado. No es lo mismo que un punto sin visitar.' },
+  fuera:     { titulo: 'Fuera de rango', clase: 'alerta',
+               ayuda: 'Consumos negativos o muy lejos de lo habitual del punto. Siguen aquí hasta que se corrijan o desestimen.' },
+  revisar:   { titulo: 'Para revisar', clase: 'aviso',
+               ayuda: 'Consumos en cero, altos o bajos, meses sin dato y puntos con aviso abierto. Siguen aquí hasta que se corrijan o desestimen.' },
+  revisados: { titulo: 'Revisados', clase: 'ok',
+               ayuda: 'Valores que ya se corrigieron o desestimaron, con su motivo.' }
+};
 
+// Tabla del informe: filas agrupadas bajo una franja con el nombre del grupo.
+// "clases" marca cada columna para que en el celular la fila se arme como tarjeta.
+function tablaInforme(cab, grupos, clases = []) {
+  const thead = el('thead', {}, [el('tr', {}, cab.map((h, j) => el('th', { text: h, class: clases[j] || '' })))]);
+  const tb = el('tbody');
+  for (const g of grupos) {
+    tb.append(el('tr', { class: 'fila-grupo' }, [
+      el('td', { colspan: String(cab.length) }, [el('span', { text: `${g.nombre} · ${g.filas.length}` })])]));
+    for (const f of g.filas)
+      tb.append(el('tr', {}, f.map((celda, j) => {
+        const props = { 'data-col': cab[j] || '', class: clases[j] || '' };
+        if (celda instanceof Node) return el('td', props, [celda]);
+        props.text = String(celda ?? '—');
+        return el('td', props);
+      })));
+  }
+  return el('div', { class: 'tabla-caja tabla-informe' }, [el('table', {}, [thead, tb])]);
+}
+
+function armarInforme(data, desde, hasta, extra = {}) {
+  const { enAlcance = [], faltantes = [], noLeidos = [], avisos = [], bandas = {},
+          revisiones = new Map(), abrir, alCaja, caja = null } = extra;
   const meses = [...new Set(data.map(f => f.mes))].sort();
-  const bloques = [...new Set(data.map(f => claveSuma(f.variable, f.unidad_reporte)))];
   const partes = [];
 
-  const { faltantes = [], noLeidos = [], avisos = [], bandas = {}, revisiones = new Map(), abrir } = extra;
-  const conAviso = new Set(avisos.map(a => a.punto_id));
   const avisosDe = new Map();
   for (const a of avisos) (avisosDe.get(a.punto_id) || avisosDe.set(a.punto_id, []).get(a.punto_id)).push(a);
   const juicios = new Map();
@@ -1823,65 +1855,125 @@ function armarInforme(data, desde, hasta, extra = {}) {
     for (const m of meses)
       if (!conValor.has(id + '|' + m)) juicios.set(id + '|' + m, { nivel: 'warn', texto: 'sin dato', sinDato: true });
   // Pendiente = marcado y todavía sin corregir ni desestimar.
-  const pendiente = k => juicios.has(k) && !revisiones.has(k);
-  const pend = [...juicios.keys()].filter(pendiente);
-  const fueraDeRango = pend.filter(k => juicios.get(k).nivel === 'bad').length;
-  const atencion = pend.filter(k => juicios.get(k).nivel === 'warn').length;
-  const revisados = [...revisiones.keys()].filter(k => data.some(f => f.variable_id + '|' + f.mes === k)).length;
+  const pend = [...juicios.keys()].filter(k => !revisiones.has(k));
   const mesCorto = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
   const nombreTipo = { corregido: 'corregido', desestimado: 'desestimado' };
 
-  // ---- KPIs ----
-  // Sin total general a propósito: los puntos tienen naturalezas distintas (unos
-  // en serie, otros en paralelo del mismo circuito). Sumarlos daría un número que
-  // nadie puede defender. Las sumas por grupo van al pie de su tabla, marcadas.
-  const kpis = [];
-  const metodos = { directo: 0, prorrateado: 0, estimado: 0 };
-  for (const f of data) metodos[f.metodo] = (metodos[f.metodo] || 0) + 1;
-  const provisionales = data.filter(f => !f.completo).length;
-  kpis.push(kpi(new Set(data.map(f => f.punto_id)).size, 'puntos con dato'));
-  if (faltantes.length) kpis.push(kpi(faltantes.length, 'sin visitar', 'alerta'));
-  if (noLeidos.length) kpis.push(kpi(noLeidos.length, 'no se pudo leer', 'aviso'));
-  if (fueraDeRango) kpis.push(kpi(fueraDeRango, 'fuera de rango', 'alerta'));
-  if (atencion) kpis.push(kpi(atencion, 'para revisar', 'aviso'));
-  if (revisados) kpis.push(kpi(revisados, 'ya revisados', 'ok'));
-  if (conAviso.size) kpis.push(kpi(conAviso.size, 'puntos con aviso abierto', 'aviso'));
-  if (provisionales) kpis.push(kpi(provisionales, 'valores provisionales', 'aviso'));
-  partes.push(el('div', { class: 'kpis seccion' }, kpis));
+  // Datos de una lectura, venga del informe o del catálogo (si no tiene consumo).
+  const porId = new Map();
+  for (const f of data) if (!porId.has(f.variable_id)) porId.set(f.variable_id, f);
+  const catId = new Map(S.catalogo.variables.map(v => [v.id, v]));
+  const info = id => {
+    const f = porId.get(id);
+    if (f) return { grupo: f.grupo || 'Sin grupo', punto: f.punto, tag: f.tag || '—', variable: f.variable,
+                    unidad: UNIDAD[f.unidad_reporte] || f.unidad_reporte, punto_id: f.punto_id };
+    const v = catId.get(id);
+    if (v) return { grupo: gruposTexto(v.punto), punto: v.punto.nombre, tag: v.punto.equipo?.tag || '—',
+                    variable: v.nombre, unidad: UNIDAD[v.unidad_reporte] || v.unidad_reporte, punto_id: v.punto.id };
+    return { grupo: '—', punto: '—', tag: '—', variable: '—', unidad: '', punto_id: null };
+  };
+  const idDeClave = k => { const x = k.split('|')[0]; return porId.has(Number(x)) || catId.has(Number(x)) ? Number(x) : x; };
+  const mesDeClave = k => k.split('|')[1];
+  const consumoDe = new Map(data.map(f => [f.variable_id + '|' + f.mes, f]));
 
-  // ---- gráfico por medición: totales mensuales ----
-  for (const b of bloques) {
-    const deB = data.filter(f => claveSuma(f.variable, f.unidad_reporte) === b);
-    const u = deB[0].unidad_reporte;
-    const serie = meses.map(m => ({
-      etiqueta: nombrePeriodo(m).split(' ')[0].slice(0, 3),
-      valor: deB.filter(f => f.mes === m).reduce((a, f) => a + Number(f.consumo), 0)
-    })).filter(d => d.valor > 0);
-    if (serie.length > 1) {
-      partes.push(graficoBarras(serie,
-        { titulo: `${b} · suma mensual de los puntos mostrados (referencial)`, unidad: UNIDAD[u] || u }));
+  // ---- lo que cuenta cada caja ----
+  const idsAlcance = new Set([...enAlcance.map(v => v.id), ...data.map(f => f.variable_id)]);
+  const noLeidosIds = new Set(noLeidos.map(v => v.id));
+  const faltantesIds = new Set(faltantes.map(v => v.id));
+  const fuera = pend.filter(k => juicios.get(k).nivel === 'bad');
+  const revisar = pend.filter(k => juicios.get(k).nivel === 'warn');
+  const revisados = [...revisiones.keys()].filter(k => idsAlcance.has(idDeClave(k)));
+  const cuenta = {
+    puntos: new Set([...idsAlcance].map(id => info(id).punto_id).filter(x => x != null)).size,
+    noleidos: noLeidos.length,
+    fuera: fuera.length,
+    revisar: revisar.length + avisosDe.size,
+    revisados: revisados.length
+  };
+
+  partes.push(el('div', { class: 'kpis cajas-rep' }, Object.entries(CAJAS_REP).map(([k, c]) =>
+    el('button', {
+      type: 'button', class: `kpi kpi-btn ${c.clase}${caja === k ? ' sel' : ''}`,
+      'aria-pressed': caja === k ? 'true' : 'false',
+      title: caja === k ? 'Volver a la tabla' : 'Ver ' + c.titulo.toLowerCase(),
+      onclick: () => alCaja && alCaja(caja === k ? null : k)
+    }, [el('div', { class: 'v', text: String(cuenta[k]) }), el('div', { class: 'k', text: c.titulo })]))));
+
+  // ---- detalle de una caja ----
+  if (caja && CAJAS_REP[caja]) {
+    const ver = (id, mes, texto = 'ver', clase = 'neutro') => abrir
+      ? el('button', { class: 'pill ' + clase, text: texto, onclick: () => abrir({ variable_id: id, mes }) }) : '—';
+    const ordenar = (x, y) => compararGrupos(x.i.grupo, y.i.grupo) ||
+      String(x.i.punto).localeCompare(String(y.i.punto)) || String(x.i.variable).localeCompare(String(y.i.variable)) ||
+      String(x.mes || '').localeCompare(String(y.mes || ''));
+    let cab = [], filas = [];
+
+    if (caja === 'puntos') {
+      const estado = id => porId.has(id) ? ['con dato', 'ok'] : noLeidosIds.has(id) ? ['no se pudo leer', 'warn']
+                         : faltantesIds.has(id) ? ['sin visitar', 'bad'] : ['sin dato', 'neutro'];
+      const ultimoMes = id => { const ms = data.filter(f => f.variable_id === id).map(f => f.mes).sort(); return ms.length ? ms[ms.length - 1] : hasta; };
+      cab = ['Grupo', 'Punto', 'TAG', 'Variable', 'Unidad', 'Estado', 'Aviso', ''];
+      filas = [...idsAlcance].map(id => ({ id, i: info(id) })).sort(ordenar).map(({ id, i }) => {
+        const [t, cl] = estado(id);
+        return [i.grupo, i.punto, i.tag, i.variable, i.unidad, el('span', { class: 'pill ' + cl, text: t }),
+                avisosDe.has(i.punto_id) ? el('span', { class: 'pill warn', text: 'abierto' }) : '—',
+                ver(id, ultimoMes(id))];
+      });
+    } else if (caja === 'noleidos') {
+      cab = ['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto', 'Revisión'];
+      filas = noLeidos.map(v => ({ id: v.id, i: info(v.id) })).sort(ordenar).map(({ id, i }) => {
+        const rev = revisiones.get(id + '|' + hasta);
+        return [i.grupo, i.punto, i.variable, i.unidad,
+                avisosDe.has(i.punto_id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—',
+                rev ? ver(id, hasta, nombreTipo[rev.tipo], 'ok') : ver(id, hasta, 'revisar')];
+      });
+    } else if (caja === 'fuera' || caja === 'revisar') {
+      cab = ['Grupo', 'Punto', 'Variable', 'Mes', 'Consumo', 'Unidad', 'Motivo', ''];
+      const lista = (caja === 'fuera' ? fuera : revisar).map(k => ({ k, id: idDeClave(k), mes: mesDeClave(k), i: info(idDeClave(k)) }));
+      // Un punto con aviso abierto se lista una vez, con su primera lectura del informe.
+      if (caja === 'revisar')
+        for (const [pid, avs] of avisosDe) {
+          const v = data.find(f => f.punto_id === pid)?.variable_id ?? enAlcance.find(x => x.punto.id === pid)?.id;
+          if (v != null) lista.push({ aviso: avs[0], id: v, mes: null, i: info(v) });
+        }
+      filas = lista.sort(ordenar).map(x => {
+        if (x.aviso) return [x.i.grupo, x.i.punto, x.i.variable, '—', '—', x.i.unidad,
+          el('span', { class: 'pill warn', title: x.aviso.descripcion || '',
+            text: 'aviso: ' + (x.aviso.categoria?.categoria || x.aviso.descripcion || 'abierto').slice(0, 40) }),
+          ver(x.id, hasta)];
+        const f = consumoDe.get(x.k), j = juicios.get(x.k);
+        return [x.i.grupo, x.i.punto, x.i.variable, nombrePeriodo(x.mes), f ? num(f.consumo) : '—', x.i.unidad,
+                el('span', { class: 'pill ' + j.nivel, text: j.texto }), ver(x.id, x.mes)];
+      });
+    } else if (caja === 'revisados') {
+      cab = ['Grupo', 'Punto', 'Variable', 'Mes', 'Consumo', 'Revisión', 'Motivo', ''];
+      filas = revisados.map(k => ({ k, id: idDeClave(k), mes: mesDeClave(k), i: info(idDeClave(k)) })).sort(ordenar).map(x => {
+        const rev = revisiones.get(x.k), f = consumoDe.get(x.k);
+        return [x.i.grupo, x.i.punto, x.i.variable, nombrePeriodo(x.mes), f ? num(f.consumo) : '—',
+                el('span', { class: 'pill ok', text: nombreTipo[rev.tipo] || rev.tipo }), rev.motivo || '—', ver(x.id, x.mes)];
+      });
     }
+
+    partes.push(el('div', { class: 'detalle-cab' }, [
+      el('button', { class: 'btn', type: 'button', text: '← Volver a Consumos e informes', onclick: () => alCaja && alCaja(null) }),
+      el('h3', { text: caja === 'puntos'
+        ? `${CAJAS_REP[caja].titulo}: ${cuenta.puntos} · ${filas.length} lecturas`
+        : `${CAJAS_REP[caja].titulo} (${filas.length})` })
+    ]));
+    partes.push(el('p', { class: 'ayuda seccion', text: CAJAS_REP[caja].ayuda }));
+    partes.push(filas.length ? tabla(cab, filas)
+      : el('p', { class: 'vacio', text: 'No hay registros en esta caja con el filtro elegido.' }));
+    return partes;
   }
 
-  // ---- interruptor: solo lo que falta revisar ----
-  const hayPendientes = pend.length || conAviso.size;
-  if (abrir) {
-    const chk = el('input', { type: 'checkbox', checked: extra.soloRevisar || null,
-      onchange: e => extra.alFiltrar && extra.alFiltrar(e.target.checked) });
-    partes.push(el('div', { class: 'fila entre seccion' }, [
-      el('label', { class: 'check-linea' }, [chk, el('span', { text: ' Solo lo por revisar' +
-        (hayPendientes ? ` (${[pend.length ? `${pend.length} ${pend.length === 1 ? 'valor' : 'valores'}` : '',
-                              conAviso.size ? `${conAviso.size} ${conAviso.size === 1 ? 'punto con aviso' : 'puntos con aviso'}` : '']
-                              .filter(Boolean).join(' · ')})` : '') })]),
-      el('span', { class: 'ayuda', text: 'Toca un valor para ver sus lecturas, fotos y avisos.' })
-    ]));
+  // ---- tabla principal ----
+  if (!data.length) {
+    partes.push(el('p', { class: 'vacio', html:
+      'No hay consumos calculados en ese periodo.<br>' +
+      'Un mes se puede calcular recién cuando existe la lectura del mes siguiente.' }));
+    return partes;
   }
-  const varsPendientes = new Set([
-    ...pend.map(k => Number(k.split('|')[0])),
-    ...data.filter(f => conAviso.has(f.punto_id)).map(f => f.variable_id)]);
-  const visibles = extra.soloRevisar && abrir ? data.filter(f => varsPendientes.has(f.variable_id)) : data;
-  if (extra.soloRevisar && abrir && !visibles.length)
-    partes.push(el('p', { class: 'vacio', text: hayPendientes ? 'Nada pendiente entre los valores calculados.' : 'Todo revisado: no queda nada marcado.' }));
+  if (abrir) partes.push(el('p', { class: 'ayuda pista-rep', text: 'Toca un valor para ver sus lecturas, fotos y avisos. Toca una caja para ver sus registros.' }));
 
   // Un valor de la tabla: botón que abre la ficha, con el color de su estado.
   const celda = (f, m, texto) => {
@@ -1914,95 +2006,41 @@ function armarInforme(data, desde, hasta, extra = {}) {
         text: 'aviso: ' + (a.categoria?.categoria || a.descripcion || 'abierto').slice(0, 28) }));
     return out.length ? el('div', { class: 'marcas' }, out) : el('span', { class: 'pill ok', text: 'ok' });
   };
+  // Agrupa las filas bajo su grupo, en el orden de los grupos.
+  const agrupar = filas => {
+    const g = new Map();
+    for (const x of filas) (g.get(x.grupo) || g.set(x.grupo, []).get(x.grupo)).push(x.celdas);
+    return [...g].map(([nombre, filas]) => ({ nombre, filas }));
+  };
 
-  // ---- tabla ----
   if (meses.length === 1) {
-    partes.push(tabla(
-      ['Grupo', 'Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'],
-      visibles.map(f => [
-          f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
-          celda(f, f.mes, num(f.consumo)), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
-          marcas(f, [f.mes], false),
-          el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })
-        ]), { num: [4, 6] }));
+    const filas = data.map(f => ({ grupo: f.grupo || 'Sin grupo', celdas: [
+      f.punto, f.tag || '—', f.variable,
+      celda(f, f.mes, num(f.consumo)), UNIDAD[f.unidad_reporte] || f.unidad_reporte, f.dias_asignados,
+      marcas(f, [f.mes], false),
+      el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })] }));
+    partes.push(tablaInforme(
+      ['Punto', 'TAG', 'Variable', 'Consumo', 'Unidad', 'Días', 'Revisar', 'Estado'], agrupar(filas),
+      ['c-punto c-ancha', 'c-tag', 'c-var c-ancha', 'num c-mes', 'c-un', 'num c-mes', 'c-rev c-ancha', 'c-est']));
   } else {
     // pivote: una fila por punto·variable, una columna por mes
     const claves = new Map();
-    for (const f of visibles) {
-      const k = f.variable_id;
-      if (!claves.has(k)) claves.set(k, { f, meses: {} });
-      claves.get(k).meses[f.mes] = Number(f.consumo);
+    for (const f of data) {
+      if (!claves.has(f.variable_id)) claves.set(f.variable_id, { f, meses: {} });
+      claves.get(f.variable_id).meses[f.mes] = Number(f.consumo);
     }
-    const cab = ['Grupo', 'Punto', 'TAG', 'Variable', 'Un.',
-                 ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3)), 'Total', 'Revisar'];
-    const filas = [...claves.values()]
-      .sort((a, b) => ordenFilaInforme(a.f, b.f))
-      .map(({ f, meses: mm }) => {
-        const vals = meses.map(m => mm[m]);
-        const total = vals.reduce((a, v) => a + (v || 0), 0);
-        return [f.grupo || 'Sin grupo', f.punto, f.tag || '—', f.variable,
-                UNIDAD[f.unidad_reporte] || f.unidad_reporte,
-                ...meses.map((m, i) => celda(f, m, vals[i] === undefined ? '—' : num(vals[i]))),
-                num(total), marcas(f, meses, true)];
-      });
-    partes.push(tabla(cab, filas, { num: cab.map((_, i) => i).filter(i => i >= 5 && i < cab.length - 1) }));
+    const filas = [...claves.values()].sort((a, b) => ordenFilaInforme(a.f, b.f)).map(({ f, meses: mm }) => {
+      const vals = meses.map(m => mm[m]);
+      const total = vals.reduce((a, v) => a + (v || 0), 0);
+      return { grupo: f.grupo || 'Sin grupo', celdas: [
+        f.punto, f.tag || '—', f.variable, UNIDAD[f.unidad_reporte] || f.unidad_reporte,
+        ...meses.map((m, i) => celda(f, m, vals[i] === undefined ? '—' : num(vals[i]))),
+        num(total), marcas(f, meses, true)] };
+    });
+    partes.push(tablaInforme(
+      ['Punto', 'TAG', 'Variable', 'Un.', ...meses.map(mesCorto), 'Total', 'Revisar'], agrupar(filas),
+      ['c-punto c-ancha', 'c-tag', 'c-var c-ancha', 'c-un', ...meses.map(() => 'num c-mes'), 'num c-mes c-total', 'c-rev c-ancha']));
   }
-
-  // Los puntos sin consumo calculado también se pueden revisar: cargar lo que
-  // faltó o dejar constancia de por qué no hay dato.
-  const revisarSinDato = v => {
-    const k = v.id + '|' + hasta;
-    const rev = revisiones.get(k);
-    if (!abrir) return rev ? nombreTipo[rev.tipo] : '—';
-    return el('button', { class: 'pill ' + (rev ? 'ok' : 'neutro'), title: rev ? rev.motivo : '',
-      onclick: () => abrir({ variable_id: v.id, mes: hasta }), text: rev ? nombreTipo[rev.tipo] : 'revisar' });
-  };
-
-  // ---- puntos que se visitaron y no se pudieron leer ----
-  if (noLeidos.length) {
-    partes.push(el('div', { class: 'seccion' }, [
-      el('h4', { text: `No se pudo leer (${noLeidos.length})` }),
-      el('p', { class: 'ayuda', text:
-        'Alguien fue al punto y dejó constancia de que no se pudo tomar la lectura: display ' +
-        'apagado, tablero cerrado, equipo retirado. No es lo mismo que un punto sin visitar.' }),
-      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto', 'Revisar'],
-        noLeidos.slice(0, 300).map(v => [
-          gruposTexto(v.punto), v.punto.nombre, v.nombre,
-          UNIDAD[v.unidad_reporte] || v.unidad_reporte,
-          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—',
-          revisarSinDato(v)]))
-    ]));
-  }
-
-  // ---- puntos donde no fue nadie ----
-  if (faltantes.length) {
-    partes.push(el('div', { class: 'seccion' }, [
-      el('h4', { text: `Puntos sin visitar en el periodo (${faltantes.length})` }),
-      el('p', { class: 'ayuda', text:
-        'No hay ninguna lectura de estos puntos en el periodo. Puede ser que no se hayan tomado ' +
-        'o que falte la lectura del mes siguiente para poder calcular su consumo.' }),
-      tabla(['Grupo', 'Punto', 'Variable', 'Unidad', 'Aviso abierto', 'Revisar'],
-        faltantes.slice(0, 300).map(v => [
-          gruposTexto(v.punto), v.punto.nombre, v.nombre,
-          UNIDAD[v.unidad_reporte] || v.unidad_reporte,
-          conAviso.has(v.punto.id) ? el('span', { class: 'pill warn', text: 'sí' }) : '—',
-          revisarSinDato(v)]))
-    ]));
-  }
-
-  // ---- declaración de calidad ----
-  const total = data.length;
-  const pct = n => Math.round(100 * n / total);
-  partes.push(el('div', { class: 'calidad' }, [
-    el('h4', { text: 'Calidad del dato' }),
-    el('p', { html:
-      `De ${total} valores del periodo: <b>${metodos.directo || 0}</b> (${pct(metodos.directo || 0)}%) ` +
-      `salen de lecturas tomadas el día 1; <b>${metodos.prorrateado || 0}</b> (${pct(metodos.prorrateado || 0)}%) ` +
-      `se prorratearon por desfase en la fecha de lectura; <b>${metodos.estimado || 0}</b> (${pct(metodos.estimado || 0)}%) ` +
-      `provienen de la carga histórica, donde no existe la fecha real de lectura. ` +
-      (provisionales ? `<b>${provisionales}</b> valores son provisionales: el mes cierra cuando llegue la lectura siguiente.` : '') })
-  ]));
-
   return partes;
 }
 

@@ -922,3 +922,84 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .portada h2{margin:0;font-size:28px;letter-spacing:-.02em}
 .portada .ayuda{margin:0}
 .portada .btn{min-width:200px;margin-top:8px}
+
+/* ===================================================================
+   CONSUMOS E INFORMES · cajas que abren su lista + tabla a pantalla completa
+   PC: la tabla ocupa casi todo el alto y el ancho, con encabezado y punto fijos.
+   Tablet: misma tabla con desplazamiento lateral.
+   Celular: cada fila es una tarjeta; los meses van en grilla.
+   =================================================================== */
+#contenido.ancho{max-width:none}
+.acciones-rep{margin-bottom:12px}
+
+.cajas-rep{grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:12px}
+.kpi-btn{font:inherit;text-align:left;cursor:pointer;color:inherit;width:100%;
+  transition:border-color .15s,box-shadow .15s,background .15s}
+.kpi-btn:hover{border-color:var(--acento)}
+.kpi-btn:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.kpi-btn.sel{border-color:var(--acento);background:var(--acento-suave);box-shadow:inset 0 0 0 1px var(--acento)}
+.kpi-btn .k{font-weight:600}
+
+.detalle-cab{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 4px}
+.detalle-cab h3{margin:0;font-size:17px}
+.pista-rep{margin:0 0 8px}
+
+.tabla-informe tr.fila-grupo td{background:var(--surface-2);font-size:11.5px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2);padding:7px 12px;
+  border-bottom:1px solid var(--line-2)}
+.tabla-informe tr.fila-grupo:hover{background:none}
+.tabla-informe tr.fila-grupo td span{position:sticky;left:12px}
+.tabla-informe td.c-total{font-weight:700}
+
+@media (min-width:821px){
+  .tabla-informe{max-height:calc(100dvh - 120px);min-height:360px}
+  .tabla-informe td,.tabla-informe th{padding:6px 10px}
+  .tabla-informe td.c-mes{padding:3px 4px}
+  .tabla-informe th.c-punto,.tabla-informe td.c-punto{position:sticky;left:0;background:var(--surface);
+    min-width:150px;max-width:260px;box-shadow:1px 0 0 var(--line)}
+  .tabla-informe td.c-punto{z-index:1;font-weight:600}
+  .tabla-informe th.c-punto{z-index:3;background:var(--surface-2)}
+  .tabla-informe tbody tr:hover td.c-punto{background:var(--surface-2)}
+  .tabla-informe td.c-rev{min-width:140px}
+}
+
+@media (max-width:820px){
+  .cajas-rep{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .cajas-rep .kpi{padding:10px 12px}
+  .cajas-rep .kpi .v{font-size:22px}
+  .cajas-rep .kpi .k{font-size:11.5px}
+  .acciones-rep .btn{flex:1 1 auto}
+  .detalle-cab .btn{width:100%}
+
+  .tabla-informe tbody tr:not(.fila-grupo){display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(82px,1fr));gap:0 4px;padding:6px 2px}
+  .tabla-informe td{flex-direction:column;align-items:flex-start;gap:1px;padding:5px 10px}
+  .tabla-informe td::before{flex:none;font-size:10.5px}
+  .tabla-informe td.c-ancha{grid-column:1/-1}
+  .tabla-informe td.c-punto{font-weight:700;font-size:15px;padding-top:8px}
+  .tabla-informe td.c-punto::before{content:none}
+  .tabla-informe td.c-rev{flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap}
+  .tabla-informe td.c-rev::before{flex:0 0 auto}
+  .tabla-informe .celda-cons{margin-left:-6px}
+  .tabla-informe tr.fila-grupo{background:none;border:none;margin:16px 0 6px;padding:0}
+  .tabla-informe tr.fila-grupo td{background:none;border:none;padding:0 2px;color:var(--ink-3)}
+  .tabla-informe tr.fila-grupo td::before{content:none}
+}
+@media (min-width:821px){
+  .tabla-informe td.c-tag,.tabla-informe td.c-var,.tabla-informe td.c-un{white-space:nowrap}
+}
+@media (max-width:820px){
+  /* botones de descarga en una sola fila, más chicos */
+  .acciones-rep{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+  .acciones-rep > p,.acciones-rep > #planilla-paso{grid-column:1/-1;margin:0}
+  .acciones-rep > #planilla-paso:empty{display:none}
+  .acciones-rep .btn{min-height:40px;padding:4px 6px;font-size:13px;line-height:1.2;white-space:normal}
+  /* en la tarjeta: punto, variable, y después TAG, unidad y meses en grilla */
+  .tabla-informe td.c-punto{order:-2}
+  .tabla-informe td.c-var{order:-1}
+  /* cajas: 3 arriba y 2 abajo */
+  .cajas-rep{grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+  .cajas-rep .kpi{grid-column:span 2;padding:8px 10px}
+  .cajas-rep .kpi:nth-child(n+4){grid-column:span 3}
+  .cajas-rep .kpi .v{font-size:20px}
+}

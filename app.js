@@ -274,8 +274,8 @@ async function arrancar() {
   await refrescarDatos();
   await actualizarConexion();
   revisarVersion();
-  // La revisión del mes se hace desde Consumos e informes (Tablero y Validación se retiraron).
-  ir(esSupervisor() ? 'consumos' : 'terreno');
+  // Al abrir la app se muestra una portada sin datos; "Entrar" lleva a Consumos (supervisor) o Terreno.
+  ir('inicio');
   if (navigator.onLine) sincronizar(true);
 }
 
@@ -504,6 +504,7 @@ function ir(vista) {
 }
 
 const TITULOS = {
+  inicio: 'Cierre de Mes',
   terreno: 'Terreno', cierrecf: 'Cierre de generadores',
   consumos: 'Consumos e informes', avisos: 'Avisos', equipos: 'Equipos',
   dispositivo: 'Este dispositivo',
@@ -556,7 +557,7 @@ function render() {
   marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
+    ['inicio','equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? ''
       : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -566,6 +567,7 @@ function render() {
   const c = el('div');
   $('#contenido').replaceChildren(avisoBeta(), c);
   ({
+    inicio: vistaInicio,
     terreno: vistaTerreno, cierrecf: vistaCierreCF,
     consumos: vistaConsumos, avisos: vistaAvisos, equipos: vistaEquipos,
     dispositivo: vistaDispositivo,
@@ -574,6 +576,19 @@ function render() {
     generadores: vistaGeneradores, recargas: vistaRecargas,
     etiquetas: vistaEtiquetas
   }[S.vista] || vistaPuntosSiInstalaciones())(c);
+}
+
+// ------------------------------------------------------------------ portada
+// Pantalla de bienvenida: no muestra ningún dato, solo da paso a la app.
+function vistaInicio(c) {
+  const destino = esSupervisor() ? 'consumos' : 'terreno';
+  const nombre = String(S.usuario?.nombre || '').trim().split(/\s+/)[0];
+  c.append(el('section', { class: 'portada' }, [
+    el('img', { src: 'icon-192.png', alt: '', width: 72, height: 72 }),
+    el('h2', { text: nombre ? `Bienvenido, ${nombre}` : 'Bienvenido' }),
+    el('p', { class: 'ayuda', text: 'Cierre de Mes · Lecturas de energía, agua y gas' }),
+    el('button', { class: 'btn primario grande', type: 'button', text: 'Entrar', onclick: () => ir(destino) })
+  ]));
 }
 
 // ------------------------------------------------------------------ selector de periodo
@@ -1585,7 +1600,7 @@ const MODOS = { mes: 'Un mes', anio: 'Un año', rango: 'Un rango' };
 
 async function vistaConsumos(c) {
   S.rep = S.rep || {
-    modo: 'mes',
+    modo: 'anio',
     mes: S.periodoConsumo,
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
@@ -4825,30 +4840,116 @@ const pillEstadoGen = e => el('span', { class: 'pill ' + (e === 'Operando' ? 'ok
 
 async function vistaCierreCF(c) {
   S.mesCF = S.mesCF || S.periodoConsumo;
-  const sel = el('select', { onchange: e => { S.mesCF = e.target.value; cargar(); } });
+  S.modoCF = S.modoCF || 'anio';                         // por defecto: un año
+  S.anioCF = S.anioCF || String(new Date().getFullYear());
   const hoy = new Date();
-  for (let i = 0; i < 24; i++) {
-    const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
-    sel.append(el('option', { value: p, selected: p === S.mesCF || null, text: nombrePeriodo(p) }));
+  const selModo = el('select', { onchange: e => { S.modoCF = e.target.value; pintarSel(); cargar(); } });
+  for (const [k, v] of [['mes', 'Un mes'], ['anio', 'Un año']])
+    selModo.append(el('option', { value: k, selected: S.modoCF === k || null, text: v }));
+  const zonaSel = el('div', { class: 'fila' });
+  function pintarSel() {
+    zonaSel.replaceChildren();
+    if (S.modoCF === 'anio') {
+      const sel = el('select', { onchange: e => { S.anioCF = e.target.value; cargar(); } });
+      for (let a = hoy.getFullYear(); a >= hoy.getFullYear() - 4; a--)
+        sel.append(el('option', { value: String(a), selected: S.anioCF === String(a) || null, text: String(a) }));
+      zonaSel.append(el('label', { text: 'Año' }, [sel]));
+    } else {
+      const sel = el('select', { onchange: e => { S.mesCF = e.target.value; cargar(); } });
+      for (let i = 0; i < 24; i++) {
+        const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
+        sel.append(el('option', { value: p, selected: p === S.mesCF || null, text: nombrePeriodo(p) }));
+      }
+      zonaSel.append(el('label', { text: 'Mes' }, [sel]));
+    }
+    btnPdf.hidden = btnResp.hidden = S.modoCF === 'anio';   // PDF y respaldo son de un mes
+    ayuda.textContent = S.modoCF === 'anio'
+      ? 'Suma de los meses ya cerrados del año. Cada mes sale de la toma del día 1 del mes siguiente (diciembre cierra con la toma del 1 de enero).'
+      : 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.';
   }
   const zona = el('div');
   let ultimo = null;                     // lo último calculado, para el PDF y el respaldo
   const paso = el('span', { class: 'ayuda' });
+  const ayuda = el('p', { class: 'ayuda crece' });
+  const btnPdf = el('button', { class: 'btn', text: 'PDF del cierre', onclick: () => ultimo && imprimirCierreCF(S.mesCF, ultimo) });
+  const btnResp = el('button', { class: 'btn', text: 'Respaldo del mes (fotos + Excel)', onclick: async e => {
+    if (!ultimo) return;
+    e.target.disabled = true;
+    try { await respaldoCF(S.mesCF, ultimo, t => { paso.textContent = t; }); }
+    catch (err) { toast('Falló el respaldo: ' + (err.message || err), true); }
+    finally { e.target.disabled = false; paso.textContent = ''; }
+  } });
   c.append(el('div', { class: 'fila entre seccion' }, [
-    el('label', { text: 'Mes' }, [sel]),
-    el('p', { class: 'ayuda crece', text: 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.' }),
-    paso,
-    el('button', { class: 'btn', text: 'PDF del cierre', onclick: () => ultimo && imprimirCierreCF(S.mesCF, ultimo) }),
-    el('button', { class: 'btn', text: 'Respaldo del mes (fotos + Excel)', onclick: async e => {
-      if (!ultimo) return;
-      e.target.disabled = true;
-      try { await respaldoCF(S.mesCF, ultimo, t => { paso.textContent = t; }); }
-      catch (err) { toast('Falló el respaldo: ' + (err.message || err), true); }
-      finally { e.target.disabled = false; paso.textContent = ''; }
-    } })
+    el('label', { text: 'Ver' }, [selModo]), zonaSel, ayuda, paso, btnPdf, btnResp
   ]), zona);
+  pintarSel();
+
+  // Vista anual: una fila por generador con lo acumulado de los 12 meses.
+  async function cargarAnio() {
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
+    const meses = Array.from({ length: 12 }, (_, i) => `${S.anioCF}-${String(i + 1).padStart(2, '0')}-01`);
+    let d;
+    try { d = await datosGeneradores(meses); ultimo = null; }
+    catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
+    const filas = d.gens.map(g => {
+      const por = meses.map(m => resumenGenerador(g, m, d));
+      const suma = k => por.reduce((a, r) => a + (r[k] || 0), 0);
+      const kwh = suma('kwhMes'), horas = suma('horasMes'), litros = suma('litros');
+      const kwhDiesel = por.filter(r => r.litros).reduce((a, r) => a + (r.kwhMes || 0), 0);
+      const kwMedio = horas > 0 ? kwh / horas : null;
+      return { g, por, kwh, horas, litros,
+        factor: kwMedio != null && g.potencia_nominal_kw ? 100 * kwMedio / Number(g.potencia_nominal_kw) : null,
+        lPorKwh: litros && kwhDiesel > 0 ? litros / kwhDiesel : null,
+        nMeses: por.filter(r => r.kwhMes != null).length };
+    }).filter(x => x.g.activo || x.nMeses || x.por.some(r => r.tomado))
+      .sort((a, b) => ordenGen(a.g, b.g));
+    const activos = filas.filter(x => x.g.activo);
+    const tot = (arr, k) => arr.reduce((a, x) => a + (x[k] || 0), 0);
+    const kwhTot = tot(filas, 'kwh'), litTot = tot(filas, 'litros');
+    const kwhDiesel = filas.filter(x => x.litros).reduce((a, x) => a + x.kwh, 0);
+    const kpis = el('div', { class: 'kpis seccion' }, [
+      kpi(kwhTot >= 1e6 ? num(kwhTot / 1e6, 2) + ' GWh' : num(kwhTot / 1000) + ' MWh', 'energía generada en el año'),
+      kpi(num(tot(filas, 'horas')), 'horas de marcha'),
+      kpi(litTot ? num(litTot) + ' L' : '—', 'combustible cargado'),
+      kpi(litTot && kwhDiesel ? num(litTot / kwhDiesel, 3) : '—', 'L/kWh (diésel)'),
+      kpi(`${activos.filter(x => x.g.estado === 'Operando').length} / ${activos.length}`, 'operando')
+    ]);
+    const cab = ['N° int.', 'Equipo', 'Pot. nom.', 'kWh año', 'Horas año', 'Factor carga', 'Litros', 'L/kWh', 'Meses con dato', 'Estado'];
+    const fila = x => [
+      el('button', { class: 'celda-cons', text: x.g.n_interno || '—', onclick: () => fichaGenerador(x.g) }),
+      el('button', { class: 'celda-cons', text: x.g.n_equipo, onclick: () => fichaGenerador(x.g) }),
+      num(x.g.potencia_nominal_kw),
+      x.nMeses ? el('b', { text: num(x.kwh) }) : '—',
+      x.nMeses ? num(x.horas) : '—',
+      x.factor != null ? el('span', { class: 'pill ' + (x.factor > 85 ? 'warn' : x.factor < 30 ? 'neutro' : 'ok'), text: num(x.factor) + '%' }) : '—',
+      x.litros ? num(x.litros) : '—', x.lPorKwh != null ? num(x.lPorKwh, 3) : '—',
+      `${x.nMeses} / 12`, pillEstadoGen(x.g.estado)
+    ];
+    const bloque = (titulo, arr) => arr.length ? el('div', { class: 'seccion' }, [
+      el('h3', { text: `${titulo} (${arr.length})` }),
+      tabla(cab, [...arr.map(fila), ['Total', '', '', el('b', { text: num(tot(arr, 'kwh')) }), num(tot(arr, 'horas')), '',
+        tot(arr, 'litros') ? num(tot(arr, 'litros')) : '—', '', '', '']], { num: [2, 3, 4, 6, 7] })
+    ]) : null;
+    const matriz = filas.length ? el('div', { class: 'seccion' }, [
+      el('h3', { text: `Energía generada por mes · ${S.anioCF} (kWh)` }),
+      tabla(['N° int.', 'Equipo', ...MES_CORTO.map(m => m[0].toUpperCase() + m.slice(1)), 'Total'],
+        [...filas.map(x => [x.g.n_interno || '—', x.g.n_equipo,
+            ...x.por.map(r => r.kwhMes != null ? num(r.kwhMes) : '—'), el('b', { text: x.nMeses ? num(x.kwh) : '—' })]),
+         ['Total', '', ...meses.map((m, i) => {
+            const t = filas.reduce((a, x) => a + (x.por[i].kwhMes || 0), 0);
+            return t ? num(t) : '—'; }), el('b', { text: num(kwhTot) })]],
+        { num: Array.from({ length: 13 }, (_, i) => i + 2) })
+    ]) : null;
+    poner(zona, kpis,
+      bloque('Generadores propios', filas.filter(x => x.g.propiedad === 'Propio')),
+      bloque('Generadores de arriendo', filas.filter(x => x.g.propiedad !== 'Propio')),
+      matriz,
+      el('p', { class: 'ayuda', text: 'Factor de carga = kW medio del año (kWh ÷ horas) sobre la potencia nominal. ' +
+        'L/kWh solo con los meses que tienen cargas de combustible registradas.' }));
+  }
 
   async function cargar() {
+    if (S.modoCF === 'anio') return cargarAnio();
     zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
     let d;
     try { d = await datosGeneradores([S.mesCF]); ultimo = d; }

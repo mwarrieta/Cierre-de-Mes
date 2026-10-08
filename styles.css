@@ -914,3 +914,11 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .grilla-mes th .celda-cons{padding:0 4px;font-weight:700}
 .grilla-mes .fila-total td{border-top:2px solid var(--line);font-weight:600}
 .tenue-b{color:var(--ink-3)}
+
+/* Portada de bienvenida: sin datos, solo da paso a la app */
+.portada{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+  gap:14px;min-height:60vh;padding:24px 8px}
+.portada img{border-radius:16px}
+.portada h2{margin:0;font-size:28px;letter-spacing:-.02em}
+.portada .ayuda{margin:0}
+.portada .btn{min-width:200px;margin-top:8px}

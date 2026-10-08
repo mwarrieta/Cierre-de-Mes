@@ -1666,6 +1666,247 @@ async function resolverDuplicado(d) {
 /* ===================================================================
    VISTA · CONSUMOS E INFORMES
    =================================================================== */
+/* ===================================================================
+   ANÁLISIS DE UN PUNTO (Consumos e informes, cuando el filtro de puntos tiene uno solo)
+   Un gráfico por lectura del punto, con métricas y capas para mirar el comportamiento
+   desde varios ángulos: consumo, promedio diario, acumulado, totalizador o variación.
+   Siempre UN eje: cambiar de métrica cambia el gráfico, no se superponen escalas.
+   =================================================================== */
+// Cómo se llama la fila "Consumo del mes" según el grupo: en la Red MT es una
+// transferencia de energía y en los generadores, lo que generaron.
+const normGrupo = g => String(g || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+function filaConsumoTxt(grupo) {
+  const g = normGrupo(grupo);
+  if (g.startsWith('red mt')) return 'Transferencia del mes';
+  if (g === 'generadores') return 'Generado en el mes';
+  return 'Consumo del mes';
+}
+
+const METRICAS_PUNTO = {
+  consumo:   { t: g => filaConsumoTxt(g), u: u => u },
+  diario:    { t: () => 'Promedio diario', u: u => u + '/día' },
+  acumulado: { t: () => 'Acumulado en el periodo', u: u => u },
+  totaliz:   { t: () => 'Totalizador al cierre', u: u => u },
+  variacion: { t: () => 'Variación vs mes anterior', u: () => '%' }
+};
+const CAPAS_PUNTO = { promedio: 'Promedio', banda: 'Banda ±1σ', tendencia: 'Tendencia', movil: 'Media móvil 3 meses' };
+
+// Serie de una lectura según la métrica elegida. Devuelve [{mes, v}] con v = null si falta.
+function seriePunto(filasVar, meses, metrica, totalizadores) {
+  const porMes = new Map(filasVar.map(f => [f.mes, f]));
+  let acum = 0;
+  return meses.map((m, i) => {
+    const f = porMes.get(m), c = f ? Number(f.consumo) : null;
+    let v = null;
+    if (metrica === 'consumo') v = c;
+    else if (metrica === 'diario') v = c !== null && f.dias_asignados ? c / Number(f.dias_asignados) : null;
+    else if (metrica === 'acumulado') { if (c !== null) acum += c; v = c !== null ? acum : null; }
+    else if (metrica === 'totaliz') { const t = totalizadores?.get(filasVar[0]?.variable_id + '|' + mesSiguiente(m)); v = t ?? null; }
+    else if (metrica === 'variacion') {
+      const a = i > 0 ? porMes.get(meses[i - 1]) : null;
+      v = a && f && Number(a.consumo) ? 100 * (c - Number(a.consumo)) / Number(a.consumo) : null;
+    }
+    return { mes: m, v };
+  });
+}
+
+// Estadística descriptiva de una serie (solo los meses con dato).
+function estadisticas(serie) {
+  const xs = serie.map((p, i) => ({ i, v: p.v, mes: p.mes })).filter(p => p.v !== null && isFinite(p.v));
+  if (!xs.length) return null;
+  const vs = xs.map(p => p.v), n = vs.length;
+  const suma = vs.reduce((a, b) => a + b, 0), media = suma / n;
+  const orden = [...vs].sort((a, b) => a - b);
+  const mediana = n % 2 ? orden[(n - 1) / 2] : (orden[n / 2 - 1] + orden[n / 2]) / 2;
+  const sigma = n > 1 ? Math.sqrt(vs.reduce((a, b) => a + (b - media) ** 2, 0) / (n - 1)) : 0;
+  const max = xs.reduce((a, b) => b.v > a.v ? b : a), min = xs.reduce((a, b) => b.v < a.v ? b : a);
+  // Regresión lineal sobre el índice del mes: pendiente por mes.
+  let pend = 0, orig = media;
+  if (n > 1) {
+    const mx = xs.reduce((a, p) => a + p.i, 0) / n;
+    const sxx = xs.reduce((a, p) => a + (p.i - mx) ** 2, 0);
+    pend = sxx ? xs.reduce((a, p) => a + (p.i - mx) * (p.v - media), 0) / sxx : 0;
+    orig = media - pend * mx;
+  }
+  const ultimo = xs[xs.length - 1];
+  return { n, suma, media, mediana, sigma, cv: media ? 100 * sigma / Math.abs(media) : 0, max, min, pend, orig, ultimo };
+}
+
+// Gráfico SVG interactivo de una serie. opciones: tipo 'barras'|'linea', capas {promedio, banda, tendencia, movil}.
+function graficoSerie(serie, { titulo, unidad, tipo = 'barras', capas = {}, est, etiquetaMes, imprimir = false }) {
+  // En pantallas angostas se dibuja con menos ancho lógico: así letras y barras no quedan diminutas.
+  const angosto = !imprimir && window.innerWidth < 700;
+  const W = angosto ? 520 : 1000, H = imprimir ? 280 : angosto ? 340 : 320, mI = angosto ? 58 : 78, mD = angosto ? 76 : 120, mA = 24, mB = 34;
+  const aU = W - mI - mD, hU = H - mA - mB;
+  const ns = (t, at, txt) => {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', t);
+    for (const [k, v] of Object.entries(at)) if (v !== null && v !== undefined) n.setAttribute(k, v);
+    if (txt !== undefined) n.textContent = txt;
+    return n;
+  };
+  const vals = serie.map(p => p.v).filter(v => v !== null && isFinite(v));
+  const svg = ns('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'grafico graf-punto' });
+  if (!vals.length) return el('p', { class: 'vacio', text: 'No hay datos para graficar con esta métrica.' });
+
+  // Dominio: incluye la banda si está activa, y el cero salvo en el totalizador.
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (est && capas.banda) { lo = Math.min(lo, est.media - est.sigma); hi = Math.max(hi, est.media + est.sigma); }
+  if (tipo === 'barras' || lo > 0 && lo < hi * 0.6) lo = Math.min(lo, 0);
+  if (hi === lo) hi = lo + 1;
+  const paso10 = Math.pow(10, Math.floor(Math.log10(hi - lo || 1)));
+  const tickP = [1, 2, 2.5, 5, 10].map(k => k * paso10).find(s => (hi - lo) / s <= 5) || paso10 * 10;
+  lo = Math.floor(lo / tickP) * tickP; hi = Math.ceil(hi / tickP) * tickP;
+  const y = v => mA + hU - (v - lo) / (hi - lo) * hU;
+  const paso = aU / serie.length;
+  const cx = i => mI + i * paso + paso / 2;
+  const fmt = v => unidad === '%' ? (v > 0 ? '+' : '') + num(v, 1) + '%' : numCorto(v);
+
+  for (let t = lo; t <= hi + 1e-9; t += tickP) {
+    svg.append(ns('line', { x1: mI, x2: W - mD, y1: y(t), y2: y(t), class: 'grid' }));
+    svg.append(ns('text', { x: mI - 10, y: y(t) + 4, class: 'ejeY' }, fmt(t)));
+  }
+  if (lo < 0 && hi > 0) svg.append(ns('line', { x1: mI, x2: W - mD, y1: y(0), y2: y(0), class: 'base' }));
+
+  // Banda ±1σ detrás de todo.
+  if (est && capas.banda && est.sigma)
+    svg.append(ns('rect', { x: mI, width: aU, y: y(est.media + est.sigma), height: Math.max(0, y(est.media - est.sigma) - y(est.media + est.sigma)), class: 'banda-sigma' }));
+
+  // Marcas de datos.
+  const anchoB = Math.min(paso - 8, 48);
+  if (tipo === 'barras') {
+    serie.forEach((p, i) => {
+      if (p.v === null) return;
+      const y0 = y(Math.max(0, lo)), y1 = y(p.v);
+      svg.append(ns('rect', { x: cx(i) - anchoB / 2, y: Math.min(y0, y1), width: anchoB,
+        height: Math.max(Math.abs(y0 - y1), p.v ? 2 : 0), rx: 3, class: 'marca' + (p.v < 0 ? ' neg' : '') }));
+    });
+  } else {
+    let d = '', abierto = false;
+    serie.forEach((p, i) => {
+      if (p.v === null) { abierto = false; return; }
+      d += (abierto ? 'L' : 'M') + cx(i) + ',' + y(p.v) + ' '; abierto = true;
+    });
+    svg.append(ns('path', { d: d.trim(), class: 'linea-serie' }));
+    serie.forEach((p, i) => { if (p.v !== null) svg.append(ns('circle', { cx: cx(i), cy: y(p.v), r: 4.5, class: 'punto-serie' })); });
+  }
+
+  // Capas de análisis, con etiqueta directa a la derecha (sin leyenda aparte).
+  const etiquetaDer = (yy, txt, cl) => svg.append(ns('text', { x: W - mD + 8, y: yy + 4, class: 'etq-capa ' + cl }, txt));
+  if (est && capas.promedio) {
+    svg.append(ns('line', { x1: mI, x2: W - mD, y1: y(est.media), y2: y(est.media), class: 'capa-prom' }));
+    etiquetaDer(y(est.media), 'Prom. ' + fmt(est.media), 'prom');
+  }
+  if (est && capas.tendencia && est.n > 1) {
+    const i0 = serie.findIndex(p => p.v !== null), i1 = serie.length - 1 - [...serie].reverse().findIndex(p => p.v !== null);
+    const yy = i => est.orig + est.pend * i;
+    svg.append(ns('line', { x1: cx(i0), x2: cx(i1), y1: y(yy(i0)), y2: y(yy(i1)), class: 'capa-tend' }));
+    etiquetaDer(y(yy(i1)) + (capas.promedio && Math.abs(y(yy(i1)) - y(est.media)) < 14 ? 14 : 0), 'Tendencia', 'tend');
+  }
+  if (capas.movil) {
+    let d = '', ult = null;
+    serie.forEach((p, i) => {
+      const ventana = serie.slice(Math.max(0, i - 2), i + 1).map(q => q.v).filter(v => v !== null);
+      if (i < 2 || ventana.length < 3) return;
+      const m = ventana.reduce((a, b) => a + b, 0) / 3;
+      d += (d ? 'L' : 'M') + cx(i) + ',' + y(m); ult = m;
+    });
+    if (d) { svg.append(ns('path', { d, class: 'capa-movil' })); if (ult !== null && !capas.promedio && !capas.tendencia) etiquetaDer(y(ult), 'Media 3m', 'movil'); }
+  }
+
+  // Ejes X y etiqueta directa del máximo.
+  serie.forEach((p, i) => svg.append(ns('text', { x: cx(i), y: H - 12, class: 'ejeX' }, etiquetaMes(p.mes))));
+  if (est && tipo === 'barras' && unidad !== '%') svg.append(ns('text', { x: cx(serie.findIndex(p => p.mes === est.max.mes)), y: y(est.max.v) - 7, class: 'valorMax' }, numCorto(est.max.v)));
+
+  // Hover: una franja por mes con tooltip (no en impresión).
+  const fig = el('figure', { class: 'figura fig-punto' }, [el('figcaption', { text: `${titulo} · ${unidad}` }), svg]);
+  if (!imprimir) {
+    const tip = el('div', { class: 'tip-graf', hidden: true });
+    fig.append(tip);
+    const guia = ns('line', { y1: mA, y2: mA + hU, class: 'guia', visibility: 'hidden' });
+    svg.append(guia);
+    serie.forEach((p, i) => {
+      const z = ns('rect', { x: mI + i * paso, y: mA, width: paso, height: hU, class: 'zona' });
+      const mostrar = () => {
+        guia.setAttribute('x1', cx(i)); guia.setAttribute('x2', cx(i)); guia.setAttribute('visibility', 'visible');
+        const prev = i > 0 ? serie[i - 1].v : null;
+        tip.replaceChildren(
+          el('b', { text: nombrePeriodo(p.mes) }),
+          el('div', { text: p.v === null ? 'Sin dato' : `${unidad === '%' ? fmt(p.v) : num(p.v, Math.abs(p.v) < 100 ? 2 : 0) + ' ' + unidad}` }),
+          est && p.v !== null && unidad !== '%' && est.media ? el('small', { text: `${p.v >= est.media ? '+' : ''}${num(100 * (p.v - est.media) / est.media, 1)}% vs promedio` }) : null,
+          prev && p.v !== null && unidad !== '%' ? el('small', { text: `${p.v >= prev ? '+' : ''}${num(100 * (p.v - prev) / prev, 1)}% vs mes anterior` }) : null);
+        tip.hidden = false;
+        const r = svg.getBoundingClientRect(), fx = (cx(i) / W) * r.width;
+        tip.style.left = Math.min(Math.max(fx + 12, 0), r.width - 180) + 'px';
+        tip.style.top = ((p.v === null ? mA + hU / 2 : y(p.v)) / H * r.height) + 'px';
+      };
+      z.addEventListener('mouseenter', mostrar); z.addEventListener('click', mostrar);
+      z.addEventListener('mouseleave', () => { tip.hidden = true; guia.setAttribute('visibility', 'hidden'); });
+      svg.append(z);
+    });
+  }
+  return fig;
+}
+
+// Panel completo para un punto: selectores, cifras clave y gráfico.
+// cfg = S.rep.graf (se recuerda entre repintados y lo usa la vista para imprimir).
+function panelAnalisisPunto(data, meses, { totalizadores, cfg, alCambiar, imprimir = false }) {
+  const porVar = new Map();
+  for (const f of data) (porVar.get(f.variable_id) || porVar.set(f.variable_id, []).get(f.variable_id)).push(f);
+  const vars = [...porVar.values()].map(fs => fs[0]).sort(ordenFilaInforme);
+  if (!vars.length) return null;
+  if (!porVar.has(cfg.variable)) cfg.variable = vars[0].variable_id;
+  const fs = porVar.get(cfg.variable), f0 = fs[0];
+  const u = UNIDAD[f0.unidad_reporte] || f0.unidad_reporte;
+  const met = METRICAS_PUNTO[cfg.metrica] ? cfg.metrica : 'consumo';
+  const unidad = METRICAS_PUNTO[met].u(u);
+  const serie = seriePunto(fs, meses, met, totalizadores);
+  const est = estadisticas(serie);
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const etiquetaMes = m => { const t = nombrePeriodo(m).split(' ')[0].slice(0, 3); return variosAnios ? `${t}-${m.slice(2, 4)}` : t; };
+  const titulo = `${f0.punto} · ${METRICAS_PUNTO[met].t(f0.grupo)}`;
+
+  const dec = v => Math.abs(v) < 100 ? 2 : 0;
+  const cifra = (v, k, extra = '', cl = '') => el('div', { class: 'cifra ' + cl }, [
+    el('div', { class: 'v', text: v }), el('div', { class: 'k', text: k }), extra ? el('div', { class: 's', text: extra }) : null]);
+  const fx = v => unidad === '%' ? (v > 0 ? '+' : '') + num(v, 1) + '%' : num(v, dec(v));
+  const cifras = est ? el('div', { class: 'cifras-punto' }, [
+    met === 'consumo' ? cifra(fx(est.suma), 'Total del periodo', `${est.n} ${est.n === 1 ? 'mes' : 'meses'} con dato`) : null,
+    cifra(fx(est.media), 'Promedio mensual', 'Mediana ' + fx(est.mediana)),
+    cifra(fx(est.max.v), 'Máximo', nombrePeriodo(est.max.mes)),
+    cifra(fx(est.min.v), 'Mínimo', nombrePeriodo(est.min.mes)),
+    unidad !== '%' ? cifra(num(est.cv, 0) + '%', 'Variabilidad (CV)', 'Desv. estándar ' + fx(est.sigma),
+      est.cv > 30 ? 'alerta' : '') : null,
+    est.n > 1 && unidad !== '%' && est.media ? cifra((est.pend >= 0 ? '+' : '') + num(100 * est.pend / est.media, 1) + '%', 'Tendencia por mes',
+      est.pend >= 0 ? 'al alza' : 'a la baja') : null,
+    unidad !== '%' && est.media ? cifra((est.ultimo.v >= est.media ? '+' : '') + num(100 * (est.ultimo.v - est.media) / est.media, 1) + '%',
+      'Último vs promedio', nombrePeriodo(est.ultimo.mes)) : null
+  ]) : null;
+
+  const grafico = graficoSerie(serie, { titulo, unidad, tipo: cfg.tipo, capas: cfg.capas, est, etiquetaMes, imprimir });
+  if (imprimir) return el('div', { class: 'analisis-punto imp' }, [cifras, grafico]);
+
+  const sel = (opts, v, f) => {
+    const s = el('select', { onchange: e => f(e.target.value) });
+    for (const [k, t] of opts) s.append(el('option', { value: k, text: t, selected: String(k) === String(v) || null }));
+    return s;
+  };
+  const controles = el('div', { class: 'controles-punto' }, [
+    vars.length > 1 ? el('label', { text: 'Lectura' }, [sel(vars.map(v => [v.variable_id, `${v.variable} (${UNIDAD[v.unidad_reporte] || v.unidad_reporte})`]),
+      cfg.variable, x => { cfg.variable = Number(x); alCambiar(); })]) : null,
+    el('label', { text: 'Métrica' }, [sel(Object.entries(METRICAS_PUNTO).map(([k, m]) => [k, m.t(f0.grupo)]), met,
+      x => { cfg.metrica = x; alCambiar(x === 'totaliz'); })]),
+    el('label', { text: 'Gráfico' }, [sel([['barras', 'Barras'], ['linea', 'Línea']], cfg.tipo, x => { cfg.tipo = x; alCambiar(); })]),
+    el('div', { class: 'capas-punto' }, [el('span', { class: 'seg-tit', text: 'Mostrar' }),
+      el('div', { class: 'capas-ops' }, Object.entries(CAPAS_PUNTO).map(([k, t]) => el('label', { class: 'check-linea' }, [
+        el('input', { type: 'checkbox', checked: cfg.capas[k] || null, onchange: e => { cfg.capas[k] = e.target.checked; alCambiar(); } }),
+        el('span', { text: ' ' + t })])))])
+  ]);
+  return el('section', { class: 'analisis-punto seccion' }, [
+    el('div', { class: 'analisis-cab' }, [el('h3', { text: 'Análisis · ' + f0.punto }),
+      el('span', { class: 'ayuda', text: 'Pasa el cursor (o toca) sobre un mes para ver el detalle.' })]),
+    controles, cifras, grafico]);
+}
+
 const MODOS = { mes: 'Un mes', anio: 'Un año', rango: 'Un rango' };
 
 async function vistaConsumos(c) {
@@ -1676,20 +1917,75 @@ async function vistaConsumos(c) {
     anio: String(new Date().getFullYear()),
     desde: primerDiaDelMes(new Date(new Date().getFullYear(), 0, 1)),
     hasta: S.periodoConsumo,
-    grupo: ''
+    // Al abrir, el grupo de todos los días: ANSA - Servicios (si el usuario lo ve).
+    grupo: (S.catalogo.grupos.find(g => normGrupo(g.nombre).replace(/[^a-z]/g, '') === 'ansaservicios') || {}).nombre || '',
+    puntos: []
   };
   const R = S.rep;
+  R.puntos = R.puntos || [];
+  R.graf = R.graf || { variable: null, metrica: 'consumo', tipo: 'barras', capas: { promedio: true, tendencia: true } };
 
   const selModo = el('select', { onchange: e => { R.modo = e.target.value; pintarFiltros(); cargar(); } });
   for (const [k, v] of Object.entries(MODOS))
     selModo.append(el('option', { value: k, selected: R.modo === k || null, text: v }));
 
   const gruposVisibles = new Set(S.catalogo.variables.flatMap(v => v.punto.grupos || []));
-  const selGrupo = el('select', { onchange: e => { R.grupo = e.target.value; cargar(); } });
-  selGrupo.append(el('option', { value: '', text: 'Todos los grupos' }));
+  const selGrupo = el('select', { onchange: e => { R.grupo = e.target.value; R.puntos = []; textoPuntos(); cargar(); } });
   for (const g of S.catalogo.grupos.filter(g => gruposVisibles.has(g.nombre))
                                    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999)))
     selGrupo.append(el('option', { value: g.nombre, selected: R.grupo === g.nombre || null, text: g.nombre }));
+  selGrupo.append(el('option', { value: '', selected: !R.grupo || null, text: 'Todos los grupos' }));
+  if (R.grupo && !gruposVisibles.has(R.grupo)) { R.grupo = ''; selGrupo.value = ''; }
+
+  // ---- filtro de puntos: uno, varios o todos (los del grupo elegido) ----
+  const puntosDelGrupo = () => {
+    const m = new Map();
+    for (const v of S.catalogo.variables)
+      if ((v.en_informe ?? v.principal) && (!R.grupo || (v.punto.grupos || []).includes(R.grupo))) m.set(v.punto.id, v.punto);
+    return [...m.values()].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+  };
+  const btnPuntos = el('button', { type: 'button', class: 'sel-multi', 'aria-haspopup': 'true', onclick: () => abrirPuntos() });
+  const cajaPuntos = el('div', { class: 'multi-caja' }, [btnPuntos]);
+  function textoPuntos() {
+    const ps = puntosDelGrupo(), n = R.puntos.length;
+    btnPuntos.textContent = !n ? `Todos los puntos (${ps.length})`
+      : n === 1 ? (ps.find(p => p.id === R.puntos[0])?.nombre || '1 punto') : `${n} puntos`;
+    btnPuntos.classList.toggle('activo', n > 0);
+  }
+  function abrirPuntos() {
+    const viejo = $('.pop-puntos', cajaPuntos); if (viejo) { viejo.remove(); return; }
+    const ps = puntosDelGrupo(), elegidos = new Set(R.puntos.length ? R.puntos : ps.map(p => p.id));
+    const lista = el('div', { class: 'pop-lista' });
+    const buscar = el('input', { type: 'search', placeholder: 'Buscar punto…', oninput: () => pintarLista() });
+    const aplicar = ids => {
+      R.puntos = ids.length === ps.length ? [] : ids;
+      pop.remove(); document.removeEventListener('click', fuera, true); textoPuntos(); cargar();
+    };
+    function pintarLista() {
+      const t = buscar.value.trim().toLowerCase();
+      lista.replaceChildren(...ps.filter(p => !t || String(p.nombre).toLowerCase().includes(t)).map(p => el('div', { class: 'pop-fila' }, [
+        el('label', { class: 'check-linea' }, [el('input', { type: 'checkbox', checked: elegidos.has(p.id) || null,
+          onchange: e => { e.target.checked ? elegidos.add(p.id) : elegidos.delete(p.id); } }), el('span', { text: ' ' + p.nombre })]),
+        el('button', { type: 'button', class: 'btn-texto chico', text: 'solo este', title: 'Ver solo este punto, con su gráfico',
+          onclick: () => aplicar([p.id]) })])));
+    }
+    const pop = el('div', { class: 'pop-puntos', role: 'dialog' }, [
+      buscar,
+      el('div', { class: 'fila' }, [
+        el('button', { type: 'button', class: 'btn chico', text: 'Marcar todos', onclick: () => { ps.forEach(p => elegidos.add(p.id)); pintarLista(); } }),
+        el('button', { type: 'button', class: 'btn chico', text: 'Desmarcar todos', onclick: () => { elegidos.clear(); pintarLista(); } })]),
+      lista,
+      el('div', { class: 'fila entre' }, [
+        el('span', { class: 'ayuda', text: 'Con un solo punto se muestra su gráfico.' }),
+        el('button', { type: 'button', class: 'btn primario chico', text: 'Aplicar', onclick: () => {
+          if (!elegidos.size) return toast('Marca al menos un punto', true);
+          aplicar(ps.filter(p => elegidos.has(p.id)).map(p => p.id)); } })])
+    ]);
+    const fuera = e => { if (!cajaPuntos.contains(e.target)) { pop.remove(); document.removeEventListener('click', fuera, true); } };
+    cajaPuntos.append(pop); pintarLista(); buscar.focus();
+    setTimeout(() => document.addEventListener('click', fuera, true), 0);
+  }
+  textoPuntos();
 
   const zonaFiltros = el('div', { class: 'fila crece' });
   R.vista = R.vista || 'totales';
@@ -1708,7 +2004,9 @@ async function vistaConsumos(c) {
   const barra = el('div', { class: 'fila seccion' }, [
     el('label', { text: 'Ver' }, [selModo]),
     zonaFiltros,
-    el('label', { text: 'Grupo' }, [selGrupo]),
+    el('div', { class: 'col-grupo' }, [
+      el('label', { text: 'Grupo' }, [selGrupo]),
+      el('div', { class: 'lbl-multi' }, [el('span', { class: 'lbl-txt', text: 'Puntos' }), cajaPuntos])]),
     el('div', { class: 'seg-caja' }, [el('span', { class: 'seg-tit', text: 'Tabla' }), segVista])
   ]);
   const acciones = el('div', { class: 'fila entre seccion acciones-rep' }, [
@@ -1781,12 +2079,14 @@ async function vistaConsumos(c) {
     q = q.eq('en_informe', true);
     const r0 = await q;
     if (r0.error) { zona.replaceChildren(el('p', { class: 'error', text: r0.error.message })); return; }
-    const data = r0.data.sort(ordenFilaInforme);
+    const filtroPuntos = R.puntos.length ? new Set(R.puntos) : null;
+    const data = r0.data.filter(f => !filtroPuntos || filtroPuntos.has(f.punto_id)).sort(ordenFilaInforme);
 
     // Un punto que no se midió es información, no un hueco: se lista aparte.
     const enAlcance = S.catalogo.variables.filter(v =>
       (v.en_informe ?? v.principal) &&
-      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)));
+      (!R.grupo || (v.punto.grupos || []).includes(R.grupo)) &&
+      (!filtroPuntos || filtroPuntos.has(v.punto.id)));
     const conDato = new Set(data.map(f => f.variable_id));
     // Un punto que se visitó y no se pudo leer no es lo mismo que uno donde nadie
     // fue: el primero tiene una explicación y el segundo es una tarea sin hacer.
@@ -1845,14 +2145,19 @@ async function vistaConsumos(c) {
     if (!ultimo || !zona.isConnected) return;
     const actual = ultimo;
     // El detalle mensual necesita el totalizador de cada mes: se trae solo cuando se pide.
-    if (R.vista === 'detalle' && !R.caja && !actual.extra.totalizadores) {
+    const unPunto = R.puntos.length === 1 && !R.caja;
+    if ((R.vista === 'detalle' || (unPunto && R.graf.metrica === 'totaliz')) && !R.caja && !actual.extra.totalizadores) {
       zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando totalizadores…' }));
       try { actual.extra.totalizadores = await traerTotalizadores(actual.data); }
       catch (e) { toast('No se pudieron traer los totalizadores: ' + (e.message || e), true); actual.extra.totalizadores = new Map(); }
       if (S.repDatos && S.repDatos.filas === actual.data) S.repDatos.totalizadores = actual.extra.totalizadores;
       if (actual !== ultimo || !zona.isConnected) return;
     }
-    poner(zona, ...armarInforme(actual.data, actual.desde, actual.hasta,
+    const meses = [...new Set(actual.data.map(f => f.mes))].sort();
+    const panel = unPunto && actual.data.length
+      ? panelAnalisisPunto(actual.data, meses, { totalizadores: actual.extra.totalizadores, cfg: R.graf, alCambiar: () => pintar() })
+      : null;
+    poner(zona, panel, ...armarInforme(actual.data, actual.desde, actual.hasta,
       { ...actual.extra, caja: R.caja || null, vista: R.vista }));
   }
 
@@ -2268,7 +2573,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
               vacio('num'),
               el('td', { class: 'd-rev' }, [circuloRev(f, meses, 2)])]),
             el('tr', { class: cl(' d-cons') }, [
-              vacio('d-punto'), vacio('d-var'), el('td', { class: 'd-fila', text: 'Consumo del mes' }),
+              vacio('d-punto'), vacio('d-var'), el('td', { class: 'd-fila', text: filaConsumoTxt(f.grupo) }),
               ...meses.map(m => el('td', { class: 'num' }, [celda(f, m, mm[m] === undefined ? '—' : num(mm[m]))])),
               el('td', { class: 'num', text: num(total) }), vacio('d-rev')]),
             el('tr', { class: cl(' fin') }, [
@@ -2632,8 +2937,9 @@ async function imprimirInforme() {
   // Imprime lo mismo que hay en pantalla: la tabla elegida (Totales o Detalle mensual),
   // con el periodo (un mes, un año o un rango) y el grupo del filtro.
   const detalle = R.vista === 'detalle';
+  const unPunto = (R.puntos || []).length === 1;
   let totalizadores = S.repDatos.totalizadores;
-  if (detalle && !totalizadores) {
+  if ((detalle || (unPunto && R.graf?.metrica === 'totaliz')) && !totalizadores) {
     try { totalizadores = S.repDatos.totalizadores = await traerTotalizadores(filas); }
     catch (e) { return toast('No se pudieron traer los totalizadores: ' + (e.message || e), true); }
   }
@@ -2644,7 +2950,7 @@ async function imprimirInforme() {
   const cabMes = m => variosAnios ? `${nMes(m)}-${m.slice(2, 4)}` : nMes(m);
   const conTotal = meses.length > 1;
 
-  const titulo = R.grupo || 'Todos los grupos';
+  const titulo = unPunto ? (filas[0]?.punto || 'Punto') + (R.grupo ? ' · ' + R.grupo : '') : (R.grupo || 'Todos los grupos');
   const periodo = R.modo === 'anio' ? `Año ${R.anio}`
     : desde === hasta ? 'Mes de ' + nombrePeriodo(desde)
     : `Desde ${nombrePeriodo(desde)} hasta ${nombrePeriodo(hasta)}`;
@@ -2723,7 +3029,7 @@ async function imprimirInforme() {
           ...meses.map(x => { const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(x));
             return el('td', { class: 'num', text: t === undefined ? '—' : num(t) }); }),
           conTotal ? el('td', { class: 'num' }) : null]),
-        el('tr', { class: 'd-cons' }, [el('td', { class: 'd-fila', text: 'Consumo del mes' }),
+        el('tr', { class: 'd-cons' }, [el('td', { class: 'd-fila', text: filaConsumoTxt(f.grupo) }),
           ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? '—' : num(m[x]) })),
           conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null]),
         el('tr', { class: 'd-fin' }, [el('td', { class: 'd-fila', text: 'Var. % vs mes anterior' }),
@@ -2746,7 +3052,8 @@ async function imprimirInforme() {
   // Un grupo por página: cada grupo arranca en una hoja nueva, con su encabezado.
   const secciones = [...grupos].map(([g, items], i) => el('section', { class: 'grupo-imp' + (i ? ' salto' : '') }, [
     cabecera(),
-    el('h2', { class: 'grupo-imp-tit', text: `${g} · ${new Set(items.map(x => x.f.punto_id)).size} puntos` }),
+    unPunto ? panelAnalisisPunto(filas, meses, { totalizadores, cfg: R.graf, imprimir: true })
+            : el('h2', { class: 'grupo-imp-tit', text: `${g} · ${new Set(items.map(x => x.f.punto_id)).size} puntos` }),
     detalle ? tablaDetalle(items) : tablaTotales(g, items)
   ]));
 
@@ -2907,7 +3214,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     const u = UNIDAD[v.unidad] || v.unidad;
     const filasBloque = [
       ['Totalizador', ...meses.map(m => redondear(v.lect[mesSiguiente(m)])), ''],
-      ['Consumo del mes', ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))],
+      [filaConsumoTxt(v.grupo), ...meses.map(m => redondear(v.cons[m])), redondear(totalFila(v))],
       ['Var. % vs mes anterior', ...meses.map((m, i) => {
         if (i === 0) return '';
         const a = v.cons[meses[i - 1]], b = v.cons[m];
@@ -4721,7 +5028,7 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
   for (const { f, lect, cons } of porVar.values()) {
     planilla.push([f.tag || '', f.grupo || 'Sin grupo', f.punto, f.variable, f.unidad, 'Totalizador',
       ...mesesC.map(m => lect[sigMes(m)] ?? '')]);
-    planilla.push(['', '', '', '', '', 'Consumo del mes',
+    planilla.push(['', '', '', '', '', filaConsumoTxt(f.grupo),
       ...mesesC.map(m => cons[m] ?? '')]);
     planilla.push(['', '', '', '', '', 'Var. %',
       ...mesesC.map((m, i) => {

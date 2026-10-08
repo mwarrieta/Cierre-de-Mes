@@ -1245,3 +1245,84 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .tabla-aud{max-height:none}
 }
 .tabla-aud td.aud-lect{min-width:200px}
+
+/* ===================================================================
+   CONSUMOS · filtro de puntos y análisis de un punto
+   =================================================================== */
+.col-grupo{display:flex;flex-direction:column;gap:8px;min-width:220px}
+.col-grupo > label{margin-bottom:0}
+.lbl-multi{display:flex;flex-direction:column;gap:5px}
+.lbl-txt{font-size:13px;font-weight:600;color:var(--ink-2)}
+.multi-caja{position:relative}
+.sel-multi{width:100%;min-height:46px;padding:0 34px 0 12px;text-align:left;font:inherit;color:var(--ink);
+  border:1px solid var(--line-2);border-radius:var(--radio);background:var(--surface);cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
+.sel-multi::after{content:"▾";position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--ink-3)}
+.sel-multi.activo{border-color:var(--acento);background:var(--acento-suave);font-weight:600}
+.pop-puntos{position:absolute;z-index:30;top:calc(100% + 4px);left:0;width:min(360px,calc(100vw - 32px));
+  background:var(--surface);border:1px solid var(--line-2);border-radius:12px;box-shadow:var(--sombra);
+  padding:10px;display:grid;gap:8px}
+.pop-puntos input[type=search]{margin-top:0}
+.pop-lista{max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.pop-fila{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 8px;border-bottom:1px solid var(--line)}
+.pop-fila:last-child{border-bottom:none}
+.pop-fila .check-linea{font-weight:500;flex:1;min-width:0;padding:6px 0}
+.btn-texto.chico{margin:0;padding:4px 6px;font-size:12.5px;white-space:nowrap}
+
+.analisis-punto{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px 6px}
+.analisis-cab{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.analisis-cab h3{margin:0;font-size:17px}
+.controles-punto{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin-bottom:12px}
+.controles-punto > label{margin-bottom:0;min-width:180px}
+.capas-punto{display:flex;flex-direction:column;gap:4px}
+.capas-ops{display:flex;flex-wrap:wrap;gap:4px 14px;min-height:46px;align-items:center}
+.capas-ops .check-linea{font-weight:500}
+.cifras-punto{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:6px}
+.cifra{border:1px solid var(--line);border-radius:var(--radio);padding:9px 12px;background:var(--surface)}
+.cifra .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.cifra .k{font-size:12px;color:var(--ink-3);margin-top:3px}
+.cifra .s{font-size:11.5px;color:var(--ink-2);margin-top:2px}
+.cifra.alerta .v{color:var(--warn)}
+.fig-punto{position:relative;margin:10px 0}
+.graf-punto .marca.neg{fill:var(--bad)}
+.graf-punto .linea-serie{fill:none;stroke:var(--marca);stroke-width:2.5;stroke-linejoin:round}
+.graf-punto .punto-serie{fill:var(--marca);stroke:var(--surface);stroke-width:2}
+.graf-punto .banda-sigma{fill:var(--marca-suave)}
+.graf-punto .capa-prom{stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:6 4}
+.graf-punto .capa-tend{stroke:var(--warn);stroke-width:2;stroke-dasharray:2 4;stroke-linecap:round}
+.graf-punto .capa-movil{fill:none;stroke:var(--ink-3);stroke-width:2}
+.graf-punto .etq-capa{font-size:11px;font-weight:600;fill:var(--ink-2)}
+.graf-punto .etq-capa.tend{fill:var(--warn)}
+.graf-punto .guia{stroke:var(--ink-3);stroke-width:1;stroke-dasharray:3 3}
+.graf-punto .zona{cursor:crosshair}
+.graf-punto .zona:hover{fill:var(--marca-suave);fill-opacity:.35}
+.tip-graf{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line-2);
+  border-radius:8px;box-shadow:var(--sombra);padding:7px 10px;font-size:13px;display:grid;gap:1px;min-width:150px;z-index:5}
+.tip-graf small{color:var(--ink-3)}
+@media (max-width:820px){
+  .col-grupo{min-width:0;width:100%}
+  .controles-punto > label{min-width:0;flex:1 1 140px}
+}
+@media print{
+  .impresion .analisis-punto{border:none;padding:0;margin:4px 0 8px}
+  .impresion .cifras-punto{grid-template-columns:repeat(7,1fr);gap:4px}
+  .impresion .cifra{padding:4px 6px;border-color:#bbb}
+  .impresion .cifra .v{font-size:12px}
+  .impresion .cifra .k,.impresion .cifra .s{font-size:8px}
+  .impresion .fig-punto{margin:6px 0;padding:6px}
+  .impresion .graf-punto .marca{fill:#0C8C7F}
+  .impresion .graf-punto .linea-serie{stroke:#0C8C7F}
+  .impresion .graf-punto .capa-prom{stroke:#333}
+  .impresion .graf-punto .capa-tend{stroke:#B45309}
+  .impresion .graf-punto .banda-sigma{fill:#0C8C7F22}
+}
+.fig-punto{max-width:none;width:100%;box-sizing:border-box}
+@media (max-width:820px){
+  .cifras-punto{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+  .cifra{padding:7px 8px}
+  .cifra .v{font-size:16px}
+  .cifra .k{font-size:11px}
+  .cifra .s{font-size:10.5px}
+  .analisis-punto{padding:12px 10px 4px}
+  .fig-punto{padding:10px 6px 4px}
+}

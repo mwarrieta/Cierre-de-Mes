@@ -886,9 +886,12 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .kpi.ok .v{color:var(--ok)}
 .celda-cons.falta.pend{color:var(--warn);font-weight:700}
 
-/* ---- leyenda beta: bloque amarillo al pie de cada vista ---- */
-.aviso-beta{margin:24px 0 12px;padding:8px 12px;border-radius:var(--radio);font-size:12.5px;line-height:1.35;
-  color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);text-align:center;font-weight:600}
+/* ---- leyenda beta: bloque amarillo al pie de cada vista; abre el formulario ---- */
+.aviso-beta{display:block;width:100%;margin:24px 0 12px;padding:10px 12px;border-radius:var(--radio);
+  font:inherit;font-size:12.5px;line-height:1.35;font-weight:600;cursor:pointer;
+  color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);text-align:center}
+.aviso-beta:hover{filter:brightness(.97)}
+.aviso-beta:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
 @media print{.aviso-beta{display:none}}
 
 /* ---- Auditoría en construcción (no admin) ---- */
@@ -1003,3 +1006,8 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
   .cajas-rep .kpi:nth-child(n+4){grid-column:span 3}
   .cajas-rep .kpi .v{font-size:20px}
 }
+
+/* Formulario de sugerencias */
+.form-sugerencia{display:flex;flex-direction:column;gap:12px;padding:14px 18px 18px}
+.form-sugerencia .btn.sel{background:var(--acento-suave);border-color:var(--acento);color:var(--acento-ink)}
+.msg-sugerencia{white-space:pre-wrap;display:block;min-width:200px}

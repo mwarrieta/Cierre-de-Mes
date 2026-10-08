@@ -509,7 +509,7 @@ const TITULOS = {
   consumos: 'Consumos e informes', avisos: 'Avisos', equipos: 'Equipos',
   dispositivo: 'Este dispositivo',
   puntos: 'Puntos de medición', grupos: 'Grupos', respaldo: 'Respaldo',
-  usuarios: 'Usuarios', auditoria: 'Auditoría',
+  usuarios: 'Usuarios', sugerencias: 'Sugerencias y fallas', auditoria: 'Auditoría',
   generadores: 'Casa de Fuerza · Generadores', recargas: 'Casa de Fuerza · Combustible',
   etiquetas: 'Etiquetas QR'
 };
@@ -549,15 +549,15 @@ const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
 
-// Leyenda amarilla al pie de cada vista: la app está en desarrollo.
-const avisoBeta = () => el('p', { class: 'aviso-beta', role: 'note',
-  text: 'Versión beta: puede tener errores. Si ves algo raro, avísalo.' });
+// Leyenda amarilla al pie de cada vista: abre el formulario para contar una falla o una idea.
+const avisoBeta = () => el('button', { type: 'button', class: 'aviso-beta',
+  text: 'Versión beta · ¿Algo falla o se puede mejorar? Cuéntanos', onclick: () => formSugerencia() });
 
 function render() {
   marcarNav();
   $('#titulo-vista').textContent = TITULOS[S.vista] || '';
   $('#subtitulo-vista').textContent =
-    ['inicio','equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
+    ['inicio','sugerencias','equipos','puntos','grupos','respaldo','usuarios','auditoria','avisos','consumos','dispositivo','generadores','etiquetas','cierrecf'].includes(S.vista) ? ''
       : S.vista === 'recargas' ? ''
       : S.vista === 'terreno' ? nombreCampana(S.periodo)
       : nombrePeriodo(S.vista === 'consumos' ? S.periodoConsumo : S.periodo);
@@ -574,7 +574,7 @@ function render() {
     consumos: vistaConsumos, avisos: vistaAvisos, equipos: vistaEquipos,
     dispositivo: vistaDispositivo,
     puntos: vistaPuntos, grupos: vistaGrupos, respaldo: vistaRespaldo,
-    usuarios: vistaUsuarios, auditoria: vistaAuditoria,
+    usuarios: vistaUsuarios, sugerencias: vistaSugerencias, auditoria: vistaAuditoria,
     generadores: vistaGeneradores, recargas: vistaRecargas,
     etiquetas: vistaEtiquetas
   }[S.vista] || vistaPuntosSiInstalaciones())(c);
@@ -4437,6 +4437,95 @@ function armarHojas(filas, consumos, inventario, avisos, auditoria, recargas = [
 /* ===================================================================
    VISTA · USUARIOS
    =================================================================== */
+/* ===================================================================
+   SUGERENCIAS Y FALLAS
+   Cualquiera las envía desde la leyenda beta (pie de cada pantalla); solo el
+   admin las lee. La sección viene preseleccionada con la pantalla de donde se tocó.
+   =================================================================== */
+function formSugerencia() {
+  // Las secciones que esta persona realmente ve en el menú.
+  const secciones = [];
+  $$('#menu button[data-vista]').forEach(b => {
+    if (b.closest('[hidden]') || b.hidden) return;
+    const nombre = b.textContent.trim();
+    if (nombre && !secciones.includes(nombre)) secciones.push(nombre);
+  });
+  secciones.push('General / otra cosa');
+  // La sección preseleccionada es la del botón de menú de la pantalla actual.
+  const btnActual = $(`#menu button[data-vista="${S.vista}"]`);
+  const textoActual = btnActual ? btnActual.textContent.trim() : '';
+  const coincide = secciones.includes(textoActual) ? textoActual : 'General / otra cosa';
+  const selSec = el('select', {});
+  for (const n of secciones) selSec.append(el('option', { value: n, selected: n === coincide || null, text: n }));
+
+  let tipo = 'falla';
+  const bFalla = el('button', { type: 'button', class: 'btn chico sel', text: 'Algo no funciona', onclick: () => marcar('falla') });
+  const bMejora = el('button', { type: 'button', class: 'btn chico', text: 'Se puede mejorar', onclick: () => marcar('mejora') });
+  function marcar(t) { tipo = t; bFalla.classList.toggle('sel', t === 'falla'); bMejora.classList.toggle('sel', t === 'mejora'); }
+
+  const msg = el('textarea', { placeholder: '¿Qué pasó o qué mejorarías? Basta con una línea.', maxlength: 2000 });
+  const enviar = el('button', { type: 'button', class: 'btn primario grande', text: 'Enviar', onclick: async () => {
+    const texto = msg.value.trim();
+    if (texto.length < 3) { msg.focus(); return toast('Escribe qué pasó', true); }
+    if (!navigator.onLine) return toast('Sin señal: no se pudo enviar. Tu texto sigue aquí.', true);
+    enviar.disabled = true;
+    const { error } = await sb.from('sugerencias').insert({ seccion: selSec.value, tipo, mensaje: texto, version: C.VERSION || null });
+    enviar.disabled = false;
+    if (error) return toast('No se pudo enviar: ' + error.message, true);
+    cerrarModal(); toast('Gracias, el aviso llegó');
+  } });
+  modal('Cuéntanos', el('div', { class: 'form-sugerencia' }, [
+    el('div', { class: 'fila' }, [bFalla, bMejora]),
+    el('label', { text: 'Sección' }, [selSec]),
+    el('label', { text: 'Mensaje' }, [msg]),
+    enviar
+  ]));
+  setTimeout(() => msg.focus(), 50);
+}
+
+async function vistaSugerencias(c) {
+  let filtro = 'pendientes';
+  const sel = el('select', { onchange: e => { filtro = e.target.value; cargar(); } });
+  for (const [k, v] of [['pendientes', 'Por revisar'], ['resueltas', 'Resueltas'], ['todas', 'Todas']])
+    sel.append(el('option', { value: k, text: v }));
+  const zona = el('div');
+  c.append(el('div', { class: 'fila entre seccion' }, [
+    el('label', { text: 'Ver' }, [sel]),
+    el('p', { class: 'ayuda crece', text: 'Lo que el equipo cuenta desde el pie de cada pantalla. Solo tú lo ves.' })
+  ]), zona);
+
+  async function cargar() {
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando…' }));
+    let q = sb.from('sugerencias').select('*, usuarios(nombre)').order('creado_en', { ascending: false }).limit(500);
+    if (filtro === 'pendientes') q = q.in('estado', ['nueva', 'vista']);
+    else if (filtro === 'resueltas') q = q.eq('estado', 'resuelta');
+    const { data, error } = await q;
+    if (error) return zona.replaceChildren(el('p', { class: 'error', text: error.message }));
+    if (!data.length) return zona.replaceChildren(el('p', { class: 'ayuda', text: 'No hay nada en esta lista.' }));
+    const filas = data.map(r => {
+      const estado = el('select', { onchange: async e => {
+        const { error } = await sb.from('sugerencias').update({ estado: e.target.value }).eq('id', r.id);
+        toast(error ? error.message : 'Actualizado', !!error);
+      } });
+      for (const [k, v] of [['nueva', 'Nueva'], ['vista', 'Vista'], ['resuelta', 'Resuelta']])
+        estado.append(el('option', { value: k, selected: r.estado === k || null, text: v }));
+      return [
+        fechaCorta(r.creado_en), r.usuarios?.nombre || '—', r.seccion,
+        el('span', { class: 'pill ' + (r.tipo === 'falla' ? 'bad' : 'warn'), text: r.tipo === 'falla' ? 'Falla' : 'Mejora' }),
+        el('span', { class: 'msg-sugerencia', text: r.mensaje }),
+        r.version || '—', estado,
+        el('button', { class: 'btn chico peligro', text: 'Borrar', onclick: async () => {
+          if (!confirm('¿Borrar este aviso?')) return;
+          const { error } = await sb.from('sugerencias').delete().eq('id', r.id);
+          if (error) toast(error.message, true); else cargar();
+        } })
+      ];
+    });
+    zona.replaceChildren(tabla(['Fecha', 'Quién', 'Sección', 'Tipo', 'Mensaje', 'Versión', 'Estado', ''], filas));
+  }
+  cargar();
+}
+
 async function vistaUsuarios(c) {
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando…' })]);
   c.append(el('div', { class: 'fila entre seccion' }, [

@@ -549,9 +549,9 @@ const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
 
-// Leyenda chica y fija arriba de cada vista: la app está en desarrollo.
+// Leyenda amarilla al pie de cada vista: la app está en desarrollo.
 const avisoBeta = () => el('p', { class: 'aviso-beta', role: 'note',
-  text: 'Versión beta · la app está en desarrollo y puede tener errores. Si ves algo raro, avísalo.' });
+  text: 'Versión beta: puede tener errores. Si ves algo raro, avísalo.' });
 
 function render() {
   marcarNav();
@@ -567,7 +567,7 @@ function render() {
   const c = el('div');
   // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
   $('#contenido').classList.toggle('ancho', S.vista === 'consumos');
-  $('#contenido').replaceChildren(avisoBeta(), c);
+  $('#contenido').replaceChildren(c, avisoBeta());
   ({
     inicio: vistaInicio,
     terreno: vistaTerreno, cierrecf: vistaCierreCF,

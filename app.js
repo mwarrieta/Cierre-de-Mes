@@ -4978,7 +4978,7 @@ async function vistaRespaldo(c) {
 
   const [{ data: pend }, { data: hechos }] = await Promise.all([
     sb.from('v_pendiente_respaldo').select('*'),
-    sb.from('respaldos').select('*').order('creado_en', { ascending: false }).limit(10)
+    sb.from('respaldos').select('*').order('creado_en', { ascending: false }).limit(6)
   ]);
 
   const sinRespaldo = (pend || []).reduce((a, p) => a + Number(p.lecturas_sin_respaldo), 0);
@@ -5039,11 +5039,11 @@ async function vistaRespaldo(c) {
           p.fotos_sin_respaldo]), { num: [1, 3] })
     ]) : null,
     (hechos && hechos.length) ? el('div', { class: 'seccion' }, [
-      el('h2', { text: 'Respaldos anteriores' }),
-      tabla(['Cuándo', 'Tipo', 'Cierres', 'Lecturas', 'Fotos', 'Archivo'],
-        hechos.map(r => [fechaHora(r.creado_en), r.tipo,
+      el('h2', { text: 'Últimos 6 respaldos' }),
+      tabla(['Cuándo', 'Usuario', 'Tipo', 'Cierres', 'Lecturas', 'Fotos', 'Archivo'],
+        hechos.map(r => [fechaHora(r.creado_en), (S.catalogo?.gente || {})[r.creado_por] || '—', r.tipo,
           r.periodo_desde ? `${nombrePeriodo(mesAnterior(r.periodo_desde))} → ${nombrePeriodo(mesAnterior(r.periodo_hasta))}` : 'todo',
-          r.n_lecturas, r.n_fotos, r.archivo || '—']), { num: [3, 4] })
+          r.n_lecturas, r.n_fotos, r.archivo || '—']), { num: [4, 5] })
     ]) : null
   );
 

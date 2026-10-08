@@ -17,7 +17,8 @@
   (function(){
     try {
       var m = localStorage.getItem('cierre_mes_modo');
-      if (m === 'dark' || m === 'light' || m === 'clean') document.documentElement.setAttribute('data-modo', m);
+      // Sin elección guardada, el tema por defecto es "Limpio".
+      document.documentElement.setAttribute('data-modo', (m === 'dark' || m === 'light' || m === 'clean') ? m : 'clean');
     } catch(e){}
   })();
 </script>

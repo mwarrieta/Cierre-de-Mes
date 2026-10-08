@@ -104,6 +104,8 @@ a{color:var(--acento-ink)}
   border-radius:12px;padding:28px;box-shadow:var(--sombra);
 }
 .marca{display:flex;gap:14px;align-items:center;margin-bottom:24px}
+.btn-texto{display:block;margin:14px auto 0;padding:8px;border:none;background:none;font:inherit;font-size:14px;
+  color:var(--acento-ink);text-decoration:underline;cursor:pointer}
 .marca img{border-radius:10px}
 .marca h1{font-size:22px;letter-spacing:-.02em}
 .marca p{margin:2px 0 0;font-size:13px;color:var(--ink-3)}

@@ -187,7 +187,9 @@ $('#form-login').addEventListener('submit', async e => {
 
 // Cada persona cambia su propia contraseña sin depender del panel de Supabase
 // ni de que alguien se la reasigne: si eso cuesta, nadie cambia la que le dieron.
-$('#btn-clave').addEventListener('click', () => {
+// recuperacion = viene del link del correo "¿Olvidaste tu contraseña?".
+$('#btn-clave').addEventListener('click', () => abrirCambioClave());
+function abrirCambioClave({ recuperacion = false } = {}) {
   const nueva = el('input', { type: 'password', autocomplete: 'new-password' });
   const otra  = el('input', { type: 'password', autocomplete: 'new-password' });
   const aviso = el('p', { class: 'banda warn', hidden: true });
@@ -206,11 +208,14 @@ $('#btn-clave').addEventListener('click', () => {
       boton.disabled = false;
       if (error) { aviso.textContent = error.message; aviso.hidden = false; return; }
       cerrarModal();
-      toast('Contraseña cambiada. Se usa la nueva la próxima vez que entres.');
+      toast(recuperacion ? 'Listo: contraseña nueva guardada. Ya estás dentro.'
+                         : 'Contraseña cambiada. Se usa la nueva la próxima vez que entres.');
     } });
 
-  modal('Cambiar mi contraseña', el('div', {}, [
-    el('p', { class: 'ayuda', text: `Cuenta: ${S.usuario.correo}` }),
+  modal(recuperacion ? 'Crea tu contraseña nueva' : 'Cambiar mi contraseña', el('div', {}, [
+    recuperacion ? el('p', { class: 'banda acento', text:
+      'Entraste con el enlace del correo. Escribe una contraseña nueva para tu cuenta.' }) : null,
+    el('p', { class: 'ayuda', text: `Cuenta: ${S.usuario?.correo || ''}` }),
     el('label', { text: 'Contraseña nueva' }, [nueva]),
     el('label', { text: 'Repítela' }, [otra]),
     aviso,
@@ -219,7 +224,49 @@ $('#btn-clave').addEventListener('click', () => {
       'Al menos 8 caracteres, con letras y números. La sesión abierta sigue funcionando; ' +
       'la contraseña nueva se usa la próxima vez que entres.' })
   ]));
+}
+
+// ¿Olvidaste tu contraseña? · Supabase manda un correo con un enlace que vuelve
+// a ESTA página (redirectTo) y abre el formulario de contraseña nueva.
+// Para que el enlace no termine en otra app, la URL de esta página tiene que estar
+// en Supabase → Authentication → URL Configuration → Redirect URLs.
+$('#btn-olvide').addEventListener('click', () => {
+  const correo = el('input', { type: 'email', autocomplete: 'username', value: $('#login-correo').value.trim() });
+  const aviso = el('p', { class: 'banda warn', hidden: true });
+  const boton = el('button', { class: 'btn primario grande', text: 'Enviarme el enlace', onclick: async () => {
+    const c = correo.value.trim();
+    if (!/^\S+@\S+\.\S+$/.test(c)) { aviso.textContent = 'Escribe el correo con el que entras a la app.'; aviso.hidden = false; return; }
+    if (!navigator.onLine) { aviso.textContent = 'Necesitas señal para pedir el enlace.'; aviso.hidden = false; return; }
+    boton.disabled = true; boton.textContent = 'Enviando…';
+    const volver = location.origin + location.pathname.replace(/index\.html$/, '');
+    const { error } = await sb.auth.resetPasswordForEmail(c, { redirectTo: volver });
+    boton.disabled = false; boton.textContent = 'Enviarme el enlace';
+    if (error) {
+      aviso.textContent = /rate|seconds/i.test(error.message)
+        ? 'Ya se pidió un enlace hace poco. Espera un minuto y vuelve a intentarlo.' : error.message;
+      aviso.hidden = false; return;
+    }
+    // Mismo mensaje exista o no la cuenta: no se revela qué correos están registrados.
+    modal('Revisa tu correo', el('div', {}, [
+      el('p', { text: `Si ${c} tiene cuenta en Cierre de Mes, te llegará un correo con un enlace para crear una contraseña nueva.` }),
+      el('p', { class: 'ayuda', text: 'Ábrelo en este mismo teléfono o computador. El enlace sirve una sola vez y vence en una hora. Si no llega en unos minutos, revisa la carpeta de spam.' }),
+      el('button', { class: 'btn grande', text: 'Entendido', onclick: cerrarModal })
+    ]));
+  } });
+  modal('Recuperar contraseña', el('div', {}, [
+    el('p', { class: 'ayuda', text: 'Te mandamos un enlace al correo para que crees una contraseña nueva.' }),
+    el('label', { text: 'Correo' }, [correo]),
+    aviso, boton
+  ]));
 });
+
+// Enlace del correo vencido o ya usado: se avisa en el login en vez de fallar callado.
+if (window.__errorEnlace) {
+  $('#login-error').textContent = 'El enlace para recuperar la contraseña venció o ya se usó. ' +
+    'Pide uno nuevo con "¿Olvidaste tu contraseña?".';
+  $('#login-error').hidden = false;
+  history.replaceState(null, '', location.pathname + location.search);
+}
 
 $('#btn-salir').addEventListener('click', async () => {
   const p = await DB.pendientes();
@@ -245,6 +292,13 @@ async function arrancar() {
   $('#vista-login').classList.remove('activa');
   $('#app').hidden = false;
   $('#menu-usuario').textContent = `${perfil.nombre} · ${perfil.rol}`;
+
+  // Viene del enlace "recuperar contraseña": ya hay sesión, falta la clave nueva.
+  if (window.__recuperacion) {
+    window.__recuperacion = false;
+    history.replaceState(null, '', location.pathname + location.search);
+    setTimeout(() => abrirCambioClave({ recuperacion: true }), 0);
+  }
 
   // opciones de menú según rol
   $$('#menu [data-rol]').forEach(b => {
@@ -6349,6 +6403,10 @@ async function revisarVersion() {
     document.getElementById('app').prepend(barra);
   } catch { /* sin conexión o sin archivo: no pasa nada */ }
 }
-sb.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') location.reload(); });
+sb.auth.onAuthStateChange((evento) => {
+  if (evento === 'SIGNED_OUT') location.reload();
+  // Respaldo por si el enlace llegó con otro formato y no se detectó al cargar.
+  if (evento === 'PASSWORD_RECOVERY') window.__recuperacion = true;
+});
 arrancar();
 })();

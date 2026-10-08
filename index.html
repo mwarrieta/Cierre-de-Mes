@@ -10,6 +10,10 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="styles.css">
 <script>
+  // El link del correo "Recuperar contraseña" trae #...type=recovery (o un error si venció).
+  // Se anota aquí, antes de que el cliente de Supabase lea y limpie la URL.
+  window.__recuperacion = /type=recovery/.test(location.hash);
+  window.__errorEnlace = (/error_description=([^&]+)/.exec(location.hash) || [])[1] || null;
   (function(){
     try {
       var m = localStorage.getItem('cierre_mes_modo');
@@ -43,6 +47,7 @@
       </label>
       <button class="btn primario grande" type="submit">Entrar</button>
       <p class="error" id="login-error" hidden></p>
+      <button class="btn-texto" type="button" id="btn-olvide">¿Olvidaste tu contraseña?</button>
     </form>
   </div>
 </section>

@@ -1326,3 +1326,79 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .analisis-punto{padding:12px 10px 4px}
   .fig-punto{padding:10px 6px 4px}
 }
+
+/* ===================================================================
+   CONSUMOS · franja de filtros alineada (v .12)
+   Todos los controles a la misma altura y con el mismo rótulo, en una tarjeta.
+   =================================================================== */
+.filtros-rep{display:grid;align-items:end;gap:12px 14px;padding:14px 16px;
+  grid-template-columns:minmax(120px,150px) minmax(170px,1.5fr) minmax(190px,1.4fr) minmax(190px,1.4fr) auto;
+  background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.filtros-rep label,.filtros-rep .f-tit{display:block;margin:0;font-size:12px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-3)}
+.filtros-rep .f-tit{margin-bottom:5px}
+.filtros-rep select,.filtros-rep .sel-multi{min-height:44px;margin-top:5px;font-size:15px;font-weight:500;
+  text-transform:none;letter-spacing:0;color:var(--ink)}
+.filtros-rep .sel-multi{margin-top:0}
+.filtros-rep .f-periodo{display:flex;gap:10px;min-width:0}
+.filtros-rep .f-periodo > label{flex:1 1 0;min-width:0;max-width:none}
+.filtros-rep .f-tabla .seg{display:flex}
+.filtros-rep .f-tabla .seg-op{min-height:44px;font-size:14px;white-space:nowrap}
+.filtros-rep .pop-puntos label{text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink);font-weight:500}
+@media (max-width:1180px){
+  .filtros-rep{grid-template-columns:minmax(120px,160px) 1fr 1fr}
+  .filtros-rep .f-puntos{grid-column:span 2}
+}
+@media (max-width:820px){
+  .filtros-rep{grid-template-columns:1fr 1fr;padding:12px}
+  .filtros-rep .f-ver{grid-column:1}
+  .filtros-rep .f-periodo{grid-column:2}
+  .filtros-rep .f-grupo,.filtros-rep .f-puntos,.filtros-rep .f-tabla{grid-column:1/-1}
+  .filtros-rep .f-tabla .seg-op{flex:1}
+  .filtros-rep .f-periodo{flex-direction:column;gap:8px}
+}
+
+/* ---- ayudas al pasar el cursor (capas del gráfico y cifras) ---- */
+[data-ayuda]{position:relative}
+[data-ayuda]:hover::after,[data-ayuda]:focus-visible::after,[data-ayuda]:focus-within::after{
+  content:attr(data-ayuda);position:absolute;left:0;top:calc(100% + 6px);z-index:40;width:270px;
+  background:var(--ink);color:var(--surface);font-size:12.5px;font-weight:400;line-height:1.4;
+  padding:8px 10px;border-radius:8px;box-shadow:var(--sombra);white-space:normal;pointer-events:none;
+  text-transform:none;letter-spacing:0}
+.capa-op .info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-left:5px;
+  border-radius:50%;border:1px solid var(--ink-3);color:var(--ink-3);font-size:10px;font-weight:700;font-style:italic;
+  font-family:Georgia,serif;cursor:help}
+.cifra[data-ayuda]{cursor:help}
+.cifra[data-ayuda] .k::after{content:" ⓘ";color:var(--ink-3)}
+
+/* ---- gráfico del punto: más contraste y un trazo distinto por capa ---- */
+.graf-punto .marca{fill:var(--marca);opacity:.55}
+.graf-punto .marca.neg{fill:var(--bad);opacity:.8}
+.graf-punto .halo{fill:none;stroke:var(--surface);stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round}
+.graf-punto .capa-prom{stroke:var(--ink);stroke-width:2.2;stroke-dasharray:12 6}
+.graf-punto .capa-tend{stroke:var(--ink);stroke-width:3;stroke-dasharray:0.1 7;stroke-linecap:round}
+.graf-punto .capa-movil{fill:none;stroke:var(--ink-2);stroke-width:2}
+.graf-punto .marca-movil{fill:var(--surface);stroke:var(--ink-2);stroke-width:2}
+.graf-punto .banda-sigma{stroke:var(--ink-3);stroke-width:1;stroke-dasharray:3 3}
+.graf-punto .rayas-fondo{fill:transparent}
+.graf-punto .rayas-linea{stroke:var(--ink-3);stroke-width:1.5;opacity:.45}
+.graf-punto .etq-capa{font-size:11.5px;font-weight:700;fill:var(--ink)}
+.graf-punto .etq-capa.tend{fill:var(--ink)}
+.graf-punto .etq-capa.movil{fill:var(--ink-2)}
+.graf-punto .etq-capa.banda{fill:var(--ink-3);font-weight:600}
+.graf-punto .linea-serie{stroke:var(--marca);stroke-width:2.5}
+@media print{
+  .impresion .graf-punto .marca{fill:#c9c9c9;opacity:1;stroke:#888;stroke-width:.6}
+  .impresion .graf-punto .marca.neg{fill:#777}
+  .impresion .graf-punto .halo{stroke:#fff}
+  .impresion .graf-punto .capa-prom,.impresion .graf-punto .capa-tend{stroke:#000}
+  .impresion .graf-punto .capa-movil{stroke:#444}
+  .impresion .graf-punto .marca-movil{fill:#fff;stroke:#444}
+  .impresion .graf-punto .linea-serie{stroke:#555}
+  .impresion .graf-punto .punto-serie{fill:#555}
+  .impresion .graf-punto .rayas-linea{stroke:#666;opacity:.6}
+  .impresion .graf-punto .banda-sigma{stroke:#888;fill-opacity:1}
+  .impresion .graf-punto .etq-capa{fill:#000}
+  .impresion .graf-punto .grid{stroke:#ddd}
+  .impresion .graf-punto .ejeX,.impresion .graf-punto .ejeY{fill:#333}
+}

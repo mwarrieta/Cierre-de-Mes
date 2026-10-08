@@ -1690,6 +1690,18 @@ const METRICAS_PUNTO = {
   variacion: { t: () => 'Variación vs mes anterior', u: () => '%' }
 };
 const CAPAS_PUNTO = { promedio: 'Promedio', banda: 'Banda ±1σ', tendencia: 'Tendencia', movil: 'Media móvil 3 meses' };
+const AYUDA_CAPA = {
+  promedio: 'Promedio de los meses con dato del periodo. Línea discontinua.',
+  banda: 'Rango habitual: promedio ± 1 desviación estándar (zona rayada). Cerca de 2 de cada 3 meses caen dentro; lo que queda fuera es inusual.',
+  tendencia: 'Recta que mejor se ajusta a los meses (mínimos cuadrados). Indica si sube o baja en el periodo; su pendiente es la cifra "Tendencia por mes". Línea punteada.',
+  movil: 'Promedio del mes con los dos anteriores. Suaviza saltos puntuales para ver el ritmo de fondo. Línea continua con marcas cuadradas.'
+};
+const AYUDA_CIFRA = {
+  'Variabilidad (CV)': 'Coeficiente de variación: desviación estándar ÷ promedio. Bajo 15% es estable; sobre 30%, el punto varía mucho mes a mes.',
+  'Tendencia por mes': 'Pendiente de la tendencia, como % del promedio: cuánto sube (+) o baja (−) en promedio cada mes.',
+  'Último vs promedio': 'Cuánto se aleja el último mes con dato del promedio del periodo.',
+  'Promedio mensual': 'Promedio de los meses con dato. La mediana es el valor del medio: no la mueven los meses extremos.'
+};
 
 // Serie de una lectura según la métrica elegida. Devuelve [{mes, v}] con v = null si falta.
 function seriePunto(filasVar, meses, metrica, totalizadores) {
@@ -1767,9 +1779,15 @@ function graficoSerie(serie, { titulo, unidad, tipo = 'barras', capas = {}, est,
   }
   if (lo < 0 && hi > 0) svg.append(ns('line', { x1: mI, x2: W - mD, y1: y(0), y2: y(0), class: 'base' }));
 
-  // Banda ±1σ detrás de todo.
+  // Banda ±1σ detrás de todo, con rayado: se distingue también impresa en blanco y negro.
+  const idRayas = 'rayas-' + Math.random().toString(36).slice(2, 8);
+  const defs = ns('defs', {});
+  const pat = ns('pattern', { id: idRayas, width: 8, height: 8, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
+  pat.append(ns('rect', { width: 8, height: 8, class: 'rayas-fondo' }), ns('line', { x1: 0, y1: 0, x2: 0, y2: 8, class: 'rayas-linea' }));
+  defs.append(pat); svg.append(defs);
   if (est && capas.banda && est.sigma)
-    svg.append(ns('rect', { x: mI, width: aU, y: y(est.media + est.sigma), height: Math.max(0, y(est.media - est.sigma) - y(est.media + est.sigma)), class: 'banda-sigma' }));
+    svg.append(ns('rect', { x: mI, width: aU, y: y(est.media + est.sigma), height: Math.max(0, y(est.media - est.sigma) - y(est.media + est.sigma)),
+      class: 'banda-sigma', style: `fill:url(#${idRayas})` }));
 
   // Marcas de datos.
   const anchoB = Math.min(paso - 8, 48);
@@ -1790,28 +1808,39 @@ function graficoSerie(serie, { titulo, unidad, tipo = 'barras', capas = {}, est,
     serie.forEach((p, i) => { if (p.v !== null) svg.append(ns('circle', { cx: cx(i), cy: y(p.v), r: 4.5, class: 'punto-serie' })); });
   }
 
-  // Capas de análisis, con etiqueta directa a la derecha (sin leyenda aparte).
-  const etiquetaDer = (yy, txt, cl) => svg.append(ns('text', { x: W - mD + 8, y: yy + 4, class: 'etq-capa ' + cl }, txt));
+  // Capas de análisis. Cada una con su propio trazo (discontinuo, punteado, continuo con marcas)
+  // y un halo del color del fondo, para que se lean sobre las barras y también en blanco y negro.
+  // Etiqueta directa a la derecha, sin leyenda aparte; las etiquetas se separan si chocan.
+  const etiquetas = [];
+  const conHalo = (tag, at, cl) => { svg.append(ns(tag, { ...at, class: 'halo' })); svg.append(ns(tag, { ...at, class: cl })); };
   if (est && capas.promedio) {
     svg.append(ns('line', { x1: mI, x2: W - mD, y1: y(est.media), y2: y(est.media), class: 'capa-prom' }));
-    etiquetaDer(y(est.media), 'Prom. ' + fmt(est.media), 'prom');
+    etiquetas.push({ y: y(est.media), t: 'Promedio ' + fmt(est.media), cl: 'prom' });
   }
   if (est && capas.tendencia && est.n > 1) {
     const i0 = serie.findIndex(p => p.v !== null), i1 = serie.length - 1 - [...serie].reverse().findIndex(p => p.v !== null);
     const yy = i => est.orig + est.pend * i;
-    svg.append(ns('line', { x1: cx(i0), x2: cx(i1), y1: y(yy(i0)), y2: y(yy(i1)), class: 'capa-tend' }));
-    etiquetaDer(y(yy(i1)) + (capas.promedio && Math.abs(y(yy(i1)) - y(est.media)) < 14 ? 14 : 0), 'Tendencia', 'tend');
+    conHalo('line', { x1: cx(i0), x2: cx(i1), y1: y(yy(i0)), y2: y(yy(i1)) }, 'capa-tend');
+    etiquetas.push({ y: y(yy(i1)), t: 'Tendencia', cl: 'tend' });
   }
   if (capas.movil) {
-    let d = '', ult = null;
+    let d = '', ult = null; const pts = [];
     serie.forEach((p, i) => {
       const ventana = serie.slice(Math.max(0, i - 2), i + 1).map(q => q.v).filter(v => v !== null);
       if (i < 2 || ventana.length < 3) return;
       const m = ventana.reduce((a, b) => a + b, 0) / 3;
-      d += (d ? 'L' : 'M') + cx(i) + ',' + y(m); ult = m;
+      d += (d ? 'L' : 'M') + cx(i) + ',' + y(m); ult = m; pts.push([cx(i), y(m)]);
     });
-    if (d) { svg.append(ns('path', { d, class: 'capa-movil' })); if (ult !== null && !capas.promedio && !capas.tendencia) etiquetaDer(y(ult), 'Media 3m', 'movil'); }
+    if (d) {
+      conHalo('path', { d }, 'capa-movil');
+      for (const [px, py] of pts) svg.append(ns('rect', { x: px - 3.5, y: py - 3.5, width: 7, height: 7, class: 'marca-movil' }));
+      etiquetas.push({ y: y(ult), t: 'Media móvil 3m', cl: 'movil' });
+    }
   }
+  if (est && capas.banda && est.sigma) etiquetas.push({ y: y(est.media + est.sigma), t: '+1σ', cl: 'banda' });
+  etiquetas.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < etiquetas.length; i++) if (etiquetas[i].y - etiquetas[i - 1].y < 14) etiquetas[i].y = etiquetas[i - 1].y + 14;
+  for (const e of etiquetas) svg.append(ns('text', { x: W - mD + 8, y: e.y + 4, class: 'etq-capa ' + e.cl }, e.t));
 
   // Ejes X y etiqueta directa del máximo.
   serie.forEach((p, i) => svg.append(ns('text', { x: cx(i), y: H - 12, class: 'ejeX' }, etiquetaMes(p.mes))));
@@ -1866,7 +1895,7 @@ function panelAnalisisPunto(data, meses, { totalizadores, cfg, alCambiar, imprim
   const titulo = `${f0.punto} · ${METRICAS_PUNTO[met].t(f0.grupo)}`;
 
   const dec = v => Math.abs(v) < 100 ? 2 : 0;
-  const cifra = (v, k, extra = '', cl = '') => el('div', { class: 'cifra ' + cl }, [
+  const cifra = (v, k, extra = '', cl = '') => el('div', { class: 'cifra ' + cl, 'data-ayuda': imprimir ? null : AYUDA_CIFRA[k] || null, tabindex: !imprimir && AYUDA_CIFRA[k] ? '0' : null }, [
     el('div', { class: 'v', text: v }), el('div', { class: 'k', text: k }), extra ? el('div', { class: 's', text: extra }) : null]);
   const fx = v => unidad === '%' ? (v > 0 ? '+' : '') + num(v, 1) + '%' : num(v, dec(v));
   const cifras = est ? el('div', { class: 'cifras-punto' }, [
@@ -1897,9 +1926,9 @@ function panelAnalisisPunto(data, meses, { totalizadores, cfg, alCambiar, imprim
       x => { cfg.metrica = x; alCambiar(x === 'totaliz'); })]),
     el('label', { text: 'Gráfico' }, [sel([['barras', 'Barras'], ['linea', 'Línea']], cfg.tipo, x => { cfg.tipo = x; alCambiar(); })]),
     el('div', { class: 'capas-punto' }, [el('span', { class: 'seg-tit', text: 'Mostrar' }),
-      el('div', { class: 'capas-ops' }, Object.entries(CAPAS_PUNTO).map(([k, t]) => el('label', { class: 'check-linea' }, [
+      el('div', { class: 'capas-ops' }, Object.entries(CAPAS_PUNTO).map(([k, t]) => el('label', { class: 'check-linea capa-op', 'data-ayuda': AYUDA_CAPA[k] }, [
         el('input', { type: 'checkbox', checked: cfg.capas[k] || null, onchange: e => { cfg.capas[k] = e.target.checked; alCambiar(); } }),
-        el('span', { text: ' ' + t })])))])
+        el('span', { text: ' ' + t }), el('span', { class: 'info', 'aria-hidden': 'true', text: 'i' })])))])
   ]);
   return el('section', { class: 'analisis-punto seccion' }, [
     el('div', { class: 'analisis-cab' }, [el('h3', { text: 'Análisis · ' + f0.punto }),
@@ -1908,6 +1937,9 @@ function panelAnalisisPunto(data, meses, { totalizadores, cfg, alCambiar, imprim
 }
 
 const MODOS = { mes: 'Un mes', anio: 'Un año', rango: 'Un rango' };
+// Último mes cerrado: un mes cierra con la toma del día 1 del siguiente. El mes en curso
+// sale prorrateado con lecturas parciales y muestra caídas que no existen: no entra a los informes.
+const ultimoMesCerrado = () => mesAnterior(primerDiaDelMes(new Date()));
 
 async function vistaConsumos(c) {
   S.rep = S.rep || {
@@ -1987,7 +2019,7 @@ async function vistaConsumos(c) {
   }
   textoPuntos();
 
-  const zonaFiltros = el('div', { class: 'fila crece' });
+  const zonaFiltros = el('div', { class: 'f-periodo' });
   R.vista = R.vista || 'totales';
   const segVista = el('div', { class: 'seg', role: 'group', 'aria-label': 'Tipo de tabla' },
     [['totales', 'Totales'], ['detalle', 'Detalle mensual']].map(([k, t]) =>
@@ -2001,13 +2033,13 @@ async function vistaConsumos(c) {
           });
           pintar();
         } })));
-  const barra = el('div', { class: 'fila seccion' }, [
-    el('label', { text: 'Ver' }, [selModo]),
+  // Una sola franja de filtros, alineada: periodo · grupo · puntos · tipo de tabla.
+  const barra = el('div', { class: 'filtros-rep seccion' }, [
+    el('label', { class: 'f-ver', text: 'Ver' }, [selModo]),
     zonaFiltros,
-    el('div', { class: 'col-grupo' }, [
-      el('label', { text: 'Grupo' }, [selGrupo]),
-      el('div', { class: 'lbl-multi' }, [el('span', { class: 'lbl-txt', text: 'Puntos' }), cajaPuntos])]),
-    el('div', { class: 'seg-caja' }, [el('span', { class: 'seg-tit', text: 'Tabla' }), segVista])
+    el('label', { class: 'f-grupo', text: 'Grupo' }, [selGrupo]),
+    el('div', { class: 'f-puntos' }, [el('span', { class: 'f-tit', text: 'Puntos' }), cajaPuntos]),
+    el('div', { class: 'f-tabla' }, [el('span', { class: 'f-tit', text: 'Tabla' }), segVista])
   ]);
   const acciones = el('div', { class: 'fila entre seccion acciones-rep' }, [
     el('p', { class: 'ayuda crece', id: 'resumen-rango' }),
@@ -2015,7 +2047,7 @@ async function vistaConsumos(c) {
     el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
       const b = e.target; b.disabled = true;
       const [d, h] = limites();
-      try { await descargarPlanilla(d, h, { grupo: R.grupo }); }
+      try { await descargarPlanilla(d, h, { grupo: R.grupo, puntos: R.puntos }); }
       catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -2024,8 +2056,8 @@ async function vistaConsumos(c) {
       try {
         const { data } = await sb.from('v_consumos').select('mes').order('mes').limit(1);
         const primero = data && data.length ? data[0].mes : primerDiaDelMes(new Date());
-        await descargarPlanilla(primero, primerDiaDelMes(new Date()),
-          { grupo: R.grupo });
+        await descargarPlanilla(primero, ultimoMesCerrado(),
+          { grupo: R.grupo, puntos: R.puntos });
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
@@ -2039,7 +2071,7 @@ async function vistaConsumos(c) {
 
   function opcionesMes(valorActual, alCambiar) {
     const hoy = new Date(); const sel = el('select', { onchange: e => { alCambiar(e.target.value); cargar(); } });
-    for (let i = 0; i < 36; i++) {
+    for (let i = 1; i <= 36; i++) {   // desde el último mes cerrado
       const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
       sel.append(el('option', { value: p, selected: p === valorActual || null, text: nombrePeriodo(p) }));
     }
@@ -2049,25 +2081,29 @@ async function vistaConsumos(c) {
   function pintarFiltros() {
     zonaFiltros.replaceChildren();
     if (R.modo === 'mes') {
-      zonaFiltros.append(el('label', { class: 'crece', text: 'Mes' },
+      zonaFiltros.append(el('label', { text: 'Mes' },
         [opcionesMes(R.mes, v => R.mes = v)]));
     } else if (R.modo === 'anio') {
       const sel = el('select', { onchange: e => { R.anio = e.target.value; cargar(); } });
       const y = new Date().getFullYear();
       for (let a = y; a >= y - 4; a--)
         sel.append(el('option', { value: String(a), selected: R.anio === String(a) || null, text: String(a) }));
-      zonaFiltros.append(el('label', { class: 'crece', text: 'Año' }, [sel]));
+      zonaFiltros.append(el('label', { text: 'Año' }, [sel]));
     } else {
       zonaFiltros.append(
-        el('label', { class: 'crece', text: 'Desde' }, [opcionesMes(R.desde, v => R.desde = v)]),
-        el('label', { class: 'crece', text: 'Hasta' }, [opcionesMes(R.hasta, v => R.hasta = v)]));
+        el('label', { text: 'Desde' }, [opcionesMes(R.desde, v => R.desde = v)]),
+        el('label', { text: 'Hasta' }, [opcionesMes(R.hasta, v => R.hasta = v)]));
     }
   }
 
   function limites() {
-    if (R.modo === 'mes')  return [R.mes, R.mes];
-    if (R.modo === 'anio') return [`${R.anio}-01-01`, `${R.anio}-12-01`];
-    return R.desde <= R.hasta ? [R.desde, R.hasta] : [R.hasta, R.desde];
+    const tope = ultimoMesCerrado();
+    let [d, h] = R.modo === 'mes' ? [R.mes, R.mes]
+      : R.modo === 'anio' ? [`${R.anio}-01-01`, `${R.anio}-12-01`]
+      : (R.desde <= R.hasta ? [R.desde, R.hasta] : [R.hasta, R.desde]);
+    if (h > tope) h = tope;
+    if (d > h) d = h;
+    return [d, h];
   }
 
   async function cargar() {
@@ -3060,15 +3096,9 @@ async function imprimirInforme() {
   const hoja = el('div', { class: 'hoja hoja-informe' }, [
     ...secciones,
     el('div', { class: 'pie-informe' }, [
-      el('p', { text:
-        'El consumo de cada mes se calcula repartiendo lo medido entre dos lecturas sobre los días ' +
-        'de calendario que cubren. Un mes queda cerrado cuando existe la lectura del mes siguiente.' }),
-      detalle ? el('p', { text: 'Totalizador: lo que marca el medidor al cerrar el mes (lectura del día 1 del mes siguiente).' })
-              : el('p', { text:
-        'Las sumas por grupo son referenciales: los puntos tienen naturalezas distintas y algunos ' +
-        'miden tramos en serie del mismo circuito, así que no constituyen un total de energía.' }),
-      marcados ? el('p', { text:
-        `(*) ${marcados} lectura(s) con al menos un mes fuera del rango habitual. Revisar antes de usar el dato.` }) : null
+      el('p', { text: 'Consumo del mes = lectura de cierre − lectura de apertura, ajustado a días calendario. Solo meses cerrados.' +
+        (detalle ? ' Totalizador = lectura del día 1 del mes siguiente.' : ' Las sumas por grupo son referenciales: no son un total de energía.') }),
+      marcados ? el('p', { text: `(*) ${marcados} lectura(s) con algún mes fuera de rango: revisar.` }) : null
     ])
   ]);
 
@@ -3146,6 +3176,10 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     return q.eq('en_informe', true);
   });
+  if (filtros.puntos && filtros.puntos.length) {
+    const sel = new Set(filtros.puntos);
+    for (let i = cons.length - 1; i >= 0; i--) if (!sel.has(cons[i].punto_id)) cons.splice(i, 1);
+  }
   if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
 
   paso('Consultando lecturas…');
@@ -4966,7 +5000,7 @@ async function vistaRespaldo(c) {
         aviso_grupos: 'Las carpetas usan el grupo que el punto tiene HOY. Si un punto cambia de ' +
                       'grupo, los respaldos nuevos lo guardan en la carpeta nueva; los ya ' +
                       'descargados quedan donde estaban.',
-        nota: 'Los consumos se calculan repartiendo lo medido entre dos lecturas sobre los días de calendario que cubren.'
+        nota: 'Consumo del mes = lectura de cierre − lectura de apertura, ajustado a días calendario.'
       }, null, 2));
 
       paso('Comprimiendo…');

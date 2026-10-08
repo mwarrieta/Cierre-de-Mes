@@ -1840,6 +1840,7 @@ async function vistaConsumos(c) {
       zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando totalizadores…' }));
       try { actual.extra.totalizadores = await traerTotalizadores(actual.data); }
       catch (e) { toast('No se pudieron traer los totalizadores: ' + (e.message || e), true); actual.extra.totalizadores = new Map(); }
+      if (S.repDatos && S.repDatos.filas === actual.data) S.repDatos.totalizadores = actual.extra.totalizadores;
       if (actual !== ultimo || !zona.isConnected) return;
     }
     poner(zona, ...armarInforme(actual.data, actual.desde, actual.hasta,
@@ -2170,9 +2171,14 @@ function armarInforme(data, desde, hasta, extra = {}) {
     let ancla = b.closest('tr');
     for (let i = 0; i < filasDebajo; i++) ancla = ancla.nextElementSibling || ancla;
     const sig = ancla.nextElementSibling;
+    // Filas del punto (1 en Totales, 3 en Detalle): se marcan junto con el desplegable.
+    const origen = [];
+    for (let tr = b.closest('tr'); tr; tr = tr.nextElementSibling) { origen.push(tr); if (tr === ancla) break; }
     if (sig && sig.classList.contains('fila-rev') && sig.dataset.id === String(f.variable_id)) {
-      sig.remove(); b.setAttribute('aria-expanded', 'false'); revAbiertas.delete(f.variable_id); return;
+      sig.remove(); b.setAttribute('aria-expanded', 'false'); revAbiertas.delete(f.variable_id);
+      origen.forEach(tr => tr.classList.remove('rev-origen')); return;
     }
+    origen.forEach(tr => tr.classList.add('rev-origen'));
     const cols = ancla.closest('table').tHead.rows[0].cells.length;
     const det = el('tr', { class: 'fila-rev', 'data-id': String(f.variable_id) }, [
       el('td', { colspan: String(cols) }, [el('div', { class: 'rev-cont' }, [
@@ -2598,17 +2604,28 @@ async function verConsumo({ variable_id, mes }, ctx) {
    archiva, y tiene que leerse como una tabla, no como una foto de la pantalla. */
 async function imprimirInforme() {
   if (!S.repDatos || !S.repDatos.filas.length) return toast('No hay datos para imprimir', true);
-  const { filas, desde, hasta, faltantes = [], noLeidos = [], avisos = [], bandas = {} } = S.repDatos;
+  const { filas, desde, hasta, bandas = {} } = S.repDatos;
   const R = S.rep;
+  // Imprime lo mismo que hay en pantalla: la tabla elegida (Totales o Detalle mensual),
+  // con el periodo (un mes, un año o un rango) y el grupo del filtro.
+  const detalle = R.vista === 'detalle';
+  let totalizadores = S.repDatos.totalizadores;
+  if (detalle && !totalizadores) {
+    try { totalizadores = S.repDatos.totalizadores = await traerTotalizadores(filas); }
+    catch (e) { return toast('No se pudieron traer los totalizadores: ' + (e.message || e), true); }
+  }
 
   const meses = [...new Set(filas.map(f => f.mes))].sort();
   const nMes = m => nombrePeriodo(m).split(' ')[0].slice(0, 3);
   const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
   const cabMes = m => variosAnios ? `${nMes(m)}-${m.slice(2, 4)}` : nMes(m);
+  const conTotal = meses.length > 1;
 
   const titulo = R.grupo || 'Todos los grupos';
-  const periodo = desde === hasta ? nombrePeriodo(desde)
-                                  : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
+  const periodo = R.modo === 'anio' ? `Año ${R.anio}`
+    : desde === hasta ? 'Mes de ' + nombrePeriodo(desde)
+    : `Desde ${nombrePeriodo(desde)} hasta ${nombrePeriodo(hasta)}`;
+  const tablaTxt = detalle ? 'Detalle mensual' : 'Totales';
 
   // una fila por variable, ordenada por grupo y punto
   const porVar = new Map();
@@ -2617,131 +2634,125 @@ async function imprimirInforme() {
     porVar.get(f.variable_id).m[f.mes] = Number(f.consumo);
   }
   const orden = [...porVar.values()].sort((a, b) => ordenFilaInforme(a.f, b.f));
-
-  // tabla, con separadores de grupo y suma referencial por medición
-  const cuerpo = [];
-  let grupoActual = null, acum = {};
-  const cerrar = () => {
-    if (grupoActual === null) return;
-    for (const [u, a] of Object.entries(acum)) {
-      cuerpo.push(el('tr', { class: 'suma' }, [
-        el('td', { colspan: 3, text: `Suma de ${grupoActual} · ${u} (referencial)` }),
-        ...meses.map(m => el('td', { class: 'num', text: num(a[m] || 0) })),
-        el('td', { class: 'num', text: num(meses.reduce((s2, m) => s2 + (a[m] || 0), 0)) })
-      ]));
-    }
-  };
-  for (const { f, m } of orden) {
-    if (f.grupo !== grupoActual) {
-      cerrar();
-      grupoActual = f.grupo; acum = {};
-      cuerpo.push(el('tr', { class: 'grupo' }, [
-        el('td', { colspan: meses.length + 4, text: (grupoActual || 'Sin grupo').toUpperCase() })
-      ]));
-    }
-    const kb = claveSuma(f.variable, f.unidad_reporte);
-    (acum[kb] ||= {});
-    meses.forEach(x => { acum[kb][x] = (acum[kb][x] || 0) + (m[x] || 0); });
-    const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
-    const j = meses.map(x => juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas))
-                   .some(x => x && x.nivel === 'bad');
-    cuerpo.push(el('tr', {}, [
-      el('td', { text: f.punto }),
-      el('td', { text: f.variable }),
-      el('td', { text: UNIDAD[f.unidad_reporte] || f.unidad_reporte }),
-      ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? '—' : num(m[x]) })),
-      el('td', { class: 'num total', text: num(total) + (j ? ' *' : '') })
-    ]));
+  const grupos = new Map();
+  for (const x of orden) {
+    const g = x.f.grupo || 'Sin grupo';
+    (grupos.get(g) || grupos.set(g, []).get(g)).push(x);
   }
-  cerrar();
 
-  const tablaPrincipal = el('table', { class: 'planilla' }, [
-    el('thead', {}, [el('tr', {}, [
-      el('th', { text: 'Punto' }), el('th', { text: 'Variable' }), el('th', { text: 'Un.' }),
-      ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
-      el('th', { class: 'num', text: 'Total' })
-    ])]),
-    el('tbody', {}, cuerpo)
-  ]);
+  const fueraDeRango = ({ f, m }) => meses.some(x =>
+    juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas)?.nivel === 'bad');
+  const marcados = orden.filter(fueraDeRango).length;
 
-  const marcados = orden.filter(({ f, m }) =>
-    meses.some(x => juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas)?.nivel === 'bad')).length;
+  const cabecera = () => el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
+    el('td', {}, [
+      el('h1', { text: 'Consumos · ' + titulo }),
+      el('p', { text: `${tablaTxt} · ${periodo}` })
+    ]),
+    el('td', { class: 'num', html:
+      `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
+  ])])]);
+
+  // ---- Totales: una fila por lectura, con suma referencial por medición al pie del grupo ----
+  const tablaTotales = (gNombre, items) => {
+    const acum = {};
+    const cuerpo = items.map(({ f, m }) => {
+      const kb = claveSuma(f.variable, f.unidad_reporte);
+      acum[kb] ||= {};
+      meses.forEach(x => { acum[kb][x] = (acum[kb][x] || 0) + (m[x] || 0); });
+      const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
+      const marca = fueraDeRango({ f, m }) ? ' *' : '';
+      return el('tr', {}, [
+        el('td', { text: f.punto }), el('td', { text: f.tag || '' }), el('td', { text: f.variable }),
+        el('td', { text: UNIDAD[f.unidad_reporte] || f.unidad_reporte }),
+        ...meses.map((x, i) => el('td', { class: 'num', text: (m[x] === undefined ? '—' : num(m[x])) + (!conTotal && i === 0 ? marca : '') })),
+        conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null
+      ]);
+    });
+    for (const [u, a] of Object.entries(acum))
+      cuerpo.push(el('tr', { class: 'suma' }, [
+        el('td', { colspan: 4, text: `Suma de ${gNombre} · ${u} (referencial)` }),
+        ...meses.map(x => el('td', { class: 'num', text: num(a[x] || 0) })),
+        conTotal ? el('td', { class: 'num', text: num(meses.reduce((s2, x) => s2 + (a[x] || 0), 0)) }) : null
+      ]));
+    return el('table', { class: 'planilla' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'Punto' }), el('th', { text: 'TAG' }), el('th', { text: 'Variable' }), el('th', { text: 'Un.' }),
+        ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
+        conTotal ? el('th', { class: 'num', text: 'Total' }) : null
+      ])]),
+      el('tbody', {}, cuerpo)
+    ]);
+  };
+
+  // ---- Detalle mensual: totalizador, consumo y variación por lectura (como en pantalla) ----
+  const tablaDetalle = items => {
+    const cuerpo = [];
+    for (const { f, m } of items) {
+      const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
+      const marca = fueraDeRango({ f, m }) ? ' *' : '';
+      const nombre = el('td', { class: 'd-nom', rowspan: '3' }, [
+        el('b', { text: f.punto }), el('br'),
+        el('span', { text: [f.tag, f.variable, UNIDAD[f.unidad_reporte] || f.unidad_reporte].filter(Boolean).join(' · ') })]);
+      // Cada lectura en su propio <tbody>: así sus tres filas no se parten entre dos hojas.
+      cuerpo.push(el('tbody', { class: 'd-bloque' }, [
+        el('tr', { class: 'd-ini' }, [nombre, el('td', { class: 'd-fila', text: 'Totalizador' }),
+          ...meses.map(x => { const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(x));
+            return el('td', { class: 'num', text: t === undefined ? '—' : num(t) }); }),
+          conTotal ? el('td', { class: 'num' }) : null]),
+        el('tr', { class: 'd-cons' }, [el('td', { class: 'd-fila', text: 'Consumo del mes' }),
+          ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? '—' : num(m[x]) })),
+          conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null]),
+        el('tr', { class: 'd-fin' }, [el('td', { class: 'd-fila', text: 'Var. % vs mes anterior' }),
+          ...meses.map((x, i) => {
+            const a = i > 0 ? m[meses[i - 1]] : undefined, c2 = m[x];
+            return el('td', { class: 'num', text: a && c2 ? (c2 > a ? '+' : '') + num(100 * (c2 - a) / a, 1) + '%' : '' });
+          }),
+          conTotal ? el('td', { class: 'num' }) : null])]));
+    }
+    return el('table', { class: 'planilla detalle-imp' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'Punto · variable' }), el('th', { text: '' }),
+        ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
+        conTotal ? el('th', { class: 'num', text: 'Total' }) : null
+      ])]),
+      ...cuerpo
+    ]);
+  };
+
+  // Un grupo por página: cada grupo arranca en una hoja nueva, con su encabezado.
+  const secciones = [...grupos].map(([g, items], i) => el('section', { class: 'grupo-imp' + (i ? ' salto' : '') }, [
+    cabecera(),
+    el('h2', { class: 'grupo-imp-tit', text: `${g} · ${new Set(items.map(x => x.f.punto_id)).size} puntos` }),
+    detalle ? tablaDetalle(items) : tablaTotales(g, items)
+  ]));
 
   const hoja = el('div', { class: 'hoja hoja-informe' }, [
-    el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [
-      el('td', {}, [
-        el('h1', { text: 'Consumos · ' + titulo }),
-        el('p', { text: periodo })
-      ]),
-      el('td', { class: 'num', html:
-        `Algorta Norte<br>${esc(S.usuario.nombre)}<br>${fechaCorta(new Date().toISOString())}` })
-    ])])]),
-
-    tablaPrincipal,
-
-    noLeidos.length ? el('div', {}, [
-      el('h2', { text: `No se pudo leer (${noLeidos.length})` }),
-      el('table', { class: 'planilla' }, [
-        el('thead', {}, [el('tr', {}, [
-          el('th', { text: 'Grupo' }), el('th', { text: 'Punto' }),
-          el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
-        el('tbody', {}, noLeidos.slice(0, 200).map(v => el('tr', {}, [
-          el('td', { text: gruposTexto(v.punto) }), el('td', { text: v.punto.nombre }),
-          el('td', { text: v.nombre }),
-          el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
-      ])
-    ]) : null,
-
-    faltantes.length ? el('div', {}, [
-      el('h2', { text: `Puntos sin visitar en el periodo (${faltantes.length})` }),
-      el('table', { class: 'planilla' }, [
-        el('thead', {}, [el('tr', {}, [
-          el('th', { text: 'Grupo' }), el('th', { text: 'Punto' }),
-          el('th', { text: 'Variable' }), el('th', { text: 'Unidad' })])]),
-        el('tbody', {}, faltantes.slice(0, 200).map(v => el('tr', {}, [
-          el('td', { text: gruposTexto(v.punto) }), el('td', { text: v.punto.nombre }),
-          el('td', { text: v.nombre }),
-          el('td', { text: UNIDAD[v.unidad_reporte] || v.unidad_reporte })])))
-      ])
-    ]) : null,
-
-    avisos.length ? el('div', {}, [
-      el('h2', { text: `Avisos abiertos (${avisos.length})` }),
-      el('table', { class: 'planilla' }, [
-        el('thead', {}, [el('tr', {}, [
-          el('th', { text: 'Punto' }), el('th', { text: 'Categoría' }),
-          el('th', { text: 'Severidad' }), el('th', { text: 'Abierto' }),
-          el('th', { text: 'Descripción' })])]),
-        el('tbody', {}, avisos.slice(0, 100).map(a => {
-          const p = S.catalogo.variables.find(v => v.punto.id === a.punto_id);
-          return el('tr', {}, [
-            el('td', { text: p ? p.punto.nombre : '—' }),
-            el('td', { text: a.categoria?.categoria || '—' }),
-            el('td', { text: a.severidad }),
-            el('td', { text: fechaCorta(a.abierto_en) }),
-            el('td', { text: a.descripcion || '—' })]);
-        }))
-      ])
-    ]) : null,
-
+    ...secciones,
     el('div', { class: 'pie-informe' }, [
       el('p', { text:
         'El consumo de cada mes se calcula repartiendo lo medido entre dos lecturas sobre los días ' +
         'de calendario que cubren. Un mes queda cerrado cuando existe la lectura del mes siguiente.' }),
-      el('p', { text:
+      detalle ? el('p', { text: 'Totalizador: lo que marca el medidor al cerrar el mes (lectura del día 1 del mes siguiente).' })
+              : el('p', { text:
         'Las sumas por grupo son referenciales: los puntos tienen naturalezas distintas y algunos ' +
         'miden tramos en serie del mismo circuito, así que no constituyen un total de energía.' }),
       marcados ? el('p', { text:
-        `(*) ${marcados} punto(s) con al menos un mes fuera del rango habitual. Revisar antes de usar el dato.` }) : null
+        `(*) ${marcados} lectura(s) con al menos un mes fuera del rango habitual. Revisar antes de usar el dato.` }) : null
     ])
   ]);
 
+  // Carta horizontal solo para este informe: se agrega el tamaño de página al imprimir
+  // y se quita al terminar, para no cambiar las etiquetas QR ni el informe de avisos.
+  const pagina = el('style', { id: 'pagina-informe', text: '@page{size:letter landscape;margin:9mm 10mm}' });
+  document.head.append(pagina);
   const cont = document.getElementById('impresion');
   cont.replaceChildren(hoja);
   document.body.classList.add('imprimiendo');
   const limpiar = () => {
     document.body.classList.remove('imprimiendo');
     cont.replaceChildren();
+    pagina.remove();
     window.removeEventListener('afterprint', limpiar);
   };
   window.addEventListener('afterprint', limpiar);

@@ -1040,8 +1040,25 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .rev-circulo.ok{color:var(--ok);border-color:var(--ok)}
 .rev-circulo:hover{filter:brightness(.95)}
 .rev-circulo[aria-expanded="true"]{box-shadow:0 0 0 2px var(--acento)}
-tr.fila-rev td{background:var(--surface-2);padding:8px 12px}
+/* "Revisar" desplegado: la fila del punto y su detalle se tiñen del color de acento
+   y llevan una barra a la izquierda, para que no se confundan con las filas vecinas. */
+tr.rev-origen td,tr.rev-origen:hover td{background:var(--acento-suave)!important}
+tr.rev-origen td:first-child{box-shadow:inset 4px 0 0 var(--acento)}
+tr.fila-rev td{background:var(--acento-suave)!important;padding:8px 12px 10px;
+  box-shadow:inset 4px 0 0 var(--acento);border-bottom:2px solid var(--acento)}
 tr.fila-rev:hover{background:none}
+tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
+@media (max-width:820px){
+  .tabla-caja tr.rev-origen,.tabla-caja tr.rev-origen:hover{background:var(--acento-suave);border-color:var(--acento);
+    box-shadow:inset 4px 0 0 var(--acento)}
+  .tabla-caja tr.rev-origen td,.tabla-caja tr.rev-origen:hover td{background:transparent!important}
+  .tabla-caja tr.rev-origen td:first-child{box-shadow:none}
+  .tabla-caja tr.fila-rev{background:var(--acento-suave);border:1px solid var(--acento);
+    margin-top:-6px;padding:4px}
+  .tabla-caja tr.fila-rev td{display:block;box-shadow:none;border-bottom:none;background:none!important}
+  .tabla-caja tr.fila-rev .rev-cont strong{flex:1 1 100%}
+  .tabla-caja tr.fila-rev td::before{content:none}
+}
 .rev-cont{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 
 /* Detalle mensual (como la hoja del Excel) */
@@ -1148,3 +1165,18 @@ tr.fila-rev:hover{background:none}
 .tema-txt{display:flex;flex-direction:column;flex:1;min-width:0}
 .tema-txt small{color:var(--ink-3);font-size:13px}
 .tema-ok{font-weight:700;color:var(--acento)}
+
+/* ---- Vista para imprimir de Consumos: carta horizontal, un grupo por página ---- */
+@media print{
+  .impresion .grupo-imp.salto{break-before:page;page-break-before:always}
+  .impresion .grupo-imp-tit{font-size:13px;margin:6px 0 4px;letter-spacing:.04em;text-transform:uppercase}
+  .impresion .hoja-informe table.planilla{font-size:9px}
+  .impresion table.planilla td,.impresion table.planilla th{padding:2px 4px}
+  .impresion table.detalle-imp td.d-nom{vertical-align:top;max-width:52mm;border-bottom:1px solid #666}
+  .impresion table.detalle-imp td.d-nom span{color:#444;font-size:8px}
+  .impresion table.detalle-imp td.d-fila{color:#555;white-space:nowrap}
+  .impresion table.detalle-imp tr.d-cons td{font-weight:700}
+  .impresion table.detalle-imp tr.d-fin td{border-bottom:1px solid #666;color:#444}
+  .impresion table.detalle-imp tbody.d-bloque{break-inside:avoid;page-break-inside:avoid}
+  .impresion .pie-informe{break-inside:avoid;margin-top:8px;font-size:8.5px;color:#444}
+}

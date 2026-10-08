@@ -559,7 +559,10 @@ $('#btn-tema-login')?.addEventListener('click', elegirTema);
 $$('#menu button[data-vista]').forEach(b =>
   b.addEventListener('click', () => ir(b.dataset.vista)));
 
+// Pantallas que solo ve el administrador: además de ocultarse del menú, aquí se cierra la puerta.
+const SOLO_ADMIN = ['usuarios', 'auditoria', 'sugerencias'];
 function ir(vista) {
+  if (SOLO_ADMIN.includes(vista) && !esAdmin()) vista = null;
   if (!TITULOS[vista]) vista = esSupervisor() ? 'consumos' : 'terreno';
   if (S.puntoAbierto && S.fichaSucia && !confirm('Hay cambios sin guardar en este punto. ¿Salir igual?')) return;
   S.puntoAbierto = null; S.fichaSucia = false; S.puntoEnHistorial = false;

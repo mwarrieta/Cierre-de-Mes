@@ -447,9 +447,6 @@ $$('#menu .grupo-cab:not([data-vista])').forEach(cab => cab.addEventListener('cl
 // Marca la pantalla actual en la barra lateral y en la inferior. Se llama desde
 // render(), así que cubre todos los caminos (menú, escaneo, ficha de un punto).
 function marcarNav() {
-  // Auditoría queda gris (en construcción) para quien no es admin.
-  document.querySelectorAll('[data-vista="auditoria"]').forEach(b =>
-    b.classList.toggle('en-construccion', S.usuario?.rol !== 'admin'));
   let actual = null;
   $$('#menu button[data-vista]').forEach(b => {
     const sel = b.dataset.vista === S.vista;
@@ -636,7 +633,7 @@ function render() {
   // en vez de pisar la vista nueva.
   const c = el('div');
   // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
-  $('#contenido').classList.toggle('ancho', S.vista === 'consumos');
+  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria'].includes(S.vista));
   $('#contenido').replaceChildren(c, avisoBeta());
   ({
     inicio: vistaInicio,
@@ -5115,61 +5112,362 @@ function cambiarClaveUsuario(u) {
 /* ===================================================================
    VISTA · AUDITORÍA
    =================================================================== */
+/* ===================================================================
+   VISTA · AUDITORÍA (Configuración)
+   Para responder preguntas concretas sobre un dato:
+   · ¿qué pasó con esta lectura? → historial del registro, valor por valor
+   · ¿qué se cambió en tal mes o en tal hora? → filtros de "cuándo" y "mes del dato"
+   · ¿cuántas veces se modificó? → vista "Por registro"
+   Se lee de v_auditoria, que ya trae punto, lectura y mes del dato de cada cambio.
+   =================================================================== */
+const AUD_QUE = {
+  lecturas: 'Lectura', variables: 'Config. de lectura', puntos: 'Punto', equipos: 'Equipo',
+  avisos: 'Aviso', revisiones_consumo: 'Revisión de consumo', generadores: 'Generador',
+  generador_movimientos: 'Mov. de generador', recargas: 'Recarga de combustible',
+  grupos: 'Grupo', usuarios: 'Usuario', periodos: 'Periodo'
+};
+const AUD_ACCION = { INSERT: 'Creó', UPDATE: 'Modificó', DELETE: 'Borró' };
+const AUD_CAMPO = {
+  valor: 'Valor', valor_display: 'Valor en display', valor_kwh: 'Valor kWh', valor_mwh: 'Valor MWh',
+  estado: 'Estado', sin_dato: 'No se pudo leer', es_reset: 'Reinicio del medidor', tipo_reset: 'Tipo de reinicio',
+  valor_apertura: 'Valor de apertura', observacion: 'Observación', fecha_dia: 'Fecha de toma',
+  fecha_lectura: 'Fecha y hora de toma', fecha_estimada: 'Fecha estimada', periodo: 'Mes de la toma',
+  consumo_manual: 'Consumo declarado', tomada_por: 'Tomada por', validada_por: 'Validada por',
+  validada_en: 'Validada el', obs_validacion: 'Obs. de validación', origen: 'Origen', dispositivo: 'Dispositivo',
+  nombre: 'Nombre', activo: 'Activo', principal: 'Principal', opcional: 'Opcional', en_informe: 'Va al informe',
+  unidad_display: 'Unidad en display', unidad_reporte: 'Unidad de informe', decimales_display: 'Decimales',
+  formato_lectura: 'Formato de lectura', tipo_acumulacion: 'Acumulación', descripcion: 'Descripción',
+  severidad: 'Severidad', punto_id: 'Punto', variable_id: 'Lectura', mes: 'Mes', tipo: 'Tipo', motivo: 'Motivo',
+  rol: 'Rol', correo: 'Correo', orden: 'Orden', tag: 'TAG', marca: 'Marca', modelo: 'Modelo', n_serie: 'N° serie',
+  observaciones: 'Observaciones', categoria_id: 'Categoría', abierto_por: 'Abierto por', resuelto_por: 'Resuelto por',
+  resuelto_en: 'Resuelto el', obs_resolucion: 'Obs. de resolución', por: 'Por', en: 'El', litros: 'Litros',
+  horometro: 'Horómetro', kwh: 'kWh', fecha: 'Fecha', fecha_hora: 'Fecha y hora', ubicacion: 'Ubicación',
+  potencia_nominal_kw: 'Potencia kW', n_equipo: 'Equipo', n_interno: 'N° interno', proveedor: 'Proveedor',
+  instruccion_lectura: 'Instrucción de lectura', foto_obligatoria: 'Foto obligatoria', area: 'Área'
+};
+// Campos que cambian solos o que no dicen nada a quien revisa.
+const AUD_RUIDO = new Set(['actualizado_en', 'creado_en', 'respaldado_en', 'id']);
+// Un cambio que solo toca estos campos es una validación o una marca del sistema.
+const AUD_VALIDACION = new Set(['estado', 'validada_en', 'validada_por', 'obs_validacion', 'respaldado_en', 'actualizado_en']);
+// En un alta o una baja se muestran primero estos campos, si existen.
+const AUD_CLAVE = ['valor', 'valor_display', 'sin_dato', 'consumo_manual', 'observacion', 'periodo', 'fecha_dia',
+  'nombre', 'tag', 'descripcion', 'tipo', 'motivo', 'estado', 'litros', 'horometro', 'kwh', 'fecha', 'rol', 'correo'];
+
 async function vistaAuditoria(c) {
-  // Por ahora solo el admin la usa; el resto ve el aviso de página en construcción.
-  if (S.usuario.rol !== 'admin') {
-    c.append(el('div', { class: 'en-construccion-pag' }, [
-      el('div', { class: 'ico-obra', text: '🚧' }),
-      el('h2', { text: 'Auditoría · en construcción' }),
-      el('p', { class: 'ayuda', text: 'Esta sección se está rediseñando. Mientras tanto, los cambios siguen quedando registrados.' })
-    ]));
-    return;
+  S.aud = S.aud || { rango: '30d', desde: '', hasta: '', que: '', accion: '', usuario: '', grupo: '',
+                     mesDato: '', buscar: '', ocultarValid: true, vista: 'lista' };
+  const A = S.aud;
+  let filas = [], limite = 400;
+
+  const { data: us } = await sb.from('usuarios').select('id, nombre').order('nombre');
+  const nombreDe = {};
+  for (const u of us || []) nombreDe[u.id] = u.nombre;
+  const varPorId = new Map(S.catalogo.variables.map(v => [v.id, v]));
+  const puntoPorId = new Map(S.catalogo.variables.map(v => [v.punto.id, v.punto]));
+
+  // ---------------- filtros ----------------
+  const sel = (opciones, valor, alCambiar) => {
+    const s = el('select', { onchange: e => alCambiar(e.target.value) });
+    for (const [v, t] of opciones) s.append(el('option', { value: v, text: t, selected: String(valor) === String(v) || null }));
+    return s;
+  };
+  const RANGOS = [['1h', 'Última hora'], ['hoy', 'Hoy'], ['7d', 'Últimos 7 días'], ['30d', 'Últimos 30 días'],
+                  ['mes', 'Este mes'], ['todo', 'Todo'], ['pers', 'Elegir fechas y horas…']];
+  const inDesde = el('input', { type: 'datetime-local', value: A.desde, onchange: e => { A.desde = e.target.value; cargar(); } });
+  const inHasta = el('input', { type: 'datetime-local', value: A.hasta, onchange: e => { A.hasta = e.target.value; cargar(); } });
+  const zonaPers = el('div', { class: 'aud-pers' }, [
+    el('label', { text: 'Desde' }, [inDesde]), el('label', { text: 'Hasta' }, [inHasta])]);
+  zonaPers.hidden = A.rango !== 'pers';
+
+  const meses = [];
+  for (let i = -1; i < 24; i++) {
+    const h = new Date(); const p = primerDiaDelMes(new Date(h.getFullYear(), h.getMonth() - i, 1));
+    meses.push([p, nombrePeriodo(p)]);
   }
-  const selTabla = el('select', { onchange: cargar });
-  selTabla.append(el('option', { value: '', text: 'Todas las tablas' }));
-  for (const t of ['lecturas', 'equipos', 'puntos', 'variables', 'avisos', 'usuarios', 'periodos'])
-    selTabla.append(el('option', { value: t, text: t }));
+  const grupos = [...new Set(S.catalogo.variables.flatMap(v => v.punto.grupos || []))].sort(compararGrupos);
 
-  const selUsuario = el('select', { onchange: cargar });
-  selUsuario.append(el('option', { value: '', text: 'Todos los usuarios' }));
+  const buscar = el('input', { type: 'search', value: A.buscar, placeholder: 'Punto, lectura, TAG, motivo, persona o N° de registro',
+    oninput: e => { A.buscar = e.target.value; clearTimeout(buscar._t); buscar._t = setTimeout(pintar, 200); } });
+  const chkValid = el('input', { type: 'checkbox', checked: A.ocultarValid || null,
+    onchange: e => { A.ocultarValid = e.target.checked; pintar(); } });
 
-  c.append(el('div', { class: 'fila seccion' }, [
-    el('label', { class: 'crece', text: 'Tabla' }, [selTabla]),
-    el('label', { class: 'crece', text: 'Usuario' }, [selUsuario])
-  ]));
-  const zona = el('div'); c.append(zona);
+  const segVista = el('div', { class: 'seg', role: 'group', 'aria-label': 'Cómo ver' },
+    [['lista', 'Cada cambio'], ['registro', 'Por registro']].map(([k, t]) =>
+      el('button', { type: 'button', class: 'seg-op' + (A.vista === k ? ' sel' : ''), 'data-v': k, text: t,
+        'aria-pressed': A.vista === k ? 'true' : 'false',
+        onclick: () => { A.vista = k; $$('.seg-op', segVista).forEach(b => {
+          const on = b.dataset.v === k; b.classList.toggle('sel', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }); pintar(); } })));
 
-  const { data: us } = await sb.from('usuarios').select('id, nombre');
-  const nombres = {};
-  for (const u of us || []) { nombres[u.id] = u.nombre; selUsuario.append(el('option', { value: u.id, text: u.nombre })); }
+  const barra = el('div', { class: 'aud-filtros' }, [
+    el('label', { text: 'Cuándo se hizo' }, [sel(RANGOS, A.rango, v => { A.rango = v; zonaPers.hidden = v !== 'pers'; if (v !== 'pers') cargar(); })]),
+    zonaPers,
+    el('label', { text: 'Mes del dato' }, [sel([['', 'Cualquiera'], ...meses], A.mesDato, v => { A.mesDato = v; cargar(); })]),
+    el('label', { text: 'Qué' }, [sel([['', 'Todo'], ...Object.entries(AUD_QUE)], A.que, v => { A.que = v; cargar(); })]),
+    el('label', { text: 'Acción' }, [sel([['', 'Todas'], ...Object.entries(AUD_ACCION)], A.accion, v => { A.accion = v; cargar(); })]),
+    el('label', { text: 'Quién' }, [sel([['', 'Todos'], ['sistema', 'Sistema / importación'], ...(us || []).map(u => [u.id, u.nombre])], A.usuario, v => { A.usuario = v; cargar(); })]),
+    el('label', { text: 'Grupo' }, [sel([['', 'Todos'], ...grupos.map(g => [g, g])], A.grupo, v => { A.grupo = v; pintar(); })]),
+    el('label', { class: 'aud-buscar', text: 'Buscar' }, [buscar])
+  ]);
+  const barra2 = el('div', { class: 'aud-barra2' }, [
+    el('label', { class: 'check-linea' }, [chkValid, el('span', { text: ' Ocultar validaciones y marcas automáticas' })]),
+    el('div', { class: 'aud-der' }, [
+      el('span', { class: 'seg-tit', text: 'Ver' }), segVista,
+      el('button', { class: 'btn chico', text: 'Limpiar filtros', onclick: () => { delete S.aud; render(); } }),
+      el('button', { class: 'btn chico', text: 'Descargar CSV', onclick: () => exportar() })])
+  ]);
+  const resumen = el('div', { class: 'aud-kpis' });
+  const zona = el('div');
+  c.append(barra, barra2, resumen, zona);
 
+  // ---------------- consulta ----------------
+  function rangoFechas() {
+    const ahora = new Date();
+    if (A.rango === '1h') return [new Date(ahora - 3600e3), null];
+    if (A.rango === 'hoy') return [new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate()), null];
+    if (A.rango === '7d') return [new Date(ahora - 7 * 864e5), null];
+    if (A.rango === '30d') return [new Date(ahora - 30 * 864e5), null];
+    if (A.rango === 'mes') return [new Date(ahora.getFullYear(), ahora.getMonth(), 1), null];
+    if (A.rango === 'pers') return [A.desde ? new Date(A.desde) : null, A.hasta ? new Date(A.hasta) : null];
+    return [null, null];
+  }
   async function cargar() {
-    zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando auditoría…' }));
-    let q = sb.from('auditoria').select('*').order('ocurrido_en', { ascending: false }).limit(300);
-    if (selTabla.value) q = q.eq('tabla', selTabla.value);
-    if (selUsuario.value) q = q.eq('usuario_id', selUsuario.value);
-    const { data, error } = await q;
-    if (error) { zona.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
-    if (!data.length) { zona.replaceChildren(el('p', { class: 'vacio', text: 'Sin movimientos registrados.' })); return; }
-
-    const filas = data.map(a => [
-      fechaHora(a.ocurrido_en), nombres[a.usuario_id] || '—', a.tabla, a.accion,
-      (a.campos_cambiados || []).join(', ') || '—',
-      a.motivo || '—',
-      el('button', { class: 'btn chico', text: 'Ver', onclick: () => verCambio(a, nombres) })
-    ]);
-    zona.replaceChildren(tabla(['Cuándo', 'Quién', 'Tabla', 'Acción', 'Campos', 'Motivo', ''], filas));
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Buscando cambios…' }));
+    resumen.replaceChildren();
+    const [d, h] = rangoFechas();
+    try {
+      filas = await traerTodo(() => {
+        let q = sb.from('v_auditoria').select('id, ocurrido_en, usuario_id, usuario_nombre, tabla, accion, registro_id, ' +
+          'campos_cambiados, datos_antes, datos_despues, motivo, variable_id, punto_id, punto_nombre, variable_nombre, ' +
+          'generador, periodo_dato, etiqueta, veces_registro').order('ocurrido_en', { ascending: false }).order('id', { ascending: false });
+        if (d) q = q.gte('ocurrido_en', d.toISOString());
+        if (h) q = q.lte('ocurrido_en', h.toISOString());
+        if (A.que) q = q.eq('tabla', A.que);
+        if (A.accion) q = q.eq('accion', A.accion);
+        if (A.usuario === 'sistema') q = q.is('usuario_id', null);
+        else if (A.usuario) q = q.eq('usuario_id', A.usuario);
+        if (A.mesDato) q = q.eq('periodo_dato', A.mesDato);
+        return q;
+      });
+    } catch (e) { zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); return; }
+    limite = 400;
+    pintar();
   }
-  cargar();
-}
 
-function verCambio(a, nombres) {
-  const campos = a.campos_cambiados || Object.keys(a.datos_despues || a.datos_antes || {});
-  const filas = campos.map(k => [k, String(a.datos_antes?.[k] ?? '—'), String(a.datos_despues?.[k] ?? '—')]);
-  modal('Cambio en ' + a.tabla, el('div', {}, [
-    el('p', { class: 'ayuda', html: `${fechaHora(a.ocurrido_en)} · ${esc(nombres[a.usuario_id] || 'sistema')}<br>${a.motivo ? '<b>Motivo:</b> ' + esc(a.motivo) : ''}` }),
-    tabla(['Campo', 'Antes', 'Después'], filas)
-  ]));
+  // ---------------- filtros que se aplican en el navegador ----------------
+  const esValidacion = a => a.accion === 'UPDATE' && (a.campos_cambiados || []).every(k => AUD_VALIDACION.has(k));
+  const gruposDePunto = id => puntoPorId.get(id)?.grupos || [];
+  const textoDe = a => [a.punto_nombre, a.variable_nombre, a.generador, a.etiqueta, a.motivo, a.usuario_nombre,
+    a.registro_id, AUD_QUE[a.tabla], puntoPorId.get(a.punto_id)?.equipo?.tag].filter(Boolean).join(' ').toLowerCase();
+  function visibles() {
+    const t = A.buscar.trim().toLowerCase();
+    return filas.filter(a =>
+      (!A.ocultarValid || !esValidacion(a)) &&
+      (!A.grupo || gruposDePunto(a.punto_id).includes(A.grupo)) &&
+      (!t || textoDe(a).includes(t)));
+  }
+
+  // ---------------- piezas de presentación ----------------
+  const nomCampo = k => AUD_CAMPO[k] || k.replace(/_/g, ' ');
+  const esUuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(v);
+  function valorTxt(k, v) {
+    if (v === null || v === undefined || v === '') return '—';
+    if (typeof v === 'boolean') return v ? 'Sí' : 'No';
+    if (esUuid(v)) return nombreDe[v] || 'otra persona';
+    if (k === 'variable_id') { const x = varPorId.get(Number(v)); return x ? `${x.punto.nombre} · ${x.nombre}` : `#${v}`; }
+    if (k === 'punto_id') return puntoPorId.get(Number(v))?.nombre || `#${v}`;
+    if (k === 'periodo' || k === 'mes') return nombrePeriodo(String(v).slice(0, 10));
+    if (typeof v === 'number') return num(v, Number.isInteger(v) ? 0 : 2);
+    if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && /valor|kwh|mwh|litros|horometro|consumo/.test(k)) {
+      const n = Number(v); return num(n, Number.isInteger(n) ? 0 : 2); }
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v)) return fechaHora(v);
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return fechaCorta(v);
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+  const camposDe = a => a.accion === 'UPDATE'
+    ? (a.campos_cambiados || []).filter(k => !AUD_RUIDO.has(k))
+    : AUD_CLAVE.filter(k => (a.datos_despues || a.datos_antes || {})[k] !== undefined &&
+                            (a.datos_despues || a.datos_antes)[k] !== null);
+  // "Valor: 89.833 → 997.756"
+  const diff = (a, k) => {
+    const antes = a.datos_antes?.[k], desp = a.datos_despues?.[k];
+    return el('div', { class: 'aud-diff' }, [
+      el('span', { class: 'aud-campo', text: nomCampo(k) + ': ' }),
+      a.accion !== 'INSERT' ? el('span', { class: 'aud-antes', text: valorTxt(k, antes) }) : null,
+      a.accion === 'UPDATE' ? el('span', { class: 'aud-flecha', text: ' → ' }) : null,
+      a.accion !== 'DELETE' ? el('span', { class: 'aud-desp', text: valorTxt(k, desp) }) : null]);
+  };
+  const resumenCambio = (a, max = 3) => {
+    const ks = camposDe(a);
+    if (!ks.length) return el('span', { class: 'ayuda', text: a.accion === 'UPDATE' ? 'solo campos internos' : '—' });
+    const prior = [...ks].sort((x, y) => (AUD_CLAVE.indexOf(x) + 1 || 99) - (AUD_CLAVE.indexOf(y) + 1 || 99));
+    return el('div', { class: 'aud-diffs' }, [...prior.slice(0, max).map(k => diff(a, k)),
+      prior.length > max ? el('span', { class: 'ayuda', text: `+${prior.length - max} campo(s) más` }) : null]);
+  };
+  const queTxt = a => AUD_QUE[a.tabla] || a.tabla;
+  const registroTxt = a => a.punto_nombre || a.generador || a.etiqueta || `#${a.registro_id}`;
+  const lecturaTxt = a => a.variable_nombre || (a.tabla === 'generador_movimientos' || a.tabla === 'recargas' ? queTxt(a) : '');
+  const pillAccion = a => el('span', { class: 'pill ' + ({ INSERT: 'ok', UPDATE: 'warn', DELETE: 'bad' }[a.accion] || ''),
+    text: AUD_ACCION[a.accion] || a.accion });
+  const quien = a => a.usuario_nombre || (a.usuario_id ? 'otra persona' : 'Sistema');
+  const botonVeces = a => el('button', { class: 'aud-veces' + (a.veces_registro > 2 ? ' muchas' : ''), type: 'button',
+    title: 'Ver todo el historial de este registro', text: `${a.veces_registro}×`,
+    onclick: e => { e.stopPropagation(); historialRegistro(a); } });
+
+  // ---------------- pintar ----------------
+  function pintar() {
+    const vis = visibles();
+    const regs = new Set(vis.map(a => a.tabla + '|' + a.registro_id));
+    const personas = new Set(vis.map(a => a.usuario_id || 'sistema'));
+    const sinMotivo = vis.filter(a => a.accion !== 'INSERT' && !a.motivo && a.usuario_id).length;
+    const cambiosValor = vis.filter(a => a.tabla === 'lecturas' && a.accion === 'UPDATE' && (a.campos_cambiados || []).includes('valor')).length;
+    const ocultas = filas.length - filas.filter(a => !esValidacion(a)).length;
+    resumen.replaceChildren(
+      kpi(vis.length, 'cambios'), kpi(regs.size, 'registros distintos'), kpi(personas.size, 'personas'),
+      kpi(cambiosValor, 'valores de lectura corregidos', cambiosValor ? 'aviso' : ''),
+      kpi(sinMotivo, 'cambios sin motivo', sinMotivo ? 'alerta' : ''),
+      A.ocultarValid && ocultas ? el('p', { class: 'ayuda aud-nota', text: `${ocultas} validaciones ocultas` }) : null);
+
+    if (!vis.length) { zona.replaceChildren(el('p', { class: 'vacio', text: 'No hay cambios con esos filtros.' })); return; }
+    if (A.vista === 'registro') return pintarPorRegistro(vis);
+
+    const cab = ['Cuándo', 'Quién', 'Qué', 'Punto / registro', 'Lectura', 'Mes del dato', 'Acción', 'Cambio', 'Motivo', 'Veces'];
+    const tb = el('tbody', {}, vis.slice(0, limite).map(a => el('tr', { class: 'aud-fila', onclick: () => historialRegistro(a) }, [
+      el('td', { class: 'nowrap', text: fechaHora(a.ocurrido_en) }),
+      el('td', { class: 'nowrap', text: quien(a) }),
+      el('td', { class: 'nowrap', text: queTxt(a) }),
+      el('td', {}, [el('b', { text: registroTxt(a) })]),
+      el('td', { class: 'aud-lect', text: lecturaTxt(a) || '—' }),
+      el('td', { class: 'nowrap', text: a.periodo_dato ? nombrePeriodo(a.periodo_dato) : '—' }),
+      el('td', {}, [pillAccion(a)]),
+      el('td', { class: 'aud-cambio' }, [resumenCambio(a)]),
+      el('td', { class: 'aud-motivo', text: a.motivo || '—' }),
+      el('td', { class: 'num' }, [botonVeces(a)])])));
+    zona.replaceChildren(
+      el('div', { class: 'tabla-caja tabla-aud' }, [el('table', {}, [
+        el('thead', {}, [el('tr', {}, cab.map(h => el('th', { text: h })))]), tb])]),
+      vis.length > limite ? el('div', { class: 'fila seccion' }, [
+        el('p', { class: 'ayuda crece', text: `Se muestran ${limite} de ${vis.length}. Acota con los filtros o` }),
+        el('button', { class: 'btn', text: 'Mostrar 400 más', onclick: () => { limite += 400; pintar(); } })]) : null,
+      el('p', { class: 'ayuda', text: 'Toca una fila para ver el historial completo de ese registro, cambio por cambio.' }));
+  }
+
+  // Una fila por registro: cuántas veces se tocó, quiénes y cuándo.
+  function pintarPorRegistro(vis) {
+    const g = new Map();
+    for (const a of vis) {
+      const k = a.tabla + '|' + a.registro_id;
+      if (!g.has(k)) g.set(k, { a, n: 0, personas: new Set(), primero: a.ocurrido_en, ultimo: a.ocurrido_en, valor: 0 });
+      const x = g.get(k);
+      x.n++; x.personas.add(quien(a));
+      if (a.ocurrido_en < x.primero) x.primero = a.ocurrido_en;
+      if (a.ocurrido_en > x.ultimo) { x.ultimo = a.ocurrido_en; x.a = a; }
+      if ((a.campos_cambiados || []).includes('valor')) x.valor++;
+    }
+    const lista = [...g.values()].sort((x, y) => y.n - x.n || (y.ultimo > x.ultimo ? 1 : -1));
+    const cab = ['Qué', 'Punto / registro', 'Lectura', 'Mes del dato', 'Cambios (filtro)', 'Cambios de valor', 'Total histórico', 'Personas', 'Primero', 'Último', ''];
+    zona.replaceChildren(el('div', { class: 'tabla-caja tabla-aud' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, cab.map(h => el('th', { text: h })))]),
+      el('tbody', {}, lista.slice(0, limite).map(x => el('tr', { class: 'aud-fila', onclick: () => historialRegistro(x.a) }, [
+        el('td', { class: 'nowrap', text: queTxt(x.a) }),
+        el('td', {}, [el('b', { text: registroTxt(x.a) })]),
+        el('td', { class: 'aud-lect', text: lecturaTxt(x.a) || '—' }),
+        el('td', { class: 'nowrap', text: x.a.periodo_dato ? nombrePeriodo(x.a.periodo_dato) : '—' }),
+        el('td', { class: 'num' }, [el('b', { text: String(x.n) })]),
+        el('td', { class: 'num', text: x.valor ? String(x.valor) : '—' }),
+        el('td', { class: 'num' }, [botonVeces(x.a)]),
+        el('td', { text: [...x.personas].join(', ') }),
+        el('td', { class: 'nowrap', text: fechaHora(x.primero) }),
+        el('td', { class: 'nowrap', text: fechaHora(x.ultimo) }),
+        el('td', {}, [el('button', { class: 'btn chico', text: 'Historial', onclick: e => { e.stopPropagation(); historialRegistro(x.a); } })])])))])]),
+      lista.length > limite ? el('button', { class: 'btn', text: 'Mostrar más', onclick: () => { limite += 400; pintar(); } }) : null);
+  }
+
+  // ---------------- historial de un registro ----------------
+  async function historialRegistro(a) {
+    modal(`${queTxt(a)} · ${registroTxt(a)}`, el('p', { class: 'cargando', text: 'Cargando historial…' }),
+      { subtitulo: [lecturaTxt(a), a.periodo_dato ? nombrePeriodo(a.periodo_dato) : '', `registro #${a.registro_id}`].filter(Boolean).join(' · '), completo: true });
+    const { data, error } = await sb.from('v_auditoria').select('*')
+      .eq('tabla', a.tabla).eq('registro_id', a.registro_id).order('ocurrido_en').order('id');
+    if (error) return poner($('#modal-cuerpo'), el('p', { class: 'error', text: error.message }));
+    // Otras tomas del mismo punto y mes (una lectura borrada y vuelta a tomar, o un duplicado).
+    let otras = [];
+    if (a.tabla === 'lecturas' && a.variable_id && a.periodo_dato) {
+      const r = await sb.from('v_auditoria').select('registro_id, accion, ocurrido_en, usuario_nombre')
+        .eq('tabla', 'lecturas').eq('variable_id', a.variable_id).eq('periodo_dato', a.periodo_dato)
+        .neq('registro_id', a.registro_id).order('ocurrido_en');
+      otras = r.data || [];
+    }
+    const ev = data || [];
+    const partes = [];
+
+    // Evolución del valor: lo que más se pregunta de una lectura.
+    if (a.tabla === 'lecturas') {
+      const pasos = [];
+      for (const e of ev) {
+        const v = e.accion === 'DELETE' ? null : e.datos_despues?.valor;
+        const sd = e.datos_despues?.sin_dato;
+        if (e.accion === 'INSERT' || (e.campos_cambiados || []).some(k => ['valor', 'sin_dato'].includes(k)) || e.accion === 'DELETE')
+          pasos.push({ e, txt: e.accion === 'DELETE' ? 'borrada' : sd ? 'no se pudo leer' : valorTxt('valor', v) });
+      }
+      if (pasos.length)
+        partes.push(el('div', { class: 'aud-evolucion' }, [
+          el('span', { class: 'aud-ev-tit', text: 'Evolución del valor' }),
+          ...pasos.flatMap((p, i) => [i ? el('span', { class: 'aud-flecha', text: '→' }) : null,
+            el('span', { class: 'aud-ev-paso' + (i === pasos.length - 1 ? ' actual' : ''), title: `${fechaHora(p.e.ocurrido_en)} · ${quien(p.e)}` }, [
+              el('b', { text: p.txt }), el('small', { text: `${fechaHora(p.e.ocurrido_en)} · ${quien(p.e)}` })])])]));
+    }
+    partes.push(el('p', { class: 'ayuda', text: `${ev.length} evento(s) registrados para este registro, del más antiguo al más reciente.` }));
+
+    for (const e of ev) {
+      const ks = e.accion === 'UPDATE' ? (e.campos_cambiados || []).filter(k => !AUD_RUIDO.has(k))
+        : Object.keys(e.datos_despues || e.datos_antes || {}).filter(k => !AUD_RUIDO.has(k));
+      const orden = [...ks].sort((x, y) => (AUD_CLAVE.indexOf(x) + 1 || 99) - (AUD_CLAVE.indexOf(y) + 1 || 99));
+      const filasT = orden.map(k => el('tr', {}, [
+        el('td', { class: 'aud-campo', text: nomCampo(k) }),
+        el('td', { class: 'aud-antes', text: e.accion === 'INSERT' ? '' : valorTxt(k, e.datos_antes?.[k]) }),
+        el('td', { class: 'aud-desp', text: e.accion === 'DELETE' ? '' : valorTxt(k, e.datos_despues?.[k]) })]));
+      partes.push(el('div', { class: 'aud-evento ' + e.accion.toLowerCase() + (e.id === a.id ? ' este' : '') }, [
+        el('div', { class: 'aud-ev-cab' }, [
+          pillAccion(e), el('b', { text: fechaHora(e.ocurrido_en) }), el('span', { text: quien(e) }),
+          esValidacion(e) ? el('span', { class: 'pill neutro', text: 'validación' }) : null,
+          e.id === a.id ? el('span', { class: 'pill acento', text: 'el que tocaste' }) : null]),
+        e.motivo ? el('p', { class: 'aud-ev-motivo', text: 'Motivo: ' + e.motivo }) : null,
+        filasT.length ? el('table', { class: 'aud-ev-tabla' }, [
+          el('thead', {}, [el('tr', {}, [el('th', { text: 'Campo' }),
+            el('th', { text: e.accion === 'INSERT' ? '' : 'Antes' }), el('th', { text: e.accion === 'DELETE' ? '' : 'Después' })])]),
+          el('tbody', {}, filasT)]) : null]));
+    }
+    if (otras.length) {
+      const regs = [...new Set(otras.map(o => o.registro_id))];
+      partes.push(el('div', { class: 'banda warn' }, [
+        el('b', { text: `Este punto tiene otras ${regs.length} toma(s) registradas para el mismo mes. ` }),
+        el('span', { text: 'Puede ser una lectura que se borró y se volvió a tomar, o un duplicado.' }),
+        el('div', { class: 'fila', style: 'margin-top:6px' }, regs.map(r => el('button', { class: 'btn chico', text: `Ver registro #${r}`,
+          onclick: () => historialRegistro({ ...a, registro_id: r, id: null }) })))]));
+    }
+    poner($('#modal-cuerpo'), el('div', { class: 'hist-aud' }, partes));
+  }
+
+  // ---------------- CSV de lo filtrado ----------------
+  function exportar() {
+    const vis = visibles();
+    if (!vis.length) return toast('No hay nada que descargar con esos filtros', true);
+    const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    const lineas = [['Fecha y hora', 'Quién', 'Qué', 'Registro', 'Punto', 'Lectura', 'Mes del dato', 'Acción', 'Campo', 'Antes', 'Después', 'Motivo'].map(q).join(';')];
+    for (const a of vis) {
+      const ks = camposDe(a);
+      for (const k of (ks.length ? ks : [''])) lineas.push([
+        new Date(a.ocurrido_en).toLocaleString('es-CL'), quien(a), queTxt(a), a.registro_id, registroTxt(a), lecturaTxt(a),
+        a.periodo_dato ? nombrePeriodo(a.periodo_dato) : '', AUD_ACCION[a.accion] || a.accion, k ? nomCampo(k) : '',
+        k && a.accion !== 'INSERT' ? valorTxt(k, a.datos_antes?.[k]) : '', k && a.accion !== 'DELETE' ? valorTxt(k, a.datos_despues?.[k]) : '',
+        a.motivo || ''].map(q).join(';'));
+    }
+    descargar(new Blob(['﻿' + lineas.join('\r\n')], { type: 'text/csv;charset=utf-8' }),
+      `Auditoria_${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+
+  cargar();
 }
 
 /* ===================================================================

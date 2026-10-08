@@ -1185,3 +1185,63 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .ico-foto{display:inline-flex;vertical-align:-1px;margin-left:3px;opacity:.45}
 .celda-cons:hover .ico-foto{opacity:.8}
 @media print{.marca-rev,.ico-foto{display:none!important}}
+
+/* ===================================================================
+   AUDITORÍA · pensada para PC: filtros arriba y la tabla a todo el alto y ancho
+   =================================================================== */
+.nowrap{white-space:nowrap}
+.aud-filtros{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px 12px;align-items:end;margin-bottom:8px}
+.aud-filtros > label{margin-bottom:0}
+.aud-filtros .aud-buscar{grid-column:span 2}
+.aud-pers{display:contents}
+.aud-pers[hidden]{display:none}
+.aud-barra2{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.aud-der{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.aud-kpis{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.aud-kpis .kpi{padding:8px 14px;min-width:120px}
+.aud-kpis .kpi .v{font-size:20px}
+.aud-nota{margin:0 0 0 6px}
+.tabla-aud{max-height:calc(100dvh - 300px);min-height:320px}
+.tabla-aud td{padding:7px 10px;vertical-align:top}
+.tabla-aud th{padding:8px 10px}
+.tabla-aud tr.aud-fila{cursor:pointer}
+.tabla-aud tr.aud-fila:hover td{background:var(--acento-suave)}
+.tabla-aud td.aud-cambio{min-width:260px}
+.tabla-aud td.aud-motivo{max-width:280px;color:var(--ink-2)}
+.aud-diffs{display:grid;gap:2px}
+.aud-diff{font-size:13px;line-height:1.35}
+.aud-campo{color:var(--ink-3)}
+.aud-antes{color:var(--bad);text-decoration:line-through;text-decoration-thickness:1px}
+.aud-desp{color:var(--ok);font-weight:700}
+.aud-flecha{color:var(--ink-3)}
+.aud-veces{border:1px solid var(--line-2);background:var(--surface);border-radius:999px;padding:2px 9px;
+  font:inherit;font-size:12px;font-weight:700;cursor:pointer;color:var(--ink-2)}
+.aud-veces.muchas{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.aud-veces:hover{border-color:var(--acento)}
+
+/* historial de un registro */
+.modal.completo:has(.hist-aud) .modal-caja{max-width:1100px}
+.aud-evolucion{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:12px 14px;margin-bottom:10px;
+  background:var(--surface-2);border-radius:var(--radio)}
+.aud-ev-tit{width:100%;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
+.aud-ev-paso{display:grid;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.aud-ev-paso b{font-size:17px;font-variant-numeric:tabular-nums}
+.aud-ev-paso small{font-size:11px;color:var(--ink-3)}
+.aud-ev-paso.actual{border-color:var(--acento);box-shadow:inset 0 0 0 1px var(--acento)}
+.aud-evento{border:1px solid var(--line);border-left:4px solid var(--line-2);border-radius:var(--radio);
+  padding:10px 12px;margin-bottom:10px;background:var(--surface)}
+.aud-evento.insert{border-left-color:var(--ok)}
+.aud-evento.update{border-left-color:var(--warn)}
+.aud-evento.delete{border-left-color:var(--bad)}
+.aud-evento.este{box-shadow:0 0 0 2px var(--acento)}
+.aud-ev-cab{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.aud-ev-motivo{margin:6px 0 0;font-size:14px}
+.aud-ev-tabla{margin-top:8px;width:100%;font-size:13px}
+.aud-ev-tabla th{position:static;padding:4px 8px}
+.aud-ev-tabla td{padding:4px 8px}
+.aud-ev-tabla td.aud-campo{width:28%}
+@media (max-width:820px){
+  .aud-filtros .aud-buscar{grid-column:1/-1}
+  .tabla-aud{max-height:none}
+}
+.tabla-aud td.aud-lect{min-width:200px}

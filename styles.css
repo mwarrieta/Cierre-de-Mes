@@ -1402,3 +1402,8 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .impresion .graf-punto .grid{stroke:#ddd}
   .impresion .graf-punto .ejeX,.impresion .graf-punto .ejeY{fill:#333}
 }
+
+/* Respaldo: el avance queda arriba y a la vista mientras se arma el archivo */
+.progreso-arriba{position:sticky;top:0;z-index:5;margin:0 0 12px;padding:12px 14px;font-weight:600;
+  border:1px solid var(--acento);box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.progreso-arriba[hidden]{display:none}

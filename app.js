@@ -636,7 +636,7 @@ function render() {
   // en vez de pisar la vista nueva.
   const c = el('div');
   // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
-  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria'].includes(S.vista));
+  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria', 'respaldo'].includes(S.vista));
   $('#contenido').replaceChildren(c, avisoBeta());
   ({
     inicio: vistaInicio,
@@ -4818,8 +4818,10 @@ async function vistaRespaldo(c) {
     'un Excel con todos los datos y un manifiesto con lo que contiene.' }));
 
   const zonaEstado = el('div', {}, [el('p', { class: 'cargando', text: 'Revisando qué falta por respaldar…' })]);
-  const progreso = el('div', { class: 'progreso', hidden: true });
-  c.append(zonaEstado, progreso);
+  // El avance va arriba de todo y se queda pegado al borde superior: se ve sin hacer scroll.
+  const progreso = el('div', { class: 'progreso progreso-arriba', hidden: true, role: 'status', 'aria-live': 'polite' });
+  c.prepend(progreso);
+  c.append(zonaEstado);
 
   const [{ data: pend }, { data: hechos }] = await Promise.all([
     sb.from('v_pendiente_respaldo').select('*'),
@@ -4902,6 +4904,7 @@ async function vistaRespaldo(c) {
       }).catch(() => { paso(''); return toast('No se pudo cargar el compresor', true); });
     }
     progreso.hidden = false;
+    progreso.scrollIntoView({ block: 'nearest' });
     try {
       paso('Consultando las lecturas…');
       // traerTodo pagina: PostgREST corta en 1.000 filas y un respaldo truncado

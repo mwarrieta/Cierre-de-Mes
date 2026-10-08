@@ -1425,3 +1425,50 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   z-index:9999;margin:0;box-shadow:0 6px 24px rgba(0,0,0,.28);border:1px solid var(--acento)}
 .progreso-global[hidden]{display:none}
 @media print{.progreso-global{display:none!important}}
+
+/* ===================================================================
+   CASA DE FUERZA · pantallas de PC a pantalla completa
+   Misma franja de filtros que Consumos e informes.
+   =================================================================== */
+.filtros-rep .f-campo{display:flex;flex-direction:column;min-width:0}
+.filtros-rep .f-campo select,.filtros-rep .f-campo input{margin-top:0}
+.filtros-rep .f-doble{display:flex;gap:10px}
+.filtros-rep .f-doble > .f-campo{flex:1 1 0}
+.filtros-rep .f-acciones{display:flex;gap:8px;align-items:flex-end;justify-content:flex-end;flex-wrap:wrap}
+.filtros-rep .f-acciones .btn{min-height:44px}
+.filtros-rep .f-buscar input{min-height:44px;font-size:15px}
+.filtros-parque{grid-template-columns:minmax(170px,220px) minmax(150px,190px) minmax(220px,1fr) auto}
+.filtros-comb{grid-template-columns:minmax(170px,220px) minmax(220px,360px) 1fr}
+.kpis-cf{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.seccion-chica{margin:4px 0 10px;gap:10px;align-items:center}
+.seccion-chica .seg-op{min-height:38px;font-size:13px}
+.titulo-seccion{margin:26px 0 10px;font-size:18px}
+.gen-nombre{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.gen-nombre .celda-cons{font-weight:600;margin-left:-6px}
+.fig-ancha{max-width:none}
+.tabla-comb{max-height:calc(100dvh - 160px)}
+.tabla-comb th.c-punto,.tabla-comb td.c-punto{position:sticky;left:0;background:var(--surface);z-index:1;
+  white-space:nowrap;box-shadow:1px 0 0 var(--line)}
+.tabla-comb th.c-punto{z-index:3;background:var(--surface-2)}
+.tabla-comb tr.fila-total td.c-punto{background:var(--surface-2)}
+@media (max-width:1180px){
+  .filtros-parque{grid-template-columns:1fr 1fr}
+  .filtros-parque .f-buscar,.filtros-parque .f-acciones{grid-column:1/-1;justify-content:flex-start}
+  .filtros-comb{grid-template-columns:1fr 1fr}
+  .filtros-comb .f-acciones{grid-column:1/-1;justify-content:flex-start}
+}
+@media (max-width:820px){
+  .filtros-rep .f-doble{flex-direction:column;gap:8px}
+  .filtros-parque,.filtros-comb{grid-template-columns:1fr}
+}
+@media print{
+  .impresion table.grilla-imp{font-size:7px}
+  .impresion table.grilla-imp td,.impresion table.grilla-imp th{padding:1px 2px}
+}
+.filtros-rep .f-campo.f-periodo{flex-direction:column;gap:0}
+.tabla-informe .fila.nowrap{flex-wrap:nowrap;gap:6px}
+.tabla-informe td .btn.chico{min-height:32px;padding:0 9px;font-size:13px}
+.gen-celda{display:flex;flex-direction:column;gap:2px}
+.gen-celda .gen-titulo{font-weight:700;margin-left:-6px;text-align:left}
+.gen-acc{display:flex;gap:2px;flex-wrap:wrap;margin-left:-6px}
+.gen-acc .btn-texto.chico{padding:2px 6px;font-size:12.5px}

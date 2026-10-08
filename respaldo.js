@@ -20,7 +20,7 @@ function col(n) {                       // 1 -> A, 27 -> AA
 // ---------- .xlsx escrito a mano ----------
 // Una hoja puede ser una lista simple ({nombre, filas}), una portada ({portada: true,
 // filas con celdas { v, fuente: 'grande'|'titulo'|'b'|'nota' }}) o una Tabla de Excel:
-//   { nombre, filas, intro: [título, nota…], tabla: { nombre, franjas, totales: {etiqueta, desde} },
+//   { nombre, filas, intro: [título, nota…], tabla: { nombre, franjas, totales: {etiqueta, desde, hasta?} },
 //     grafico: { titulo, desde, hasta } }
 // filas[0] es el encabezado. Una celda puede ser un valor o { v, s: 'num'|'ent'|'pct'|'txt', oculto }.
 // "oculto" deja el valor en la celda (el filtro lo sigue viendo) pero no lo muestra.
@@ -119,7 +119,8 @@ function armarHoja(h, n, est) {
     const celdas = [celdaXml(col(1) + filaTot, tot.etiqueta, sEt)];
     for (let j = 1; j < ncol; j++) {
       const ref = col(j + 1) + filaTot;
-      if (j < tot.desde) { celdas.push(`<c r="${ref}" s="${sEt}"/>`); continue; }
+      // desde..hasta (hasta exclusivo): solo columnas que tiene sentido sumar, no porcentajes ni razones
+      if (j < tot.desde || (tot.hasta != null && j >= tot.hasta)) { celdas.push(`<c r="${ref}" s="${sEt}"/>`); continue; }
       const rango = `${col(j + 1)}${filaCab + 1}:${col(j + 1)}${ultimaDato}`;
       // valor ya calculado (todo visible) para que se vea aunque el lector no recalcule
       const suma = filas.slice(1).reduce((a, f) => a + (typeof valorDe(f[j]) === 'number' ? valorDe(f[j]) : 0), 0);

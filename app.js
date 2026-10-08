@@ -637,7 +637,7 @@ function render() {
   // en vez de pisar la vista nueva.
   const c = el('div');
   // Consumos usa todo el ancho de la pantalla: la tabla es lo principal.
-  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria', 'respaldo'].includes(S.vista));
+  $('#contenido').classList.toggle('ancho', ['consumos', 'auditoria', 'respaldo', 'cierrecf', 'generadores', 'recargas'].includes(S.vista));
   $('#contenido').replaceChildren(c, avisoBeta());
   ({
     inicio: vistaInicio,
@@ -6051,9 +6051,433 @@ const TIPOS_MOV = {
 };
 const ESTADOS_GEN = ['Operando', 'Disponible', 'Detenido', 'En Revisión', 'Devuelto', 'De baja'];
 
+/* ===================================================================
+   CASA DE FUERZA · piezas comunes de las tres pantallas (PC, pantalla completa)
+   =================================================================== */
+// Selector de varios equipos, con buscador, "Marcar/Desmarcar todos" y "solo este".
+// items: [{ id, nombre, sub }]. elegidos: [] = todos.
+function selectorMulti({ items, elegidos, todosTxt = 'Todos', unidad = 'equipos', ayudaTxt = '', alAplicar }) {
+  const btn = el('button', { type: 'button', class: 'sel-multi', 'aria-haspopup': 'true' });
+  const caja = el('div', { class: 'multi-caja' }, [btn]);
+  const texto = () => {
+    const n = elegidos.length;
+    btn.textContent = !n ? `${todosTxt} (${items.length})` : n === 1 ? (items.find(i => i.id === elegidos[0])?.nombre || '1') : `${n} ${unidad}`;
+    btn.classList.toggle('activo', n > 0);
+  };
+  btn.addEventListener('click', () => {
+    const viejo = $('.pop-puntos', caja); if (viejo) { viejo.remove(); return; }
+    const marc = new Set(elegidos.length ? elegidos : items.map(i => i.id));
+    const lista = el('div', { class: 'pop-lista' });
+    const buscar = el('input', { type: 'search', placeholder: 'Buscar…', oninput: () => pintar() });
+    const cerrar = () => { pop.remove(); document.removeEventListener('click', fuera, true); };
+    const aplicar = ids => { cerrar(); alAplicar(ids.length === items.length ? [] : ids); };
+    function pintar() {
+      const t = buscar.value.trim().toLowerCase();
+      lista.replaceChildren(...items.filter(i => !t || (i.nombre + ' ' + (i.sub || '')).toLowerCase().includes(t)).map(i => el('div', { class: 'pop-fila' }, [
+        el('label', { class: 'check-linea' }, [el('input', { type: 'checkbox', checked: marc.has(i.id) || null,
+          onchange: e => { e.target.checked ? marc.add(i.id) : marc.delete(i.id); } }),
+          el('span', { text: ' ' + i.nombre }), i.sub ? el('small', { class: 'tenue-b', text: ' ' + i.sub }) : null]),
+        el('button', { type: 'button', class: 'btn-texto chico', text: 'solo este', onclick: () => aplicar([i.id]) })])));
+    }
+    const pop = el('div', { class: 'pop-puntos', role: 'dialog' }, [buscar,
+      el('div', { class: 'fila' }, [
+        el('button', { type: 'button', class: 'btn chico', text: 'Marcar todos', onclick: () => { items.forEach(i => marc.add(i.id)); pintar(); } }),
+        el('button', { type: 'button', class: 'btn chico', text: 'Desmarcar todos', onclick: () => { marc.clear(); pintar(); } })]),
+      lista,
+      el('div', { class: 'fila entre' }, [el('span', { class: 'ayuda', text: ayudaTxt }),
+        el('button', { type: 'button', class: 'btn primario chico', text: 'Aplicar', onclick: () => {
+          if (!marc.size) return toast('Marca al menos uno', true);
+          aplicar(items.filter(i => marc.has(i.id)).map(i => i.id)); } })])]);
+    const fuera = e => { if (!caja.contains(e.target)) cerrar(); };
+    caja.append(pop); pintar(); buscar.focus();
+    setTimeout(() => document.addEventListener('click', fuera, true), 0);
+  });
+  texto();
+  return caja;
+}
+const campoF = (cls, titulo, control) => el('div', { class: 'f-campo ' + cls }, [el('span', { class: 'f-tit', text: titulo }), control]);
+const selF = (opciones, valor, alCambiar) => {
+  const s = el('select', { onchange: e => alCambiar(e.target.value) });
+  for (const [v, t] of opciones) s.append(el('option', { value: v, text: t, selected: String(v) === String(valor) || null }));
+  return s;
+};
+const segF = (opciones, valor, alCambiar) => el('div', { class: 'seg', role: 'group' }, opciones.map(([k, t]) =>
+  el('button', { type: 'button', class: 'seg-op' + (valor === k ? ' sel' : ''), 'aria-pressed': valor === k ? 'true' : 'false', text: t,
+    onclick: () => alCambiar(k) })));
+// Meses de consumo YA cerrados, del más reciente al más antiguo.
+function mesesCerrados(n = 36) {
+  const out = []; let m = ultimoMesCerrado();
+  for (let i = 0; i < n; i++) { out.push(m); m = mesAnterior(m); }
+  return out;
+}
+function listaMeses(desde, hasta) {
+  const out = []; for (let m = desde; m <= hasta; m = mesSiguiente(m)) out.push(m);
+  return out;
+}
+const cargarJSZip = () => cargarScript('jszip.js', () => typeof JSZip !== 'undefined');
+const fechaHoraCL = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit',
+  year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
+const potTxt = kw => kw >= 1000 ? num(kw / 1000, 1) + ' MW' : num(kw) + ' kW';
+const energiaTxt = kwh => kwh >= 1e6 ? num(kwh / 1e6, 2) + ' GWh' : kwh >= 1e4 ? num(kwh / 1000) + ' MWh' : num(kwh) + ' kWh';
+
+/* ===================================================================
+   CASA DE FUERZA · CIERRE DEL MES (informe de generación)
+   Igual que Consumos e informes, pero para el parque de generadores:
+   periodo · propiedad · equipos · tabla, cifras clave, un gráfico (del parque
+   o de un equipo), y Excel / vista para imprimir con lo que está en pantalla.
+   Cada generador es un punto de Terreno (grupo "Generadores") con tres lecturas:
+   kWh generado, horas de marcha y potencia. La toma del día 1 cierra el mes anterior.
+   =================================================================== */
+const VAR_GEN = { kwh: /generada/i, horas: /^horas/i, kw: /^potencia/i };
+const METRICAS_GEN = {
+  kwh:    { t: 'Energía generada', u: 'kWh', dec: 0 },
+  horas:  { t: 'Horas de marcha', u: 'h', dec: 0 },
+  litros: { t: 'Combustible cargado', u: 'L', dec: 0 },
+  lkwh:   { t: 'Consumo específico', u: 'L/kWh', dec: 3 },
+  factor: { t: 'Factor de carga', u: '%', dec: 0 }
+};
+// Agrega una lista de resúmenes (de uno o varios equipos, en un mes) en la métrica pedida.
+function agregarGen(items, metrica) {
+  const s = k => items.reduce((a, x) => a + (x.r[k] || 0), 0);
+  const conDato = k => items.some(x => x.r[k] != null);
+  if (metrica === 'kwh') return conDato('kwhMes') ? s('kwhMes') : null;
+  if (metrica === 'horas') return conDato('horasMes') ? s('horasMes') : null;
+  if (metrica === 'litros') return conDato('litros') ? s('litros') : null;
+  if (metrica === 'lkwh') {
+    const c = items.filter(x => x.r.litros && x.r.kwhMes > 0);
+    const kwh = c.reduce((a, x) => a + x.r.kwhMes, 0), lt = c.reduce((a, x) => a + x.r.litros, 0);
+    return kwh ? lt / kwh : null;
+  }
+  if (metrica === 'factor') {
+    const c = items.filter(x => x.r.kwhMes != null && x.r.horasMes > 0 && Number(x.g.potencia_nominal_kw));
+    const cap = c.reduce((a, x) => a + x.r.horasMes * Number(x.g.potencia_nominal_kw), 0);
+    return cap ? 100 * c.reduce((a, x) => a + x.r.kwhMes, 0) / cap : null;
+  }
+  return null;
+}
+const AYUDA_GEN = {
+  kwh: 'kWh del mes = lectura de energía de la toma de cierre − la del mes anterior.',
+  horas: 'Horas del mes = horómetro de la toma de cierre − el del mes anterior.',
+  litros: 'Suma de las cargas de combustible registradas en Combustible para ese mes.',
+  lkwh: 'Litros ÷ kWh, solo con los equipos y meses que tienen cargas registradas. Menor es más eficiente.',
+  factor: 'kW medio (kWh ÷ horas) sobre la potencia nominal. Bajo 30% el equipo trabaja holgado; sobre 85%, exigido.'
+};
+
+async function vistaCierreCF(c) {
+  S.cf = S.cf || { modo: 'anio', mes: ultimoMesCerrado(), anio: ultimoMesCerrado().slice(0, 4),
+    desde: mesAnterior(mesAnterior(mesAnterior(mesAnterior(mesAnterior(ultimoMesCerrado()))))), hasta: ultimoMesCerrado(),
+    propiedad: '', equipos: [], tabla: 'resumen', metricaTabla: 'kwh',
+    graf: { metrica: 'kwh', tipo: 'barras', capas: { promedio: true, tendencia: true } } };
+  const F = S.cf;
+  const cerrados = mesesCerrados();
+  const anios = [...new Set(cerrados.map(m => m.slice(0, 4)))];
+  const zonaFiltros = el('div');
+  const resumenTxt = el('p', { class: 'ayuda crece' });
+  const paso = el('span', { class: 'ayuda' });
+  const zona = el('div');
+  let datos = null;                 // lo último consultado: meses, d, filas (equipos con su resumen por mes)
+
+  const btnExcel = el('button', { class: 'btn', text: 'Descargar Excel', onclick: async e => {
+    if (!datos) return; e.target.disabled = true;
+    try { await excelGeneracion(datos, F, t => { paso.textContent = t; }); }
+    catch (err) { toast('No se pudo armar el Excel: ' + (err.message || err), true); }
+    finally { e.target.disabled = false; paso.textContent = ''; } } });
+  const btnImp = el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => datos && imprimirGeneracion(datos, F) });
+  const btnResp = el('button', { class: 'btn', text: 'Respaldo del mes (fotos + Excel)', onclick: async e => {
+    if (!datos) return; e.target.disabled = true;
+    try { await respaldoCF(datos.meses[0], datos.d, t => { paso.textContent = t; }); }
+    catch (err) { toast('Falló el respaldo: ' + (err.message || err), true); }
+    finally { e.target.disabled = false; paso.textContent = ''; } } });
+  c.append(zonaFiltros, el('div', { class: 'fila entre seccion acciones-rep' }, [resumenTxt, paso, btnExcel, btnResp, btnImp]), zona);
+
+  function limitesCF() {
+    if (F.modo === 'mes') return [F.mes, F.mes];
+    if (F.modo === 'anio') { const h = [`${F.anio}-12-01`, ultimoMesCerrado()].sort()[0]; return [`${F.anio}-01-01`, h]; }
+    return F.desde <= F.hasta ? [F.desde, F.hasta] : [F.hasta, F.desde];
+  }
+  function pintarFiltros() {
+    const gens = (S.catalogo.generadores || []).slice().sort(ordenGen)
+      .filter(g => !F.propiedad || (F.propiedad === 'Propio') === (g.propiedad === 'Propio'));
+    const periodo = F.modo === 'mes' ? campoF('f-periodo', 'Mes', selF(cerrados.map(m => [m, nombrePeriodo(m)]), F.mes, v => { F.mes = v; cargar(); }))
+      : F.modo === 'anio' ? campoF('f-periodo', 'Año', selF(anios.map(a => [a, a]), F.anio, v => { F.anio = v; cargar(); }))
+      : el('div', { class: 'f-periodo f-doble' }, [
+          campoF('', 'Desde', selF(cerrados.map(m => [m, nombrePeriodo(m)]), F.desde, v => { F.desde = v; cargar(); })),
+          campoF('', 'Hasta', selF(cerrados.map(m => [m, nombrePeriodo(m)]), F.hasta, v => { F.hasta = v; cargar(); }))]);
+    zonaFiltros.replaceChildren(el('div', { class: 'filtros-rep filtros-cf seccion' }, [
+      campoF('f-ver', 'Ver', selF([['mes', 'Un mes'], ['anio', 'Un año'], ['rango', 'Un rango']], F.modo, v => { F.modo = v; pintarFiltros(); cargar(); })),
+      periodo,
+      campoF('f-grupo', 'Propiedad', selF([['', 'Todos'], ['Propio', 'Propios'], ['Arriendo', 'Arriendo']], F.propiedad,
+        v => { F.propiedad = v; F.equipos = []; pintarFiltros(); cargar(); })),
+      campoF('f-puntos', 'Equipos', selectorMulti({ items: gens.map(g => ({ id: g.id, nombre: genNombre(g), sub: g.propiedad === 'Propio' ? 'propio' : g.proveedor || '' })),
+        elegidos: F.equipos, todosTxt: 'Todos los equipos', ayudaTxt: 'Con uno solo, el gráfico es de ese equipo.',
+        alAplicar: ids => { F.equipos = ids; pintarFiltros(); pintar(); } })),
+      campoF('f-tabla', 'Tabla', segF([['resumen', 'Resumen'], ['mensual', 'Mes a mes']], F.tabla, k => { F.tabla = k; pintarFiltros(); pintar(); }))
+    ]));
+  }
+
+  async function cargar() {
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
+    const [d0, h0] = limitesCF();
+    const meses = listaMeses(d0, h0);
+    let d;
+    try { d = await datosGeneradores(meses); }
+    catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
+    datos = { meses, d };
+    pintar();
+  }
+
+  function pintar() {
+    if (!datos) return;
+    const { meses, d } = datos;
+    const sel = new Set(F.equipos);
+    const filas = d.gens.map(g => ({ g, por: meses.map(m => ({ m, r: resumenGenerador(g, m, d) })) }))
+      .filter(x => !F.propiedad || (F.propiedad === 'Propio') === (x.g.propiedad === 'Propio'))
+      .filter(x => !sel.size || sel.has(x.g.id))
+      .filter(x => x.g.activo || x.por.some(p => p.r.kwhMes != null || p.r.tomado))
+      .sort((a, b) => ordenGen(a.g, b.g));
+    for (const x of filas) {
+      const it = x.por.map(p => ({ g: x.g, r: p.r }));
+      x.tot = Object.fromEntries(Object.keys(METRICAS_GEN).map(k => [k, agregarGen(it, k)]));
+      x.nMeses = x.por.filter(p => p.r.kwhMes != null).length;
+      x.ultimo = x.por[x.por.length - 1].r;
+    }
+    datos.filas = filas;
+    const todos = filas.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r })));
+    const tot = k => agregarGen(todos, k);
+    const unMes = meses.length === 1;
+    const activos = filas.filter(x => x.g.activo);
+    const sinToma = unMes ? activos.filter(x => !x.ultimo.tomado) : [];
+    resumenTxt.textContent = `${filas.length} equipos · ${meses.length === 1 ? nombrePeriodo(meses[0]) : nombrePeriodo(meses[0]) + ' a ' + nombrePeriodo(meses[meses.length - 1])} · solo meses cerrados`;
+    btnResp.hidden = !unMes;
+
+    const kpis = el('div', { class: 'kpis seccion kpis-cf' }, [
+      kpi(tot('kwh') != null ? energiaTxt(tot('kwh')) : '—', 'energía generada'),
+      kpi(tot('horas') != null ? num(tot('horas')) : '—', 'horas de marcha'),
+      kpi(tot('litros') != null ? num(tot('litros')) + ' L' : '—', 'combustible cargado'),
+      kpi(tot('lkwh') != null ? num(tot('lkwh'), 3) : '—', 'L/kWh'),
+      kpi(tot('factor') != null ? num(tot('factor')) + '%' : '—', 'factor de carga medio'),
+      unMes ? kpi(sinToma.length, 'sin toma de cierre', sinToma.length ? 'aviso' : 'ok')
+            : kpi(`${activos.filter(x => x.g.estado === 'Operando').length} / ${activos.length}`, 'operando hoy')
+    ]);
+
+    // ---- gráfico: del equipo elegido o del conjunto filtrado ----
+    const uno = filas.length === 1 ? filas[0] : null;
+    const panel = meses.length > 1 && filas.length ? panelGeneracion(filas, meses, F.graf, { uno, alCambiar: () => pintar() }) : null;
+
+    // ---- tabla ----
+    const grupos = [['Generadores propios', filas.filter(x => x.g.propiedad === 'Propio')],
+                    ['Generadores de arriendo', filas.filter(x => x.g.propiedad !== 'Propio')]].filter(([, a]) => a.length);
+    const nombreCelda = x => el('div', { class: 'gen-nombre' }, [
+      el('button', { class: 'celda-cons', title: 'Ficha del equipo', text: x.g.n_interno ? `${x.g.n_interno} · ${x.g.n_equipo}` : x.g.n_equipo, onclick: () => fichaGenerador(x.g) }),
+      !uno ? el('button', { class: 'btn-texto chico', title: 'Analizar solo este equipo', text: 'analizar', onclick: () => { F.equipos = [x.g.id]; pintarFiltros(); pintar(); } }) : null]);
+    const pillF = v => v != null ? el('span', { class: 'pill ' + (v > 85 ? 'warn' : v < 30 ? 'neutro' : 'ok'), text: num(v) + '%' }) : '—';
+    let tablaEl;
+    if (F.tabla === 'mensual' && !unMes) {
+      const mt = F.metricaTabla, M = METRICAS_GEN[mt];
+      const fmt = v => v == null ? '—' : mt === 'factor' ? num(v) + '%' : num(v, M.dec);
+      const cab = ['Equipo', 'Pot. kW', ...meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3) + (new Set(meses.map(x => x.slice(0, 4))).size > 1 ? '-' + m.slice(2, 4) : '')),
+        ['kwh', 'horas', 'litros'].includes(mt) ? 'Total' : 'Periodo'];
+      const g2 = grupos.map(([n, arr]) => ({ nombre: n, filas: [
+        ...arr.map(x => [nombreCelda(x), num(x.g.potencia_nominal_kw), ...x.por.map(p => fmt(agregarGen([{ g: x.g, r: p.r }], mt))), el('b', { text: fmt(x.tot[mt]) })]),
+        [el('b', { text: 'Subtotal' }), '', ...meses.map((m, i) => el('b', { text: fmt(agregarGen(arr.map(x => ({ g: x.g, r: x.por[i].r })), mt)) })),
+          el('b', { text: fmt(agregarGen(arr.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r }))), mt)) })]] }));
+      tablaEl = el('div', {}, [
+        el('div', { class: 'fila seccion-chica' }, [el('span', { class: 'seg-tit', text: 'Dato de la tabla' }),
+          segF(Object.entries(METRICAS_GEN).map(([k, m]) => [k, m.t]), mt, k => { F.metricaTabla = k; pintar(); })]),
+        tablaInforme(cab, g2, ['c-punto c-ancha', 'num c-mes', ...meses.map(() => 'num c-mes'), 'num c-mes c-total'])]);
+    } else {
+      const cab = unMes
+        ? ['Equipo', 'Marca', 'Pot. kW', 'kW toma', 'kWh acum.', 'kWh mes', 'Horómetro', 'Horas mes', 'Factor carga', 'Litros', 'L/kWh', 'Estado', 'Ubicación']
+        : ['Equipo', 'Marca', 'Pot. kW', 'kWh', 'Horas', 'Factor carga', 'Litros', 'L/kWh', 'Meses con dato', 'Estado', 'Ubicación'];
+      const fila = x => unMes ? [nombreCelda(x), x.g.proveedor || '—', num(x.g.potencia_nominal_kw),
+          x.ultimo.kw != null ? num(x.ultimo.kw) : x.ultimo.vacio,
+          x.ultimo.kwhAcum != null ? num(x.ultimo.kwhAcum) : (x.ultimo.vacio === 'n/c' ? 'n/c' : x.g.activo ? el('span', { class: 'pill warn', text: 'sin toma' }) : 's/d'),
+          x.tot.kwh != null ? el('b', { text: num(x.tot.kwh) }) : x.ultimo.vacio,
+          x.ultimo.horAcum != null ? num(x.ultimo.horAcum) : x.ultimo.vacio, x.tot.horas != null ? num(x.tot.horas) : x.ultimo.vacio,
+          pillF(x.tot.factor), x.tot.litros != null ? num(x.tot.litros) : '—', x.tot.lkwh != null ? num(x.tot.lkwh, 3) : '—',
+          pillEstadoGen(x.g.estado), x.g.ubicacion || '—']
+        : [nombreCelda(x), x.g.proveedor || '—', num(x.g.potencia_nominal_kw),
+          x.tot.kwh != null ? el('b', { text: num(x.tot.kwh) }) : '—', x.tot.horas != null ? num(x.tot.horas) : '—',
+          pillF(x.tot.factor), x.tot.litros != null ? num(x.tot.litros) : '—', x.tot.lkwh != null ? num(x.tot.lkwh, 3) : '—',
+          `${x.nMeses} / ${meses.length}`, pillEstadoGen(x.g.estado), x.g.ubicacion || '—'];
+      const sub = arr => { const it = arr.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r }))); const t = k => agregarGen(it, k);
+        return unMes ? [el('b', { text: 'Subtotal' }), '', '', '', '', el('b', { text: num(t('kwh')) }), '', el('b', { text: num(t('horas')) }),
+            pillF(t('factor')), t('litros') != null ? el('b', { text: num(t('litros')) }) : '—', t('lkwh') != null ? num(t('lkwh'), 3) : '—', '', '']
+          : [el('b', { text: 'Subtotal' }), '', '', el('b', { text: num(t('kwh')) }), el('b', { text: num(t('horas')) }), pillF(t('factor')),
+            t('litros') != null ? el('b', { text: num(t('litros')) }) : '—', t('lkwh') != null ? num(t('lkwh'), 3) : '—', '', '', '']; };
+      const nums = unMes ? [2, 3, 4, 5, 6, 7, 9, 10] : [2, 3, 4, 6, 7];
+      tablaEl = tablaInforme(cab, grupos.map(([n, arr]) => ({ nombre: n, filas: [...arr.map(fila), sub(arr)] })),
+        cab.map((_, i) => i === 0 ? 'c-punto c-ancha' : nums.includes(i) ? 'num c-mes' : ''));
+    }
+    poner(zona, kpis, panel, filas.length ? tablaEl : el('p', { class: 'vacio', text: 'No hay equipos con esos filtros.' }),
+      el('p', { class: 'ayuda', text: 'kWh y horas de un mes salen de la toma del día 1 del mes siguiente. Factor de carga = kW medio sobre la potencia nominal. ' +
+        'L/kWh solo con los meses que tienen cargas de combustible. Toca un equipo para ver su ficha.' }));
+  }
+
+  pintarFiltros();
+  cargar();
+}
+
+// Gráfico + cifras de la generación: de un equipo (uno) o de todo lo filtrado.
+function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }) {
+  const met = METRICAS_GEN[cfg.metrica] ? cfg.metrica : 'kwh', M = METRICAS_GEN[met];
+  const serie = meses.map((m, i) => ({ mes: m, v: agregarGen(filas.map(x => ({ g: x.g, r: x.por[i].r })), met) }));
+  const est = estadisticas(serie);
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const etiquetaMes = m => { const t = nombrePeriodo(m).split(' ')[0].slice(0, 3); return variosAnios ? `${t}-${m.slice(2, 4)}` : t; };
+  const quien = uno ? genNombre(uno.g) : `${filas.length} equipos`;
+  const titulo = `${quien} · ${M.t}`;
+  const fx = v => met === 'factor' ? num(v) + '%' : num(v, M.dec);
+  const cifra = (v, k, extra = '', cl = '') => el('div', { class: 'cifra ' + cl, 'data-ayuda': imprimir ? null : AYUDA_CIFRA[k] || null }, [
+    el('div', { class: 'v', text: v }), el('div', { class: 'k', text: k }), extra ? el('div', { class: 's', text: extra }) : null]);
+  const sumable = ['kwh', 'horas', 'litros'].includes(met);
+  const cifras = est ? el('div', { class: 'cifras-punto' }, [
+    sumable ? cifra(fx(est.suma), 'Total del periodo', `${est.n} meses con dato`) : null,
+    cifra(fx(est.media), 'Promedio mensual', 'Mediana ' + fx(est.mediana)),
+    cifra(fx(est.max.v), 'Máximo', nombrePeriodo(est.max.mes)),
+    cifra(fx(est.min.v), 'Mínimo', nombrePeriodo(est.min.mes)),
+    cifra(num(est.cv, 0) + '%', 'Variabilidad (CV)', 'Desv. estándar ' + fx(est.sigma), est.cv > 30 ? 'alerta' : ''),
+    est.n > 1 && est.media ? cifra((est.pend >= 0 ? '+' : '') + num(100 * est.pend / est.media, 1) + '%', 'Tendencia por mes', est.pend >= 0 ? 'al alza' : 'a la baja') : null,
+    est.media ? cifra((est.ultimo.v >= est.media ? '+' : '') + num(100 * (est.ultimo.v - est.media) / est.media, 1) + '%', 'Último vs promedio', nombrePeriodo(est.ultimo.mes)) : null
+  ]) : null;
+  const grafico = graficoSerie(serie, { titulo, unidad: M.u, tipo: cfg.tipo, capas: cfg.capas, est, etiquetaMes, imprimir });
+  if (imprimir) return el('div', { class: 'analisis-punto imp' }, [cifras, grafico]);
+  const controles = el('div', { class: 'controles-punto' }, [
+    el('label', { text: 'Métrica', 'data-ayuda': null }, [selF(Object.entries(METRICAS_GEN).map(([k, m]) => [k, `${m.t} (${m.u})`]), met, x => { cfg.metrica = x; alCambiar(); })]),
+    el('label', { text: 'Gráfico' }, [selF([['barras', 'Barras'], ['linea', 'Línea']], cfg.tipo, x => { cfg.tipo = x; alCambiar(); })]),
+    el('div', { class: 'capas-punto' }, [el('span', { class: 'seg-tit', text: 'Mostrar' }),
+      el('div', { class: 'capas-ops' }, Object.entries(CAPAS_PUNTO).map(([k, t]) => el('label', { class: 'check-linea capa-op', 'data-ayuda': AYUDA_CAPA[k] }, [
+        el('input', { type: 'checkbox', checked: cfg.capas[k] || null, onchange: e => { cfg.capas[k] = e.target.checked; alCambiar(); } }),
+        el('span', { text: ' ' + t }), el('span', { class: 'info', 'aria-hidden': 'true', text: 'i' })])))])
+  ]);
+  return el('section', { class: 'analisis-punto seccion' }, [
+    el('div', { class: 'analisis-cab' }, [el('h3', { text: 'Análisis · ' + (uno ? genNombre(uno.g) : 'parque filtrado') }),
+      el('span', { class: 'ayuda', 'data-ayuda': AYUDA_GEN[met], tabindex: '0', text: 'ⓘ Cómo se calcula ' + M.t.toLowerCase() })]),
+    controles, cifras, grafico]);
+}
+
+// ---------- Excel del informe de generación (lo que está en pantalla) ----------
+async function excelGeneracion(datos, F, paso) {
+  await cargarJSZip();
+  const R = window.RESPALDO;
+  const { meses, d, filas } = datos;
+  const desde = meses[0], hasta = meses[meses.length - 1];
+  paso('Consultando combustible y movimientos…');
+  const ids = new Set(filas.map(x => x.g.id));
+  const [rec, mov] = await Promise.all([
+    sb.from('v_recargas').select('*').gte('periodo', desde).lte('periodo', hasta).order('fecha_hora'),
+    sb.from('generador_movimientos').select('*, generador:generadores(n_equipo, n_interno)').order('fecha')
+  ]);
+  for (const r of [rec, mov]) if (r.error) throw r.error;
+  const rango = desde === hasta ? nombrePeriodo(desde) : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
+  const sel = F.equipos.length === 1 ? genNombre(filas[0].g) : F.propiedad ? (F.propiedad === 'Propio' ? 'Generadores propios' : 'Generadores de arriendo') : 'Todo el parque';
+  const cabM = meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3) + '-' + m.slice(2, 4));
+  const r3 = v => v == null ? '' : Math.round(v * 1000) / 1000;
+  const r1 = v => v == null ? '' : Math.round(v * 10) / 10;
+  const porMes = mt => [['N° interno', 'Equipo', 'Propiedad', 'Pot. nominal kW', ...cabM, ['kwh', 'horas', 'litros'].includes(mt) ? 'Total' : 'Periodo'],
+    ...filas.map(x => [x.g.n_interno || '', x.g.n_equipo, x.g.propiedad || '', Number(x.g.potencia_nominal_kw) || '',
+      ...x.por.map(p => { const v = agregarGen([{ g: x.g, r: p.r }], mt); return mt === 'lkwh' ? r3(v) : mt === 'factor' ? r1(v) : (v ?? ''); }),
+      mt === 'lkwh' ? r3(x.tot[mt]) : mt === 'factor' ? r1(x.tot[mt]) : (x.tot[mt] ?? '')])];
+  const tomas = [];
+  for (const x of filas) for (const p of x.por) {
+    const r = p.r; if (!r.toma) continue;
+    tomas.push([nombrePeriodo(p.m), x.g.n_interno || '', x.g.n_equipo, r.toma.fecha_lectura ? fechaHoraCL(r.toma.fecha_lectura) : '',
+      r.kwhAcum ?? '', r.horAcum ?? '', r.kw ?? '', S.catalogo?.gente?.[r.toma.tomada_por] || '']);
+  }
+  const hojas = [
+    { nombre: 'Portada', portada: true, anchos: [24, 70], encabezado: 'Casa de Fuerza', filas: [
+      [{ v: 'Cierre de Mes · Casa de Fuerza', fuente: 'nota' }], [{ v: 'Informe de generación', fuente: 'grande' }],
+      [{ v: `${sel} · ${rango}`, fuente: 'titulo' }], [],
+      [{ v: 'Generado', fuente: 'b' }, fechaHoraCL(new Date().toISOString())], [{ v: 'Por', fuente: 'b' }, S.usuario.nombre], [],
+      [{ v: 'Contenido', fuente: 'titulo' }],
+      [{ v: 'Resumen', fuente: 'b' }, 'Un equipo por fila con lo del periodo: kWh, horas, factor de carga, litros y L/kWh.'],
+      [{ v: 'kWh por mes · Horas por mes · Litros por mes', fuente: 'b' }, 'Un equipo por fila y un mes por columna.'],
+      [{ v: 'L-kWh por mes · Factor por mes', fuente: 'b' }, 'Indicadores de eficiencia y carga, mes a mes.'],
+      [{ v: 'Tomas', fuente: 'b' }, 'Las tomas de cierre de cada mes: kWh acumulado, horómetro y kW.'],
+      [{ v: 'Combustible', fuente: 'b' }, 'Cada carga del periodo.'], [{ v: 'Movimientos', fuente: 'b' }, 'Ingresos, devoluciones y traslados.'], [],
+      [{ v: 'Solo meses cerrados: un mes cierra con la toma del día 1 del mes siguiente.', fuente: 'nota' }]] },
+    { nombre: 'Resumen', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: 5, hasta: 8 } },
+      intro: [`Casa de Fuerza · ${sel} · ${rango}`, 'kWh y horas = toma de cierre − toma anterior. Factor de carga = kW medio ÷ potencia nominal.'],
+      filas: [['N° interno', 'Equipo', 'Propiedad', 'Marca', 'Pot. nominal kW', 'kWh', 'Horas', 'Litros', 'Factor de carga %', 'L/kWh', 'Meses con dato', 'Estado', 'Ubicación'],
+        ...filas.map(x => [x.g.n_interno || '', x.g.n_equipo, x.g.propiedad || '', x.g.proveedor || '', Number(x.g.potencia_nominal_kw) || '',
+          x.tot.kwh ?? '', x.tot.horas ?? '', x.tot.litros ?? '', x.tot.factor != null ? { v: r1(x.tot.factor), s: 'pct' } : '', r3(x.tot.lkwh),
+          { v: x.nMeses, s: 'ent' }, x.g.estado || '', x.g.ubicacion || ''])] },
+    ...['kwh', 'horas', 'litros', 'lkwh', 'factor'].map(mt => ({
+      nombre: { kwh: 'kWh por mes', horas: 'Horas por mes', litros: 'Litros por mes', lkwh: 'L-kWh por mes', factor: 'Factor por mes' }[mt],
+      encabezado: 'Casa de Fuerza', tabla: { nombre: 'T_' + mt, ...(['kwh', 'horas', 'litros'].includes(mt) ? { totales: { etiqueta: 'Total', desde: 4 } } : {}) },
+      intro: [`${METRICAS_GEN[mt].t} (${METRICAS_GEN[mt].u}) · ${rango}`, AYUDA_GEN[mt]], filas: porMes(mt) })),
+    { nombre: 'Tomas', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Tomas' },
+      intro: ['Tomas de cierre', 'El mes es el que cierra la toma (la del 1 de octubre cierra septiembre).'],
+      filas: [['Mes que cierra', 'N° interno', 'Equipo', 'Fecha de la toma', 'kWh acumulado', 'Horómetro', 'kW', 'Tomada por'],
+        ...(tomas.length ? tomas : [['', '', 'Sin tomas en el periodo']])] },
+    { nombre: 'Combustible', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Combustible', totales: { etiqueta: 'Total', desde: 3 } },
+      intro: [`Combustible · ${rango}`, 'Cada carga registrada.'],
+      filas: [['Fecha', 'Generador', 'Combustible', 'Litros', 'Origen', 'Guía', 'Anotó', 'Registró'],
+        ...((rec.data || []).filter(r => !r.anulada && ids.has(r.generador_id)).map(r => [fechaHoraCL(r.fecha_hora), r.n_equipo, r.combustible || '',
+          Number(r.litros), r.origen || '', r.guia || '', r.operador || '', r.registrado_por_nombre || '']))] },
+    { nombre: 'Movimientos', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Movimientos' },
+      intro: ['Movimientos de equipos', 'Ingresos, devoluciones y traslados.'],
+      filas: [['Fecha', 'Generador', 'Movimiento', 'Horómetro', 'kWh', 'Ubicación', 'Observaciones'],
+        ...((mov.data || []).filter(m => ids.has(m.generador_id)).map(m => [m.fecha, m.generador ? (m.generador.n_interno ? m.generador.n_interno + ' · ' : '') + m.generador.n_equipo : '',
+          m.tipo, m.horometro != null ? Number(m.horometro) : '', m.kwh != null ? Number(m.kwh) : '', m.ubicacion || '', m.observaciones || '']))] }
+  ];
+  for (const h of hojas) if (h.filas.length === 1) h.filas.push(['', 'Sin datos en el periodo']);
+  paso('Escribiendo el archivo…');
+  const blob = await R.construirExcel(hojas);
+  descargar(blob, `Generacion_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}_${R.limpio(sel)}.xlsx`);
+}
+
+// ---------- vista para imprimir del informe de generación ----------
+function imprimirGeneracion(datos, F) {
+  const { meses, filas } = datos;
+  const rango = meses.length === 1 ? nombrePeriodo(meses[0]) : `${nombrePeriodo(meses[0])} a ${nombrePeriodo(meses[meses.length - 1])}`;
+  const uno = filas.length === 1 ? filas[0] : null;
+  const sel = uno ? genNombre(uno.g) : F.propiedad ? (F.propiedad === 'Propio' ? 'Generadores propios' : 'Generadores de arriendo') : 'Todo el parque';
+  const todos = filas.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r })));
+  const t = k => agregarGen(todos, k);
+  const f0 = v => v == null ? '—' : num(v), f3 = v => v == null ? '—' : num(v, 3), fp = v => v == null ? '—' : num(v) + '%';
+  const cuerpo = [];
+  for (const [titulo, arr] of [['GENERADORES PROPIOS', filas.filter(x => x.g.propiedad === 'Propio')], ['GENERADORES DE ARRIENDO', filas.filter(x => x.g.propiedad !== 'Propio')]]) {
+    if (!arr.length) continue;
+    cuerpo.push(el('tr', { class: 'grupo' }, [el('td', { colspan: 10, text: titulo })]));
+    for (const x of arr) cuerpo.push(el('tr', {}, [tdx(x.g.n_interno || '—'), tdx(x.g.n_equipo), tdx(num(x.g.potencia_nominal_kw), 1),
+      tdx(f0(x.tot.kwh), 1, 'total'), tdx(f0(x.tot.horas), 1), tdx(fp(x.tot.factor), 1), tdx(f0(x.tot.litros), 1), tdx(f3(x.tot.lkwh), 1),
+      tdx(`${x.nMeses}/${meses.length}`, 1), tdx(x.g.estado || '—')]));
+    const it = arr.flatMap(x => x.por.map(p => ({ g: x.g, r: p.r })));
+    cuerpo.push(el('tr', { class: 'suma' }, [el('td', { colspan: 3, text: 'Subtotal' }), tdx(f0(agregarGen(it, 'kwh')), 1), tdx(f0(agregarGen(it, 'horas')), 1),
+      tdx(fp(agregarGen(it, 'factor')), 1), tdx(f0(agregarGen(it, 'litros')), 1), tdx(f3(agregarGen(it, 'lkwh')), 1), el('td', { colspan: 2 })]));
+  }
+  const matriz = meses.length > 1 ? el('table', { class: 'planilla' }, [
+    el('thead', {}, [el('tr', {}, [thx('Equipo'), ...meses.map(m => thx(nombrePeriodo(m).split(' ')[0].slice(0, 3), 1)), thx('Total kWh', 1)])]),
+    el('tbody', {}, [...filas.map(x => el('tr', {}, [tdx(genNombre(x.g)), ...x.por.map(p => tdx(p.r.kwhMes != null ? num(p.r.kwhMes) : p.r.vacio, 1)), tdx(f0(x.tot.kwh), 1, 'total')])),
+      el('tr', { class: 'suma' }, [tdx('Total'), ...meses.map((m, i) => tdx(f0(agregarGen(filas.map(x => ({ g: x.g, r: x.por[i].r })), 'kwh')), 1)), tdx(f0(t('kwh')), 1)])])]) : null;
+  const hoja = el('div', { class: 'hoja hoja-informe' }, [
+    cabHoja('Casa de Fuerza · Generación · ' + sel, rango + ' · solo meses cerrados'),
+    el('p', { style: 'margin-bottom:6px', html: `<b>Energía:</b> ${t('kwh') != null ? num(t('kwh')) + ' kWh' : '—'} &nbsp;·&nbsp; <b>Horas:</b> ${f0(t('horas'))} &nbsp;·&nbsp; ` +
+      `<b>Combustible:</b> ${t('litros') != null ? num(t('litros')) + ' L' : '—'} &nbsp;·&nbsp; <b>L/kWh:</b> ${f3(t('lkwh'))} &nbsp;·&nbsp; <b>Factor de carga:</b> ${fp(t('factor'))}` }),
+    meses.length > 1 ? panelGeneracion(filas, meses, F.graf, { uno, imprimir: true }) : null,
+    el('table', { class: 'planilla' }, [
+      el('thead', {}, [el('tr', {}, [thx('N° int.'), thx('Equipo'), thx('Pot. kW', 1), thx('kWh', 1), thx('Horas', 1), thx('F. carga', 1),
+        thx('Litros', 1), thx('L/kWh', 1), thx('Meses', 1), thx('Estado')])]),
+      el('tbody', {}, cuerpo)]),
+    !uno && matriz ? el('h2', { text: 'Energía generada por mes (kWh)' }) : null, !uno ? matriz : null,
+    el('div', { class: 'pie-informe' }, [
+      el('p', { text: 'kWh y horas del mes = toma del día 1 del mes siguiente − toma anterior. Factor de carga = kW medio ÷ potencia nominal. L/kWh solo con meses con cargas registradas.' }),
+      el('p', { style: 'margin-top:14px', text: 'Revisado por: ______________________________     Firma: ____________________' })])
+  ]);
+  imprimirHoja(hoja, true);
+}
+
+/* ===================================================================
+   CASA DE FUERZA · GENERADORES (el parque)
+   Inventario del parque con filtros, a pantalla completa; Excel e impresión.
+   =================================================================== */
 async function vistaGeneradores(c) {
+  S.parque = S.parque || { estado: 'faena', propiedad: '', buscar: '' };
+  const P = S.parque;
   const zona = el('div', {}, [el('p', { class: 'cargando', text: 'Cargando el parque…' })]);
-  c.append(zona);
+  const zonaF = el('div');
+  c.append(zonaF, zona);
 
   let gens = [];
   try {
@@ -6066,70 +6490,202 @@ async function vistaGeneradores(c) {
     gens = local ? local.datos : (S.catalogo.generadores || []);
     if (!navigator.onLine) toast('Sin señal: se muestra el parque de la última vez.');
   }
-
-  const vivos = gens.filter(g => !['Devuelto', 'De baja'].includes(g.estado));
-  const operando = vivos.filter(g => g.estado === 'Operando');
-  const kwInstalado = operando.reduce((a, g) => a + Number(g.potencia_nominal_kw || 0), 0);
-  const sinIngreso = vivos.filter(g => !g.ingreso_fecha);
-
   const puedeAdmin = ['admin', 'supervisor', 'casa_fuerza'].includes(S.usuario.rol);
+  const fuera = g => ['Devuelto', 'De baja'].includes(g.estado);
+  const ESTADOS = [['faena', 'En faena'], ['Operando', 'Operando'], ['detenidos', 'En faena sin operar'], ['fuera', 'Devueltos / de baja'], ['', 'Todos']];
+  const pasa = g => (P.estado === '' || (P.estado === 'faena' && !fuera(g)) || (P.estado === 'Operando' && g.estado === 'Operando') ||
+      (P.estado === 'detenidos' && !fuera(g) && g.estado !== 'Operando') || (P.estado === 'fuera' && fuera(g))) &&
+    (!P.propiedad || (P.propiedad === 'Propio') === (g.propiedad === 'Propio')) &&
+    (!P.buscar || [g.n_interno, g.n_equipo, g.proveedor, g.modelo, g.ubicacion].join(' ').toLowerCase().includes(P.buscar.toLowerCase()));
 
-  const filas = [...gens].sort(ordenGen).map(g => [
-    g.n_interno || '—', g.n_equipo,
-    g.propiedad === 'Arriendo' ? `Arriendo · ${g.proveedor || '—'}` : (g.proveedor || 'Propio'),
-    num(g.potencia_nominal_kw),
-    el('span', { class: 'pill ' + (g.estado === 'Operando' ? 'ok'
-                  : ['Devuelto', 'De baja'].includes(g.estado) ? '' : 'warn'), text: g.estado || '—' }),
-    g.combustible || 'Diesel',
-    g.ingreso_fecha ? fechaCorta(g.ingreso_fecha) : '—',
-    g.dias_en_faena ?? '—',
-    g.horas_estadia != null ? num(g.horas_estadia) : '—',
-    g.kwh_estadia != null ? num(g.kwh_estadia) : '—',
-    g.litros_estadia != null ? num(g.litros_estadia) : '—',
-    el('div', { class: 'fila' }, [
-      el('button', { class: 'btn chico', text: 'Ficha', onclick: () => fichaGenerador(g) }),
-      el('button', { class: 'btn chico', text: 'Registrar', onclick: () => movimientoGenerador(g) }),
-      el('button', { class: 'btn chico', text: 'Historial', onclick: () => historialGenerador(g) }),
-      puedeAdmin ? el('button', { class: 'btn chico', text: 'Editar',
-        onclick: () => editarGenerador(g) }) : null
-    ].filter(Boolean))
-  ]);
+  const buscar = el('input', { type: 'search', value: P.buscar, placeholder: 'N° interno, equipo, marca, ubicación…',
+    oninput: e => { P.buscar = e.target.value; clearTimeout(buscar._t); buscar._t = setTimeout(pintar, 200); } });
+  function pintarF() {
+    zonaF.replaceChildren(el('div', { class: 'filtros-rep filtros-parque seccion' }, [
+      campoF('f-ver', 'Estado', selF(ESTADOS, P.estado, v => { P.estado = v; pintar(); })),
+      campoF('f-grupo', 'Propiedad', selF([['', 'Todos'], ['Propio', 'Propios'], ['Arriendo', 'Arriendo']], P.propiedad, v => { P.propiedad = v; pintar(); })),
+      campoF('f-buscar', 'Buscar', buscar),
+      el('div', { class: 'f-acciones' }, [
+        el('button', { class: 'btn', text: 'Descargar Excel', onclick: () => excelParque(gens.filter(pasa)) }),
+        el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => imprimirParque(gens.filter(pasa)) }),
+        puedeAdmin ? el('button', { class: 'btn primario', text: '＋ Generador nuevo', onclick: () => editarGenerador(null) }) : null])
+    ]));
+  }
+  function pintar() {
+    const vivos = gens.filter(g => !fuera(g));
+    const operando = vivos.filter(g => g.estado === 'Operando');
+    const sinIngreso = vivos.filter(g => !g.ingreso_fecha);
+    const vis = gens.filter(pasa).sort(ordenGen);
+    // Las acciones van bajo el nombre: así la tabla cabe en pantalla y no hay columna escondida a la derecha.
+    const fila = g => [
+      el('div', { class: 'gen-celda' }, [
+        el('button', { class: 'celda-cons gen-titulo', title: 'Ficha del equipo', text: g.n_interno ? `${g.n_interno} · ${g.n_equipo}` : g.n_equipo, onclick: () => fichaGenerador(g) }),
+        el('div', { class: 'gen-acc' }, [
+          el('button', { class: 'btn-texto chico', text: 'Registrar', title: 'Ingreso, traslado o devolución', onclick: () => movimientoGenerador(g) }),
+          el('button', { class: 'btn-texto chico', text: 'Historial', onclick: () => historialGenerador(g) }),
+          puedeAdmin ? el('button', { class: 'btn-texto chico', text: 'Editar', onclick: () => editarGenerador(g) }) : null])]),
+      g.propiedad === 'Arriendo' ? `Arriendo · ${g.proveedor || '—'}` : (g.proveedor || 'Propio'), g.modelo || '—',
+      num(g.potencia_nominal_kw), pillEstadoGen(g.estado), g.ubicacion || '—',
+      g.ingreso_fecha ? fechaCorta(g.ingreso_fecha) : (fuera(g) ? '—' : el('span', { class: 'pill warn', text: 'sin ingreso' })),
+      g.dias_en_faena ?? '—', g.horas_estadia != null ? num(g.horas_estadia) : '—',
+      g.kwh_estadia != null ? num(g.kwh_estadia) : '—', g.litros_estadia != null ? num(g.litros_estadia) : '—'
+    ];
+    const cab = ['Equipo', 'Propiedad · marca', 'Modelo', 'Pot. kW', 'Estado', 'Ubicación', 'Ingreso', 'Días en faena',
+                 'Horas estadía', 'kWh estadía', 'Litros estadía'];
+    const grupos = [['Generadores propios', vis.filter(g => g.propiedad === 'Propio')], ['Generadores de arriendo', vis.filter(g => g.propiedad !== 'Propio')]]
+      .filter(([, a]) => a.length).map(([n, a]) => ({ nombre: n, filas: a.map(fila) }));
+    poner(zona,
+      el('div', { class: 'kpis seccion kpis-cf' }, [
+        kpi(operando.length, 'operando'),
+        kpi(vivos.length - operando.length, 'en faena sin operar', vivos.length - operando.length ? 'aviso' : ''),
+        kpi(potTxt(operando.reduce((a, g) => a + Number(g.potencia_nominal_kw || 0), 0)), 'potencia operando'),
+        kpi(potTxt(vivos.reduce((a, g) => a + Number(g.potencia_nominal_kw || 0), 0)), 'potencia en faena'),
+        kpi(sinIngreso.length, 'sin fecha de ingreso', sinIngreso.length ? 'aviso' : 'ok')
+      ]),
+      sinIngreso.length ? el('p', { class: 'banda warn', text: `${sinIngreso.length} generador(es) en faena sin movimiento de ingreso: ` +
+        'sin esa fecha y ese horómetro no se puede saber cuánto generó cada uno en su estadía.' }) : null,
+      vis.length ? tablaInforme(cab, grupos, cab.map((_, i) => i === 0 ? 'c-punto c-ancha' : [3, 7, 8, 9, 10].includes(i) ? 'num c-mes' : ''))
+                 : el('p', { class: 'vacio', text: 'No hay equipos con esos filtros.' }),
+      el('p', { class: 'ayuda', text: 'La toma mensual (kWh, horómetro y kW) se hace desde Terreno, grupo "Generadores", escaneando el QR del equipo. ' +
+        'Aquí se registran el ingreso, los traslados y la devolución de cada equipo. Toca un equipo para ver su ficha.' }));
+  }
+  pintarF(); pintar();
+}
 
-  poner(zona,
-    puedeAdmin ? el('div', { class: 'fila entre seccion' }, [
-      el('p', { class: 'ayuda crece', text: 'El parque de generadores en faena.' }),
-      el('button', { class: 'btn primario', text: '＋ Generador nuevo',
-        onclick: () => editarGenerador(null) })
-    ]) : null,
-    el('div', { class: 'kpis seccion' }, [
-      kpi(operando.length, 'operando'),
-      kpi(vivos.length - operando.length, 'en faena sin operar', vivos.length - operando.length ? 'aviso' : ''),
-      kpi(kwInstalado >= 1000 ? num(kwInstalado / 1000, 1) + ' MW' : num(kwInstalado) + ' kW', 'potencia operando'),
-      kpi(sinIngreso.length, 'sin fecha de ingreso', sinIngreso.length ? 'aviso' : '')
-    ]),
-    sinIngreso.length
-      ? el('p', { class: 'banda warn', text:
-          `${sinIngreso.length} generador(es) todavía no tienen movimiento de ingreso. ` +
-          'Sin esa fecha y ese horómetro no se puede saber cuánto generó cada uno en su estadía.' })
-      : null,
-    tabla(['N° int.', 'Equipo', 'Propiedad', 'kW', 'Estado', 'Combustible', 'Ingreso', 'Días',
-           'Horas estadía', 'kWh estadía', 'Litros estadía', ''],
-      filas, { num: [3, 7, 8, 9, 10] }),
-    el('p', { class: 'ayuda', text:
-      'La toma mensual (kWh, horómetro y kW) se hace desde Terreno, grupo "Generadores", escaneando el QR del equipo. ' +
-      'Aquí se registran el ingreso y la devolución de cada equipo.' })
-  );
+async function excelParque(gens) {
+  await cargarJSZip();
+  const R = window.RESPALDO;
+  const { data: mov } = await sb.from('generador_movimientos').select('*, generador:generadores(n_equipo, n_interno)').order('fecha');
+  const ids = new Set(gens.map(g => g.id));
+  const hojas = [
+    { nombre: 'Parque', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Parque', totales: { etiqueta: 'Total', desde: 5, hasta: 6 } },
+      intro: ['Casa de Fuerza · Parque de generadores', `Al ${fechaCorta(new Date().toISOString())}. Estadía = desde el ingreso a faena hasta la última toma.`],
+      filas: [['N° interno', 'Equipo', 'Propiedad', 'Marca', 'Modelo', 'Pot. nominal kW', 'Estado', 'Combustible', 'Ubicación', 'Ingreso',
+               'Días en faena', 'Horas estadía', 'kWh estadía', 'Litros estadía', 'Observaciones'],
+        ...gens.slice().sort(ordenGen).map(g => [g.n_interno || '', g.n_equipo, g.propiedad || '', g.proveedor || '', g.modelo || '',
+          Number(g.potencia_nominal_kw) || '', g.estado || '', g.combustible || '', g.ubicacion || '', g.ingreso_fecha || '',
+          g.dias_en_faena ?? '', g.horas_estadia ?? '', g.kwh_estadia ?? '', g.litros_estadia ?? '', g.observaciones || ''])] },
+    { nombre: 'Movimientos', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Movimientos' },
+      intro: ['Movimientos de equipos', 'Ingresos, devoluciones y traslados.'],
+      filas: [['Fecha', 'Generador', 'Movimiento', 'Horómetro', 'kWh', 'Ubicación', 'Observaciones'],
+        ...((mov || []).filter(m => ids.has(m.generador_id)).map(m => [m.fecha, m.generador ? (m.generador.n_interno ? m.generador.n_interno + ' · ' : '') + m.generador.n_equipo : '',
+          m.tipo, m.horometro != null ? Number(m.horometro) : '', m.kwh != null ? Number(m.kwh) : '', m.ubicacion || '', m.observaciones || '']))] }
+  ];
+  for (const h of hojas) if (h.filas.length === 1) h.filas.push(['', 'Sin datos']);
+  descargar(await R.construirExcel(hojas), `Parque_generadores_${hoyISO()}.xlsx`);
+}
+function imprimirParque(gens) {
+  const cuerpo = [];
+  for (const [t, arr] of [['GENERADORES PROPIOS', gens.filter(g => g.propiedad === 'Propio')], ['GENERADORES DE ARRIENDO', gens.filter(g => g.propiedad !== 'Propio')]]) {
+    if (!arr.length) continue;
+    cuerpo.push(el('tr', { class: 'grupo' }, [el('td', { colspan: 11, text: t })]));
+    for (const g of arr.sort(ordenGen)) cuerpo.push(el('tr', {}, [tdx(g.n_interno || '—'), tdx(g.n_equipo), tdx(g.proveedor || '—'), tdx(num(g.potencia_nominal_kw), 1),
+      tdx(g.estado || '—'), tdx(g.ubicacion || '—'), tdx(g.ingreso_fecha ? fechaCorta(g.ingreso_fecha) : '—'), tdx(g.dias_en_faena ?? '—', 1),
+      tdx(g.horas_estadia != null ? num(g.horas_estadia) : '—', 1), tdx(g.kwh_estadia != null ? num(g.kwh_estadia) : '—', 1),
+      tdx(g.litros_estadia != null ? num(g.litros_estadia) : '—', 1)]));
+  }
+  imprimirHoja(el('div', { class: 'hoja hoja-informe' }, [
+    cabHoja('Casa de Fuerza · Parque de generadores', `Al ${fechaCorta(new Date().toISOString())} · ${gens.length} equipos`),
+    el('table', { class: 'planilla' }, [el('thead', {}, [el('tr', {}, [thx('N° int.'), thx('Equipo'), thx('Marca'), thx('Pot. kW', 1), thx('Estado'),
+      thx('Ubicación'), thx('Ingreso'), thx('Días', 1), thx('Horas estadía', 1), thx('kWh estadía', 1), thx('Litros estadía', 1)])]), el('tbody', {}, cuerpo)]),
+    el('div', { class: 'pie-informe' }, [el('p', { text: 'Estadía = desde el ingreso a faena hasta la última toma registrada.' })])]), true);
 }
 
 /* ===================================================================
-   CASA DE FUERZA · CIERRE DEL MES
-   Reemplaza la hoja RESUMEN de la planilla de generadores. Cada generador es
-   un punto de Terreno (grupo "Generadores") con tres lecturas: kWh generado,
-   horas de marcha y potencia del momento. Así la toma usa el mismo QR, fotos
-   y cola sin señal que los medidores, y el consumo del mes sale del mismo
-   cálculo (la toma del día 1 cierra el mes anterior).
+   CASA DE FUERZA · COMBUSTIBLE · resumen del mes
+   Debajo de la planilla del día: litros por día y por equipo, con filtro de
+   equipos, gráfico, Excel e impresión. Mes de calendario de las cargas.
    =================================================================== */
-const VAR_GEN = { kwh: /generada/i, horas: /^horas/i, kw: /^potencia/i };
+async function resumenCombustible(cont) {
+  S.comb = S.comb || { mes: hoyISO().slice(0, 7) + '-01', equipos: [] };
+  const K = S.comb;
+  const zona = el('div');
+  const zonaF = el('div');
+  cont.append(el('h3', { class: 'titulo-seccion', text: 'Resumen del mes' }), zonaF, zona);
+  const meses = []; for (let i = 0; i < 24; i++) { const h = new Date(); meses.push(primerDiaDelMes(new Date(h.getFullYear(), h.getMonth() - i, 1))); }
+  const gensTodos = (S.catalogo.generadores || []).slice().sort(ordenGen);
+  let recs = [];
+  function pintarF() {
+    zonaF.replaceChildren(el('div', { class: 'filtros-rep filtros-comb seccion' }, [
+      campoF('f-ver', 'Mes', selF(meses.map(m => [m, nombrePeriodo(m)]), K.mes, v => { K.mes = v; cargar(); })),
+      campoF('f-puntos', 'Equipos', selectorMulti({ items: gensTodos.map(g => ({ id: g.id, nombre: genNombre(g), sub: g.combustible || '' })),
+        elegidos: K.equipos, todosTxt: 'Todos los equipos', alAplicar: ids => { K.equipos = ids; pintarF(); pintar(); } })),
+      el('div', { class: 'f-acciones' }, [
+        el('button', { class: 'btn', text: 'Descargar Excel', onclick: () => excelComb() }),
+        el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => imprimirComb() })])
+    ]));
+  }
+  async function cargar() {
+    zona.replaceChildren(el('p', { class: 'cargando', text: 'Cargando…' }));
+    const { data, error } = await sb.from('v_recargas').select('*').eq('periodo', K.mes).order('fecha_hora');
+    if (error) return zona.replaceChildren(el('p', { class: 'error', text: error.message }));
+    recs = (data || []).filter(r => !r.anulada);
+    pintar();
+  }
+  const filtradas = () => { const s = new Set(K.equipos); return recs.filter(r => !s.size || s.has(r.generador_id)); };
+  const diasMes = () => {
+    const fin = new Date(K.mes.slice(0, 4), +K.mes.slice(5, 7), 0).getDate();
+    const ult = K.mes.slice(0, 7) === hoyISO().slice(0, 7) ? +hoyISO().slice(8, 10) : fin;
+    return Array.from({ length: ult }, (_, i) => i + 1);
+  };
+  const gensDe = rs => { const ids = new Set(rs.map(r => r.generador_id)); const s = new Set(K.equipos);
+    return gensTodos.filter(g => ids.has(g.id) || (s.size ? s.has(g.id) : g.activo !== false && !/gnl|gas/i.test(g.combustible || ''))); };
+  const litrosDe = (rs, gid, d) => rs.filter(r => (gid == null || r.generador_id === gid) && (d == null || +r.fecha_dia.slice(8, 10) === d))
+    .reduce((a, r) => a + Number(r.litros), 0);
+  function pintar() {
+    const rs = filtradas(), dias = diasMes(), gs = gensDe(rs);
+    const total = litrosDe(rs), conCarga = dias.filter(d => litrosDe(rs, null, d)).length;
+    const maxEq = gs.map(g => ({ g, l: litrosDe(rs, g.id) })).sort((a, b) => b.l - a.l)[0];
+    const kpis = el('div', { class: 'kpis seccion kpis-cf' }, [
+      kpi(num(total) + ' L', 'cargados en ' + nombrePeriodo(K.mes)), kpi(rs.length, 'cargas'),
+      kpi(conCarga ? num(total / conCarga) + ' L' : '—', 'promedio por día con carga'),
+      kpi(maxEq && maxEq.l ? genNombre(maxEq.g) : '—', maxEq && maxEq.l ? `más cargó · ${num(maxEq.l)} L` : 'más cargó')]);
+    const graf = graficoBarras(dias.map(d => ({ etiqueta: String(d), valor: litrosDe(rs, null, d) })),
+      { titulo: 'Litros por día' + (K.equipos.length === 1 ? ' · ' + genNombre(gs[0] || {}) : ''), unidad: 'L', alto: 220 });
+    if (graf) graf.classList.add('fig-ancha');
+    const celdaDia = d => el('button', { class: 'celda-cons', text: String(d), title: 'Abrir la planilla de ese día',
+      onclick: () => { S.diaCF = K.mes.slice(0, 8) + String(d).padStart(2, '0'); render(); } });
+    const grilla = el('div', { class: 'tabla-caja grilla-mes tabla-comb' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, [el('th', { class: 'c-punto', text: 'Generador' }), ...dias.map(d => el('th', {}, [celdaDia(d)])), el('th', { text: 'Total' })])]),
+      el('tbody', {}, [
+        ...gs.map(g => el('tr', {}, [el('td', { class: 'c-punto', text: g.n_interno ? `${g.n_interno} · ${g.n_equipo}` : g.n_equipo }),
+          ...dias.map(d => { const v = litrosDe(rs, g.id, d); return el('td', { class: 'num', text: v ? num(v) : '' }); }),
+          el('td', { class: 'num' }, [el('b', { text: (t => t ? num(t) : '')(litrosDe(rs, g.id)) })])])),
+        el('tr', { class: 'fila-total' }, [el('td', { class: 'c-punto', text: 'Total del día' }),
+          ...dias.map(d => { const v = litrosDe(rs, null, d); return el('td', { class: 'num', text: v ? num(v) : '' }); }),
+          el('td', { class: 'num' }, [el('b', { text: num(total) })])])])])]);
+    poner(zona, kpis, graf, grilla,
+      el('p', { class: 'ayuda', text: 'Para revisar contra las hojas de papel. Toca un día para abrir su planilla arriba. Los L/kWh y el factor de carga están en Cierre del mes.' }));
+  }
+  async function excelComb() {
+    await cargarJSZip();
+    const R = window.RESPALDO, rs = filtradas(), dias = diasMes(), gs = gensDe(rs);
+    const hojas = [
+      { nombre: 'Por día', encabezado: 'Casa de Fuerza', tabla: { nombre: 'PorDia', totales: { etiqueta: 'Total', desde: 1 } },
+        intro: [`Combustible · ${nombrePeriodo(K.mes)}`, 'Litros por generador y día.'],
+        filas: [['Generador', ...dias.map(String), 'Total'], ...gs.map(g => [genNombre(g), ...dias.map(d => litrosDe(rs, g.id, d) || ''), litrosDe(rs, g.id)])] },
+      { nombre: 'Cargas', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Cargas', totales: { etiqueta: 'Total', desde: 3 } },
+        intro: [`Combustible · ${nombrePeriodo(K.mes)}`, 'Cada carga registrada.'],
+        filas: [['Fecha', 'Generador', 'Combustible', 'Litros', 'Origen', 'Guía', 'Camión', 'Anotó', 'Registró'],
+          ...rs.map(r => [fechaHoraCL(r.fecha_hora), r.n_equipo, r.combustible || '', Number(r.litros), r.origen || '', r.guia || '', r.camion || '',
+            r.operador || '', r.registrado_por_nombre || ''])] }];
+    for (const h of hojas) if (h.filas.length === 1) h.filas.push(['Sin cargas en el mes']);
+    descargar(await R.construirExcel(hojas), `Combustible_${K.mes.slice(0, 7)}.xlsx`);
+  }
+  function imprimirComb() {
+    const rs = filtradas(), dias = diasMes(), gs = gensDe(rs);
+    const graf = graficoBarras(dias.map(d => ({ etiqueta: String(d), valor: litrosDe(rs, null, d) })), { titulo: 'Litros por día', unidad: 'L', alto: 150 });
+    imprimirHoja(el('div', { class: 'hoja hoja-informe' }, [
+      cabHoja('Casa de Fuerza · Combustible', `${nombrePeriodo(K.mes)} · ${num(litrosDe(rs))} L en ${rs.length} cargas`),
+      graf,
+      el('table', { class: 'planilla grilla-imp' }, [el('thead', {}, [el('tr', {}, [thx('Generador'), ...dias.map(d => thx(String(d), 1)), thx('Total', 1)])]),
+        el('tbody', {}, [...gs.map(g => el('tr', {}, [tdx(g.n_interno || g.n_equipo), ...dias.map(d => tdx((v => v ? num(v) : '')(litrosDe(rs, g.id, d)), 1)),
+          tdx(num(litrosDe(rs, g.id)), 1, 'total')])),
+          el('tr', { class: 'suma' }, [tdx('Total'), ...dias.map(d => tdx((v => v ? num(v) : '')(litrosDe(rs, null, d)), 1)), tdx(num(litrosDe(rs)), 1)])])]),
+      el('div', { class: 'pie-informe' }, [el('p', { style: 'margin-top:14px', text: 'Revisado por: ______________________________     Firma: ____________________' })])]), true);
+  }
+  pintarF(); cargar();
+}
 
 async function datosGeneradores(meses) {
   const { data: gens, error } = await sb.from('generadores').select('*');
@@ -6183,171 +6739,6 @@ const ordenGen = (a, b) => (a.propiedad === 'Propio' ? 0 : 1) - (b.propiedad ===
   String(a.n_interno || a.n_equipo).localeCompare(String(b.n_interno || b.n_equipo), 'es', { numeric: true });
 const pillEstadoGen = e => el('span', { class: 'pill ' + (e === 'Operando' ? 'ok'
   : ['Devuelto', 'De baja'].includes(e) ? 'neutro' : ['Fuera de servicio', 'Para devolución'].includes(e) ? 'bad' : 'warn'), text: e || '—' });
-
-async function vistaCierreCF(c) {
-  S.mesCF = S.mesCF || S.periodoConsumo;
-  S.modoCF = S.modoCF || 'anio';                         // por defecto: un año
-  S.anioCF = S.anioCF || String(new Date().getFullYear());
-  const hoy = new Date();
-  const selModo = el('select', { onchange: e => { S.modoCF = e.target.value; pintarSel(); cargar(); } });
-  for (const [k, v] of [['mes', 'Un mes'], ['anio', 'Un año']])
-    selModo.append(el('option', { value: k, selected: S.modoCF === k || null, text: v }));
-  const zonaSel = el('div', { class: 'fila' });
-  function pintarSel() {
-    zonaSel.replaceChildren();
-    if (S.modoCF === 'anio') {
-      const sel = el('select', { onchange: e => { S.anioCF = e.target.value; cargar(); } });
-      for (let a = hoy.getFullYear(); a >= hoy.getFullYear() - 4; a--)
-        sel.append(el('option', { value: String(a), selected: S.anioCF === String(a) || null, text: String(a) }));
-      zonaSel.append(el('label', { text: 'Año' }, [sel]));
-    } else {
-      const sel = el('select', { onchange: e => { S.mesCF = e.target.value; cargar(); } });
-      for (let i = 0; i < 24; i++) {
-        const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
-        sel.append(el('option', { value: p, selected: p === S.mesCF || null, text: nombrePeriodo(p) }));
-      }
-      zonaSel.append(el('label', { text: 'Mes' }, [sel]));
-    }
-    btnPdf.hidden = btnResp.hidden = S.modoCF === 'anio';   // PDF y respaldo son de un mes
-    ayuda.textContent = S.modoCF === 'anio'
-      ? 'Suma de los meses ya cerrados del año. Cada mes sale de la toma del día 1 del mes siguiente (diciembre cierra con la toma del 1 de enero).'
-      : 'Energía y horas del mes salen de la toma del día 1 del mes siguiente. Toca un generador para ver su ficha.';
-  }
-  const zona = el('div');
-  let ultimo = null;                     // lo último calculado, para el PDF y el respaldo
-  const paso = el('span', { class: 'ayuda' });
-  const ayuda = el('p', { class: 'ayuda crece' });
-  const btnPdf = el('button', { class: 'btn', text: 'PDF del cierre', onclick: () => ultimo && imprimirCierreCF(S.mesCF, ultimo) });
-  const btnResp = el('button', { class: 'btn', text: 'Respaldo del mes (fotos + Excel)', onclick: async e => {
-    if (!ultimo) return;
-    e.target.disabled = true;
-    try { await respaldoCF(S.mesCF, ultimo, t => { paso.textContent = t; }); }
-    catch (err) { toast('Falló el respaldo: ' + (err.message || err), true); }
-    finally { e.target.disabled = false; paso.textContent = ''; }
-  } });
-  c.append(el('div', { class: 'fila entre seccion' }, [
-    el('label', { text: 'Ver' }, [selModo]), zonaSel, ayuda, paso, btnPdf, btnResp
-  ]), zona);
-  pintarSel();
-
-  // Vista anual: una fila por generador con lo acumulado de los 12 meses.
-  async function cargarAnio() {
-    zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
-    const meses = Array.from({ length: 12 }, (_, i) => `${S.anioCF}-${String(i + 1).padStart(2, '0')}-01`);
-    let d;
-    try { d = await datosGeneradores(meses); ultimo = null; }
-    catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
-    const filas = d.gens.map(g => {
-      const por = meses.map(m => resumenGenerador(g, m, d));
-      const suma = k => por.reduce((a, r) => a + (r[k] || 0), 0);
-      const kwh = suma('kwhMes'), horas = suma('horasMes'), litros = suma('litros');
-      const kwhDiesel = por.filter(r => r.litros).reduce((a, r) => a + (r.kwhMes || 0), 0);
-      const kwMedio = horas > 0 ? kwh / horas : null;
-      return { g, por, kwh, horas, litros,
-        factor: kwMedio != null && g.potencia_nominal_kw ? 100 * kwMedio / Number(g.potencia_nominal_kw) : null,
-        lPorKwh: litros && kwhDiesel > 0 ? litros / kwhDiesel : null,
-        nMeses: por.filter(r => r.kwhMes != null).length };
-    }).filter(x => x.g.activo || x.nMeses || x.por.some(r => r.tomado))
-      .sort((a, b) => ordenGen(a.g, b.g));
-    const activos = filas.filter(x => x.g.activo);
-    const tot = (arr, k) => arr.reduce((a, x) => a + (x[k] || 0), 0);
-    const kwhTot = tot(filas, 'kwh'), litTot = tot(filas, 'litros');
-    const kwhDiesel = filas.filter(x => x.litros).reduce((a, x) => a + x.kwh, 0);
-    const kpis = el('div', { class: 'kpis seccion' }, [
-      kpi(kwhTot >= 1e6 ? num(kwhTot / 1e6, 2) + ' GWh' : num(kwhTot / 1000) + ' MWh', 'energía generada en el año'),
-      kpi(num(tot(filas, 'horas')), 'horas de marcha'),
-      kpi(litTot ? num(litTot) + ' L' : '—', 'combustible cargado'),
-      kpi(litTot && kwhDiesel ? num(litTot / kwhDiesel, 3) : '—', 'L/kWh (diésel)'),
-      kpi(`${activos.filter(x => x.g.estado === 'Operando').length} / ${activos.length}`, 'operando')
-    ]);
-    const cab = ['N° int.', 'Equipo', 'Pot. nom.', 'kWh año', 'Horas año', 'Factor carga', 'Litros', 'L/kWh', 'Meses con dato', 'Estado'];
-    const fila = x => [
-      el('button', { class: 'celda-cons', text: x.g.n_interno || '—', onclick: () => fichaGenerador(x.g) }),
-      el('button', { class: 'celda-cons', text: x.g.n_equipo, onclick: () => fichaGenerador(x.g) }),
-      num(x.g.potencia_nominal_kw),
-      x.nMeses ? el('b', { text: num(x.kwh) }) : '—',
-      x.nMeses ? num(x.horas) : '—',
-      x.factor != null ? el('span', { class: 'pill ' + (x.factor > 85 ? 'warn' : x.factor < 30 ? 'neutro' : 'ok'), text: num(x.factor) + '%' }) : '—',
-      x.litros ? num(x.litros) : '—', x.lPorKwh != null ? num(x.lPorKwh, 3) : '—',
-      `${x.nMeses} / 12`, pillEstadoGen(x.g.estado)
-    ];
-    const bloque = (titulo, arr) => arr.length ? el('div', { class: 'seccion' }, [
-      el('h3', { text: `${titulo} (${arr.length})` }),
-      tabla(cab, [...arr.map(fila), ['Total', '', '', el('b', { text: num(tot(arr, 'kwh')) }), num(tot(arr, 'horas')), '',
-        tot(arr, 'litros') ? num(tot(arr, 'litros')) : '—', '', '', '']], { num: [2, 3, 4, 6, 7] })
-    ]) : null;
-    const matriz = filas.length ? el('div', { class: 'seccion' }, [
-      el('h3', { text: `Energía generada por mes · ${S.anioCF} (kWh)` }),
-      tabla(['N° int.', 'Equipo', ...MES_CORTO.map(m => m[0].toUpperCase() + m.slice(1)), 'Total'],
-        [...filas.map(x => [x.g.n_interno || '—', x.g.n_equipo,
-            ...x.por.map(r => r.kwhMes != null ? num(r.kwhMes) : r.vacio), el('b', { text: x.nMeses ? num(x.kwh) : '—' })]),
-         ['Total', '', ...meses.map((m, i) => {
-            const t = filas.reduce((a, x) => a + (x.por[i].kwhMes || 0), 0);
-            return t ? num(t) : '—'; }), el('b', { text: num(kwhTot) })]],
-        { num: Array.from({ length: 13 }, (_, i) => i + 2) })
-    ]) : null;
-    poner(zona, kpis,
-      bloque('Generadores propios', filas.filter(x => x.g.propiedad === 'Propio')),
-      bloque('Generadores de arriendo', filas.filter(x => x.g.propiedad !== 'Propio')),
-      matriz,
-      el('p', { class: 'ayuda', text: 'Factor de carga = kW medio del año (kWh ÷ horas) sobre la potencia nominal. ' +
-        'L/kWh solo con los meses que tienen cargas de combustible registradas.' }));
-  }
-
-  async function cargar() {
-    if (S.modoCF === 'anio') return cargarAnio();
-    zona.replaceChildren(el('p', { class: 'cargando', text: 'Calculando…' }));
-    let d;
-    try { d = await datosGeneradores([S.mesCF]); ultimo = d; }
-    catch (e) { return zona.replaceChildren(el('p', { class: 'error', text: e.message || String(e) })); }
-    const mes = S.mesCF;
-    const filas = d.gens.map(g => ({ g, r: resumenGenerador(g, mes, d) }))
-      // los devueltos solo aparecen si tienen algo ese mes
-      .filter(({ g, r }) => g.activo || r.kwhMes != null || r.tomado)
-      .sort((a, b) => ordenGen(a.g, b.g));
-    const activos = filas.filter(x => x.g.activo);
-    const sinToma = activos.filter(x => !x.r.tomado);
-    const suma = (arr, k) => arr.reduce((a, x) => a + (x.r[k] || 0), 0);
-    const kwhTot = suma(filas, 'kwhMes'), litTot = suma(filas, 'litros');
-    const kwhDiesel = filas.filter(x => x.r.litros).reduce((a, x) => a + (x.r.kwhMes || 0), 0);
-
-    const kpis = el('div', { class: 'kpis seccion' }, [
-      kpi(kwhTot >= 1e6 ? num(kwhTot / 1e6, 2) + ' GWh' : num(kwhTot / 1000) + ' MWh', 'energía generada'),
-      kpi(num(suma(filas, 'horasMes')), 'horas de marcha'),
-      kpi(litTot ? num(litTot) + ' L' : '—', 'combustible cargado'),
-      kpi(litTot && kwhDiesel ? num(litTot / kwhDiesel, 3) : '—', 'L/kWh (diésel)'),
-      kpi(`${activos.filter(x => x.g.estado === 'Operando').length} / ${activos.length}`, 'operando'),
-      kpi(sinToma.length, 'sin toma de cierre', sinToma.length ? 'aviso' : 'ok')
-    ]);
-
-    const cab = ['N° int.', 'Equipo', 'Pot. nom.', 'kW toma', 'kWh acum.', 'kWh mes', 'Horómetro', 'Horas mes',
-                 'Factor carga', 'Litros', 'L/kWh', 'Estado', 'Sincronismo', 'Ubicación', 'Obs.'];
-    const fila = ({ g, r }) => [
-      el('button', { class: 'celda-cons', text: g.n_interno || '—', onclick: () => fichaGenerador(g) }),
-      el('button', { class: 'celda-cons', text: g.n_equipo, onclick: () => fichaGenerador(g) }),
-      num(g.potencia_nominal_kw), r.kw != null ? num(r.kw) : r.vacio,
-      r.kwhAcum != null ? num(r.kwhAcum) : (r.vacio === 'n/c' ? 'n/c' : g.activo ? el('span', { class: 'pill warn', text: 'sin toma' }) : 's/d'),
-      r.kwhMes != null ? el('b', { text: num(r.kwhMes) }) : r.vacio,
-      r.horAcum != null ? num(r.horAcum) : r.vacio, r.horasMes != null ? num(r.horasMes) : r.vacio,
-      r.factor != null ? el('span', { class: 'pill ' + (r.factor > 85 ? 'warn' : r.factor < 30 ? 'neutro' : 'ok'), text: num(r.factor) + '%' }) : '—',
-      r.litros != null ? num(r.litros) : '—', r.lPorKwh != null ? num(r.lPorKwh, 3) : '—',
-      pillEstadoGen(g.estado), g.sincronismo || '—', g.ubicacion || '—',
-      g.observaciones ? el('span', { class: 'obs-corta', title: g.observaciones, text: g.observaciones }) : ''
-    ];
-    const bloque = (titulo, arr) => arr.length ? el('div', { class: 'seccion' }, [
-      el('h3', { text: `${titulo} (${arr.length})` }),
-      tabla(cab, [...arr.map(fila), ['Total', '', '', '', '', el('b', { text: num(suma(arr, 'kwhMes')) }), '',
-        num(suma(arr, 'horasMes')), '', suma(arr, 'litros') ? num(suma(arr, 'litros')) : '—', '', '', '', '', '']],
-        { num: [2, 3, 4, 5, 6, 7, 9, 10] })
-    ]) : null;
-    poner(zona, kpis,
-      bloque('Generadores propios', filas.filter(x => x.g.propiedad === 'Propio')),
-      bloque('Generadores de arriendo', filas.filter(x => x.g.propiedad !== 'Propio')),
-      el('p', { class: 'ayuda', text: 'Factor de carga = kW medio del mes (kWh ÷ horas) sobre la potencia nominal. ' +
-        'Litros: cargas de combustible del mes (Recargas). L/kWh solo para los que tienen cargas registradas.' }));
-  }
-  cargar();
-}
 
 /* ---------- ficha del generador ----------
    Reemplaza la hoja por equipo: datos, ingreso y devolución, la tabla mensual
@@ -6416,7 +6807,7 @@ async function fichaGenerador(g) {
    navegador guarda como PDF. El cierre va en A4 horizontal (son muchas columnas). */
 function imprimirHoja(hoja, horizontal = false) {
   const cont = document.getElementById('impresion');
-  const pagina = horizontal ? el('style', { id: 'pagina-h', text: '@page{size:A4 landscape;margin:10mm}' }) : null;
+  const pagina = horizontal ? el('style', { id: 'pagina-h', text: '@page{size:letter landscape;margin:9mm 10mm}' }) : null;
   if (pagina) document.head.append(pagina);
   cont.replaceChildren(hoja);
   document.body.classList.add('imprimiendo');
@@ -6563,7 +6954,7 @@ async function respaldoCF(mes, d, paso) {
       [{ v: 'Combustible', fuente: 'b' }, 'Cada carga del mes.'],
       [{ v: 'Movimientos', fuente: 'b' }, 'Ingresos, devoluciones y traslados de equipos.'],
       [{ v: 'Fotos/', fuente: 'b' }, 'Las fotos de la toma, una carpeta por generador.']] },
-    { nombre: 'Cierre', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Cierre', totales: { etiqueta: 'Total filtrado', desde: 5 } },
+    { nombre: 'Cierre', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Cierre', totales: { etiqueta: 'Total filtrado', desde: 5, hasta: 8 } },
       intro: [`Casa de Fuerza · Cierre de generadores · ${nm}`, 'kWh y horas del mes = toma del día 1 del mes siguiente − toma anterior.'],
       filas: [['N° interno', 'Equipo', 'Propiedad', 'Marca', 'Pot. nominal kW', 'kWh del mes', 'Horas del mes', 'Litros',
                'kW toma', 'kWh acumulado', 'Horómetro', 'Factor de carga %', 'L/kWh', 'Estado', 'Sincronismo', 'Ubicación', 'Observaciones'],
@@ -6950,36 +7341,12 @@ async function vistaRecargas(c) {
 
   const totDia = recargas.filter(delDia).reduce((a, r) => a + Number(r.litros), 0);
 
-  // ---- grilla del mes: generador × día ----
-  const fin = new Date(mes.slice(0, 4), +mes.slice(5, 7), 0).getDate();
-  const ultimo = mes.slice(0, 7) === hoyISO().slice(0, 7) ? +hoyISO().slice(8, 10) : fin;
-  const dias = Array.from({ length: ultimo }, (_, i) => i + 1);
-  const idsMes = new Set(recargas.map(r => r.generador_id));
-  const gensMes = [...gens, ...(S.catalogo.generadores || []).filter(g => idsMes.has(g.id) && !gens.includes(g))];
-  const celda = (gid, d) => recargas.filter(r => r.generador_id === gid && +r.fecha_dia.slice(8, 10) === d)
-    .reduce((a, r) => a + Number(r.litros), 0);
-  const cabDia = d => el('button', { class: 'celda-cons' + (d === +dia.slice(8, 10) ? ' rev' : ''), text: String(d),
-    onclick: () => { S.diaCF = mes.slice(0, 8) + String(d).padStart(2, '0'); render(); } });
-  const totalMes = recargas.reduce((a, r) => a + Number(r.litros), 0);
-  const grilla = el('div', { class: 'tabla-caja grilla-mes' }, [el('table', {}, [
-    el('thead', {}, [el('tr', {}, [el('th', { text: 'Generador' }), ...dias.map(d => el('th', {}, [cabDia(d)])), el('th', { text: 'Total' })])]),
-    el('tbody', {}, [
-      ...gensMes.map(g => el('tr', {}, [el('td', { text: g.n_interno || g.n_equipo }),
-        ...dias.map(d => { const v = celda(g.id, d); return el('td', { class: 'num', text: v ? num(v) : '' }); }),
-        el('td', { class: 'num' }, [el('b', { text: (t => t ? num(t) : '')(recargas.filter(r => r.generador_id === g.id).reduce((a, r) => a + Number(r.litros), 0)) })])])),
-      el('tr', { class: 'fila-total' }, [el('td', { text: 'Total del día' }),
-        ...dias.map(d => { const v = recargas.filter(r => +r.fecha_dia.slice(8, 10) === d).reduce((a, r) => a + Number(r.litros), 0);
-          return el('td', { class: 'num', text: v ? num(v) : '' }); }),
-        el('td', { class: 'num' }, [el('b', { text: num(totalMes) })])])
-    ])
-  ])]);
-
   poner(zona,
     cola.length ? el('p', { class: 'banda warn', text: `${cola.length} carga(s) guardadas en este dispositivo, todavía sin enviar.` }) : null,
     sinRed ? el('p', { class: 'banda warn', text: 'Sin señal: no se pudo traer lo ya enviado. Igual puedes anotar: se guarda en el dispositivo.' }) : null,
-    el('div', { class: 'kpis seccion' }, [
+    el('div', { class: 'kpis seccion kpis-cf' }, [
       kpi(num(totDia) + ' L', 'cargados el ' + fechaCorta(dia)),
-      kpi(num(totalMes) + ' L', 'en ' + nombrePeriodo(mes)),
+      kpi(num(recargas.reduce((a, r) => a + Number(r.litros), 0)) + ' L', 'en ' + nombrePeriodo(mes)),
       kpi(recargas.length, 'cargas del mes')
     ]),
     el('div', { class: 'card seccion' }, [
@@ -6989,13 +7356,9 @@ async function vistaRecargas(c) {
       tabla(['Generador', 'Ya guardado', 'Nuevas cargas (L)', 'Total del día'], filas, { num: [3] }),
       el('div', { class: 'fila', style: 'margin-top:12px' }, [guardar])
     ]),
-    el('div', { class: 'seccion' }, [
-      el('h3', { text: `Mes de ${nombrePeriodo(mes)} · litros por día` }),
-      el('p', { class: 'ayuda', text: 'Para revisar contra las hojas de papel. Toca un día para abrir su planilla. ' +
-        'Los L/kWh y el factor de carga están en Cierre del mes.' }),
-      grilla
-    ])
   );
+  // Resumen del mes: litros por día y equipo, con filtros, gráfico, Excel e impresión.
+  resumenCombustible(c);
 }
 
 function nuevaRecarga() {

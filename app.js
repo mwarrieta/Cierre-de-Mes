@@ -4964,6 +4964,7 @@ async function editarGrupo(g) {
    Cada lectura y cada foto llevan la marca de cuándo se respaldaron.
    Por eso "solo lo nuevo" es exacto y, además, verificable.
    =================================================================== */
+let respaldoEnCurso = false;
 async function vistaRespaldo(c) {
   c.append(el('p', { class: 'ayuda seccion', text:
     'El archivo se arma en este navegador y se descarga a tu PC. Trae una carpeta por grupo con su planilla Excel ' +
@@ -4972,8 +4973,8 @@ async function vistaRespaldo(c) {
 
   const zonaEstado = el('div', {}, [el('p', { class: 'cargando', text: 'Revisando qué falta por respaldar…' })]);
   // El avance va arriba de todo y se queda pegado al borde superior: se ve sin hacer scroll.
-  const progreso = el('div', { class: 'progreso progreso-arriba', hidden: true, role: 'status', 'aria-live': 'polite' });
-  c.prepend(progreso);
+  // (El avance ahora vive en una barra fija de toda la app, ver paso(): se ve desde cualquier pantalla.)
+  const progreso = { hidden: true, scrollIntoView() {} };
   c.append(zonaEstado);
 
   const [{ data: pend }, { data: hechos }] = await Promise.all([
@@ -5048,7 +5049,21 @@ async function vistaRespaldo(c) {
   );
 
   // ---------------------------------------------------------------
+  // Un respaldo corre en segundo plano: se puede cambiar de pantalla y sigue, con su barra siempre visible.
+  // Solo se avisa si se intenta cerrar o recargar la app, que sí lo cortaría.
   async function generar(tipo, desde = null, hasta = null) {
+    if (respaldoEnCurso) return toast('Ya hay un respaldo en curso: espera a que termine', true);
+    respaldoEnCurso = true;
+    const avisarSalida = e => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', avisarSalida);
+    try { await generarRespaldo(tipo, desde, hasta); }
+    finally {
+      respaldoEnCurso = false;
+      window.removeEventListener('beforeunload', avisarSalida);
+      paso('');
+    }
+  }
+  async function generarRespaldo(tipo, desde = null, hasta = null) {
     if (typeof JSZip === 'undefined') {
       paso('Cargando el compresor…');
       await new Promise((ok, mal) => {
@@ -5204,14 +5219,30 @@ async function vistaRespaldo(c) {
       paso('');
       progreso.hidden = true;
       toast(`Respaldo listo: ${idsLectura.length} lecturas y ${idsFoto.length} fotos`);
-      render();
+      if (S.vista === 'respaldo') render();   // solo si sigue en esta pantalla: no pisar otra
     } catch (e) {
       paso(''); progreso.hidden = true;
       toast('Falló el respaldo: ' + (e.message || e), true);
     }
   }
 
-  function paso(t) { progreso.textContent = t; }
+  // Texto del paso + barra: se llena con "27 de 255"; en los pasos sin cifras corre una barra indeterminada.
+  function paso(t) {
+    let barra = document.getElementById('progreso-global');
+    if (!barra) {
+      barra = el('div', { id: 'progreso-global', class: 'progreso progreso-global', role: 'status', 'aria-live': 'polite', hidden: '' });
+      document.body.append(barra);
+    }
+    if (!t) { barra.hidden = true; barra.replaceChildren(); return; }
+    barra.hidden = false;
+    const m = /(\d+) de (\d+)/.exec(t);
+    const pct = m && Number(m[2]) ? Math.min(100, Math.round(100 * Number(m[1]) / Number(m[2]))) : null;
+    barra.replaceChildren(
+      el('div', { class: 'progreso-fila' }, [el('span', { text: t }), pct != null ? el('b', { text: pct + '%' }) : null]),
+      el('div', { class: 'barra-prog' + (pct == null ? ' indet' : ''), role: 'progressbar',
+        'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': pct != null ? String(pct) : null },
+        [el('i', { style: pct != null ? `width:${pct}%` : '' })]));
+  }
 }
 
 function descargar(blob, nombre) {

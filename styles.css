@@ -1411,3 +1411,17 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 /* n/c: no corresponde (apagado, distinto del s/d que sí falta) */
 .celda-cons.falta.nc{color:var(--ink-3);font-weight:400;font-style:italic;opacity:.7}
 .ficha-nc{margin-top:12px}
+
+/* Barra de avance del respaldo */
+.progreso-fila{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px}
+.barra-prog{height:10px;border-radius:99px;background:var(--surface);border:1px solid var(--line-2);overflow:hidden}
+.barra-prog i{display:block;height:100%;background:var(--acento);border-radius:99px;transition:width .25s ease}
+.barra-prog.indet i{width:35%;animation:prog-indet 1.2s ease-in-out infinite}
+@keyframes prog-indet{0%{margin-left:-35%}100%{margin-left:100%}}
+@media (prefers-reduced-motion:reduce){.barra-prog.indet i{animation:none;width:100%;opacity:.4}}
+
+/* Avance del respaldo: fijo arriba, visible en cualquier pantalla */
+.progreso-global{position:fixed;top:8px;left:50%;transform:translateX(-50%);width:min(680px,calc(100% - 16px));
+  z-index:9999;margin:0;box-shadow:0 6px 24px rgba(0,0,0,.28);border:1px solid var(--acento)}
+.progreso-global[hidden]{display:none}
+@media print{.progreso-global{display:none!important}}

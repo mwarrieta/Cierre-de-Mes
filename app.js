@@ -3159,8 +3159,73 @@ const nombreHoja = (s, usados) => {
   return n;
 };
 
+/* ---------- PDF del detalle mensual de un grupo (para el respaldo) ----------
+   La misma tabla que "Vista para imprimir" con Detalle mensual, pero como archivo:
+   carta horizontal, tres filas por lectura (totalizador, consumo, variación) y el
+   encabezado repetido en cada hoja. Se arma con jsPDF, que se carga solo cuando se usa. */
+async function cargarScript(src, listo) {
+  if (listo()) return;
+  await new Promise((ok, mal) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = ok; s.onerror = () => mal(new Error('No se pudo cargar ' + src));
+    document.head.append(s);
+  });
+}
+async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
+  await cargarScript('jspdf.js', () => window.jspdf);
+  await cargarScript('jspdf-autotable.js', () => window.jspdf?.jsPDF?.API?.autoTable);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+  const ancho = doc.internal.pageSize.getWidth(), alto = doc.internal.pageSize.getHeight();
+  const fmt = v => v === undefined || v === null || v === '' ? '-'
+    : Number(v).toLocaleString('es-CL', { maximumFractionDigits: Math.abs(Number(v)) < 100 ? 2 : 0 });
+  const cabecera = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0);
+    doc.text(`Consumos · ${grupo}`, 10, 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    doc.text(`Detalle mensual · ${rango}`, 10, 17);
+    doc.text(`Algorta Norte · ${S.usuario?.nombre || ''} · ${fechaCorta(new Date().toISOString())}`, ancho - 10, 12, { align: 'right' });
+    doc.setDrawColor(0); doc.setLineWidth(0.3); doc.line(10, 19.5, ancho - 10, 19.5);
+  };
+  const body = [];
+  for (const v of filasVar) {
+    const total = meses.reduce((a, m) => a + (v.cons[m] || 0), 0);
+    const u = UNIDAD[v.unidad] || v.unidad || '';
+    body.push([{ content: `${v.punto}\n${[v.tag, v.variable, u].filter(Boolean).join(' · ')}`, rowSpan: 3 },
+      'Totalizador', ...meses.map(m => fmt(v.lect[mesSiguiente(m)])), '']);
+    body.push([filaConsumoTxt(v.grupo), ...meses.map(m => fmt(v.cons[m])), fmt(total)]);
+    body.push(['Var. % vs mes anterior', ...meses.map((m, i) => {
+      const a = i ? v.cons[meses[i - 1]] : undefined, b = v.cons[m];
+      return a && b ? (b > a ? '+' : '') + (100 * (b - a) / a).toFixed(1).replace('.', ',') + '%' : '';
+    }), '']);
+  }
+  doc.autoTable({
+    startY: 23, margin: { left: 10, right: 10, top: 23, bottom: 14 }, theme: 'grid',
+    head: [['Punto · lectura', '', ...cabMeses, 'Total']], body,
+    styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.1, lineColor: [175, 175, 175], lineWidth: 0.1, textColor: 20, overflow: 'linebreak' },
+    headStyles: { fillColor: [232, 232, 232], textColor: 20, fontStyle: 'bold', halign: 'right' },
+    columnStyles: { 0: { cellWidth: 52, fontStyle: 'bold', valign: 'top' }, 1: { cellWidth: 30, textColor: 90 } },
+    didParseCell: d => {
+      if (d.section === 'head' && d.column.index < 2) d.cell.styles.halign = 'left';
+      if (d.section === 'body' && d.column.index >= 2) d.cell.styles.halign = 'right';
+      if (d.section === 'body' && d.row.index % 3 === 1 && d.column.index >= 1) d.cell.styles.fontStyle = 'bold';
+      if (d.section === 'body' && d.row.index % 3 === 2 && d.column.index >= 1) d.cell.styles.textColor = 90;
+    },
+    didDrawPage: () => {
+      cabecera();
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(80);
+      doc.text('Consumo del mes = lectura de cierre - lectura de apertura, ajustado a días calendario. ' +
+        'Totalizador = lectura del día 1 del mes siguiente. Solo meses cerrados.', 10, alto - 7);
+      doc.text(`Hoja ${doc.internal.getNumberOfPages()}`, ancho - 10, alto - 7, { align: 'right' });
+    }
+  });
+  return doc.output('blob');
+}
+
+// filtros: { grupo, puntos, devolver, conPdf, paso }. Con devolver = true no descarga:
+// entrega { blob, nombre, pdf } para meterlo en el ZIP del respaldo (mismo formato).
 async function descargarPlanilla(desde, hasta, filtros = {}) {
-  const paso = t => { const p = $('#planilla-paso'); if (p) p.textContent = t; };
+  const paso = filtros.paso || (t => { const p = $('#planilla-paso'); if (p) p.textContent = t; });
   if (typeof JSZip === 'undefined') {
     paso('Cargando el compresor…');
     await new Promise((ok, mal) => {
@@ -3180,7 +3245,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     const sel = new Set(filtros.puntos);
     for (let i = cons.length - 1; i >= 0; i--) if (!sel.has(cons[i].punto_id)) cons.splice(i, 1);
   }
-  if (!cons.length) { paso(''); return toast('No hay consumos en ese periodo', true); }
+  if (!cons.length) { paso(''); if (filtros.devolver) return null; return toast('No hay consumos en ese periodo', true); }
 
   paso('Consultando lecturas…');
   // El totalizador de un mes es la lectura del mes siguiente, así que hay que
@@ -3351,7 +3416,12 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   paso('Escribiendo el archivo…');
   const blob = await window.RESPALDO.construirExcel(hojas);
   const alcance = filtros.grupo ? '_' + window.RESPALDO.limpio(filtros.grupo) : '';
-  descargar(blob, `Consumos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}${alcance}.xlsx`);
+  const nombre = `Consumos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}${alcance}.xlsx`;
+  if (filtros.devolver) {
+    const pdf = filtros.conPdf ? await pdfDetalleMensual({ grupo: filtros.grupo || 'Todos los grupos', rango, meses, cabMeses, filasVar }) : null;
+    return { blob, nombre, pdf };
+  }
+  descargar(blob, nombre);
   paso('');
   toast(`Planilla lista: ${filasVar.length} puntos, ${meses.length} meses`);
 }
@@ -4814,8 +4884,9 @@ async function editarGrupo(g) {
    =================================================================== */
 async function vistaRespaldo(c) {
   c.append(el('p', { class: 'ayuda seccion', text:
-    'El archivo se arma en este navegador y se descarga a tu PC. Trae las fotos ordenadas por año, mes y grupo, ' +
-    'un Excel con todos los datos y un manifiesto con lo que contiene.' }));
+    'El archivo se arma en este navegador y se descarga a tu PC. Trae una carpeta por grupo con su planilla Excel ' +
+    '(la misma de Consumos e informes), el PDF del detalle mensual y las fotos por año y mes de cierre. ' +
+    'Afuera queda el Excel técnico con todos los datos.' }));
 
   const zonaEstado = el('div', {}, [el('p', { class: 'cargando', text: 'Revisando qué falta por respaldar…' })]);
   // El avance va arriba de todo y se queda pegado al borde superior: se ve sin hacer scroll.
@@ -4837,8 +4908,8 @@ async function vistaRespaldo(c) {
   const selDesde = el('select'), selHasta = el('select');
   for (let i = 0; i < 36; i++) {
     const p = primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1));
-    selDesde.append(el('option', { value: p, selected: i === 11 || null, text: nombrePeriodo(p) }));
-    selHasta.append(el('option', { value: p, selected: i === 0 || null, text: nombrePeriodo(p) }));
+    selDesde.append(el('option', { value: p, selected: i === 11 || null, text: nombrePeriodo(mesAnterior(p)) }));
+    selHasta.append(el('option', { value: p, selected: i === 0 || null, text: nombrePeriodo(mesAnterior(p)) }));
   }
 
   poner(zonaEstado,
@@ -4858,37 +4929,38 @@ async function vistaRespaldo(c) {
           text: 'Descargar lo nuevo', onclick: () => generar('nuevo') })
       ]),
       el('div', { class: 'card' }, [
-        el('h4', { style: 'margin-top:0', text: 'Este mes' }),
-        el('p', { class: 'ayuda', text: `Todo lo de ${nombrePeriodo(mesActual)}, esté respaldado o no.` }),
-        el('button', { class: 'btn', text: 'Descargar el mes', onclick: () => generar('mes', mesActual, mesActual) })
+        el('h4', { style: 'margin-top:0', text: 'El último cierre' }),
+        el('p', { class: 'ayuda', text: `Todo el cierre de ${nombrePeriodo(mesAnterior(mesActual))} (la toma de ${nombrePeriodo(mesActual)}), esté respaldado o no.` }),
+        el('button', { class: 'btn', text: 'Descargar el cierre', onclick: () => generar('mes', mesActual, mesActual) })
       ]),
       el('div', { class: 'card' }, [
         el('h4', { style: 'margin-top:0', text: 'Un rango' }),
+        el('p', { class: 'ayuda', text: 'Meses de cierre: la foto del 1 de octubre va en septiembre.' }),
         el('div', { class: 'fila' }, [
-          el('label', { class: 'crece', text: 'Desde' }, [selDesde]),
-          el('label', { class: 'crece', text: 'Hasta' }, [selHasta])
+          el('label', { class: 'crece', text: 'Desde el cierre de' }, [selDesde]),
+          el('label', { class: 'crece', text: 'Hasta el cierre de' }, [selHasta])
         ]),
         el('button', { class: 'btn', text: 'Descargar el rango',
           onclick: () => generar('rango', selDesde.value, selHasta.value) })
       ]),
       el('div', { class: 'card' }, [
         el('h4', { style: 'margin-top:0', text: 'Todo' }),
-        el('p', { class: 'ayuda', text: 'El histórico completo. Se parte en un archivo por año para que el navegador aguante.' }),
+        el('p', { class: 'ayuda', text: 'El histórico completo en un solo archivo. Con muchas fotos puede tardar varios minutos.' }),
         el('button', { class: 'btn', text: 'Descargar todo', onclick: () => generar('todo') })
       ])
     ]),
     mesesSin.length ? el('div', { class: 'seccion' }, [
       el('h2', { text: 'Pendiente por mes' }),
-      tabla(['Mes', 'Lecturas del mes', 'Sin respaldar', 'Fotos sin respaldar'],
-        mesesSin.map(p => [nombrePeriodo(p.periodo), p.lecturas,
+      tabla(['Cierre de', 'Lecturas', 'Sin respaldar', 'Fotos sin respaldar'],
+        mesesSin.map(p => [nombrePeriodo(mesAnterior(p.periodo)), p.lecturas,
           el('span', { class: 'pill warn', text: String(p.lecturas_sin_respaldo) }),
           p.fotos_sin_respaldo]), { num: [1, 3] })
     ]) : null,
     (hechos && hechos.length) ? el('div', { class: 'seccion' }, [
       el('h2', { text: 'Respaldos anteriores' }),
-      tabla(['Cuándo', 'Tipo', 'Periodo', 'Lecturas', 'Fotos', 'Archivo'],
+      tabla(['Cuándo', 'Tipo', 'Cierres', 'Lecturas', 'Fotos', 'Archivo'],
         hechos.map(r => [fechaHora(r.creado_en), r.tipo,
-          r.periodo_desde ? `${nombrePeriodo(r.periodo_desde)} → ${nombrePeriodo(r.periodo_hasta)}` : 'todo',
+          r.periodo_desde ? `${nombrePeriodo(mesAnterior(r.periodo_desde))} → ${nombrePeriodo(mesAnterior(r.periodo_hasta))}` : 'todo',
           r.n_lecturas, r.n_fotos, r.archivo || '—']), { num: [3, 4] })
     ]) : null
   );
@@ -4936,20 +5008,49 @@ async function vistaRespaldo(c) {
 
       const zip = new JSZip();
       const R = window.RESPALDO;
+      // Mes de cierre de una toma: la de octubre cierra septiembre. Manda en las carpetas de
+      // fotos aunque la foto se haya subido otro día (p. ej. en octubre a un registro de marzo):
+      // la foto cuelga de su lectura, y la lectura sabe qué mes cierra.
+      const cierreDe = periodo => mesAnterior(String(periodo).slice(0, 10));
+      const etqMes = m => { const d = new Date(m + 'T00:00:00Z'); return [d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()]]; };
 
-      // ---- Excel ----
-      paso('Armando el Excel…');
+      // Grupos en su orden; cada uno con número delante para que el explorador los ordene igual.
+      const gruposZip = [...new Set(filas.map(f => f.grupo || 'Sin grupo'))].sort(compararGrupos);
+      // Nombre de grupo tal cual (con paréntesis y guiones): solo se quitan acentos y lo que Windows no acepta.
+      const nombreG = g => String(g).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[<>:"/\\|?*]/g, '-').trim().slice(0, 60);
+      const carpetaDe = g => `${String(gruposZip.indexOf(g) + 1).padStart(2, '0')} ${nombreG(g)}`;
+
+      // ---- por grupo: la planilla de Consumos e informes y el PDF del detalle mensual ----
+      // Cubren desde enero (del año del último cierre) hasta el último mes cerrado del respaldo:
+      // así cada respaldo mensual trae la planilla anual al día, como las planillas de siempre.
+      const hastaC = [cierreDe(rangoHasta), ultimoMesCerrado()].sort()[0];
+      const desdeC = [cierreDe(rangoDesde), hastaC.slice(0, 4) + '-01-01'].sort()[0];
+      const archivosGrupo = [];
+      for (const [i, g] of gruposZip.entries()) {
+        if (g === 'Sin grupo') continue;
+        const r = await descargarPlanilla(desdeC, hastaC, { grupo: g, devolver: true, conPdf: true,
+          paso: t => paso(`Grupo ${i + 1} de ${gruposZip.length} · ${g} · ${t || ''}`) });
+        if (!r) continue;
+        const nXlsx = `Consumos_${desdeC.slice(0, 7)}_a_${hastaC.slice(0, 7)}_${nombreG(g)}.xlsx`;
+        zip.file(`${carpetaDe(g)}/${nXlsx}`, r.blob);
+        const nPdf = `Detalle_mensual_${desdeC.slice(0, 7)}_a_${hastaC.slice(0, 7)}_${nombreG(g)}.pdf`;
+        if (r.pdf) zip.file(`${carpetaDe(g)}/${nPdf}`, r.pdf);
+        archivosGrupo.push({ grupo: g, excel: `${carpetaDe(g)}/${nXlsx}`, pdf: r.pdf ? `${carpetaDe(g)}/${nPdf}` : null });
+      }
+
+      // ---- Excel técnico con todos los datos (lecturas, inventario, avisos, auditoría) ----
+      paso('Armando el Excel técnico…');
       const xlsx = await R.construirExcel(armarHojas(filas, consumos, inv.data || [], avs.data || [],
         aud.data || [], rec.data || [], mov.data || []));
-      const nombreXlsx = `Cierre_de_Mes_${rangoDesde.slice(0,7)}_a_${rangoHasta.slice(0,7)}.xlsx`;
+      const nombreXlsx = `00 Datos completos_${rangoDesde.slice(0,7)}_a_${rangoHasta.slice(0,7)}.xlsx`;
       zip.file(nombreXlsx, xlsx);
 
-      // ---- fotos, en Año / Mes / Grupo ----
+      // ---- fotos: Grupo / Fotos / Año / Mes de cierre ----
       // En un respaldo "nuevo" no se repiten las fotos que ya se descargaron antes.
       const conFoto = filas.filter(f => f.storage_path && !(tipo === 'nuevo' && f.foto_respaldado_en));
       const idsFoto = [];
       const nombresUsados = new Set();
-      const indice = [['Ruta dentro del respaldo', 'Año', 'Mes', 'Grupo', 'Punto', 'TAG',
+      const indice = [['Ruta dentro del respaldo', 'Grupo', 'Año', 'Mes de cierre', 'Punto', 'TAG',
                        'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
       for (let i = 0; i < conFoto.length; i++) {
         const f = conFoto[i];
@@ -4957,59 +5058,58 @@ async function vistaRespaldo(c) {
         const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 900);
         if (!url?.signedUrl) continue;
         const blob = await (await fetch(url.signedUrl)).blob();
-        // Año / Mes / Grupo, y el archivo con el nombre del PUNTO: el TAG es del
-        // medidor y el medidor se cambia; el punto es lo que se queda.
-        const d = new Date(f.periodo);
-        const carpeta = [
-          d.getUTCFullYear(),
-          R.MESES_N[d.getUTCMonth()],
-          R.limpio(f.grupo || 'Sin grupo')
-        ].join('/');
+        const g = f.grupo || 'Sin grupo';
+        const [anio, mesN] = etqMes(cierreDe(f.periodo));
+        const carpeta = `${carpetaDe(g)}/Fotos/${anio}/${mesN}`;
+        // El archivo lleva el nombre del PUNTO: el TAG es del medidor y el medidor se cambia.
         const varias = (f.variable && !/^energ[ií]a activa importada\b/i.test(f.variable))
           ? '_' + R.limpio(f.variable) : '';
-        // Varias fotos de una misma lectura se distinguen por su número, en el orden en
-        // que se sacaron: ..._foto1.jpg, ..._foto2.jpg. Con una sola, el nombre no cambia.
+        // Varias fotos de una lectura se numeran en el orden en que se sacaron (_foto1, _foto2…).
         const sufijo = Number(f.foto_total) > 1 ? `_foto${f.foto_n}` : '';
         let nombre = `${String(f.fecha_dia).slice(0,10)}_${R.limpio(f.punto)}${varias}_${f.valor ?? 'sd'}${sufijo}.jpg`;
-        // Dos lecturas distintas con el mismo punto, fecha y valor no deben pisarse en el zip.
         if (nombresUsados.has(`${carpeta}/${nombre}`)) nombre = nombre.replace(/\.jpg$/, `_l${f.lectura_id}.jpg`);
         nombresUsados.add(`${carpeta}/${nombre}`);
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
-        indice.push([`${carpeta}/${nombre}`, d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()],
-          f.grupo || 'Sin grupo', f.punto, f.tag || '', f.variable, f.unidad,
+        indice.push([`${carpeta}/${nombre}`, g, anio, mesN, f.punto, f.tag || '', f.variable, f.unidad,
           String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
           f.valor === null ? '' : Number(f.valor), f.estado,
           S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
       }
+      if (indice.length > 1)
+        zip.file('00 Indice de fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
 
-      // Buscar una foto abriendo carpeta por carpeta es lento. El índice permite
-      // filtrar por punto, mes o persona y saltar directo a la ruta.
-      if (indice.length > 1) {
-        zip.file('indice_fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
-      }
-
-      // ---- manifiesto ----
+      // ---- léame y manifiesto ----
       const idsLectura = [...new Set(filas.map(f => f.lectura_id))];
+      zip.file('LEEME.txt', [
+        'Respaldo de Cierre de Mes',
+        `Generado el ${new Date().toLocaleString('es-CL')} por ${S.usuario.nombre}.`,
+        `Tomas incluidas: ${nombrePeriodo(rangoDesde)} a ${nombrePeriodo(rangoHasta)} (cierres de ${nombrePeriodo(cierreDe(rangoDesde))} a ${nombrePeriodo(cierreDe(rangoHasta))}).`,
+        '',
+        'Una carpeta por grupo, numerada en el orden de la app:',
+        '  Consumos_..._Grupo.xlsx   La planilla del grupo, igual a la de Consumos e informes.',
+        `                            Cubre ${nombrePeriodo(desdeC)} a ${nombrePeriodo(hastaC)} (solo meses cerrados).`,
+        '  Detalle_mensual_....pdf   Totalizador, consumo y variación por punto, en carta horizontal.',
+        '  Fotos/Año/Mes             Las fotos, en el MES QUE CIERRAN: la toma del 1 de octubre va en septiembre.',
+        '',
+        '00 Datos completos_....xlsx  Todo en un libro: lecturas, consumos, inventario, avisos y auditoría.',
+        '00 Indice de fotos.xlsx      Una fila por foto con su ruta: filtra por punto, mes o persona.',
+        '',
+        'Las carpetas usan el grupo que cada punto tiene HOY.'
+      ].join('\r\n'));
       zip.file('manifiesto.json', JSON.stringify({
-        generado_en: new Date().toISOString(),
-        generado_por: S.usuario.nombre,
+        generado_en: new Date().toISOString(), generado_por: S.usuario.nombre,
         tipo, periodo_desde: rangoDesde, periodo_hasta: rangoHasta,
+        planillas_desde: desdeC, planillas_hasta: hastaC,
         lecturas: idsLectura.length, fotos: idsFoto.length,
-        excel: nombreXlsx,
-        estructura: 'Año / Mes / Grupo / fecha_Punto_lectura[_fotoN].jpg',
-        fotos_por_lectura: 'Hasta 3. Se numeran en el orden en que se sacaron (_foto1, _foto2, _foto3); una lectura con una sola foto no lleva sufijo.',
-        indice: 'indice_fotos.xlsx · una fila por foto, con su ruta, el punto y quién la tomó',
-        aviso_grupos: 'Las carpetas usan el grupo que el punto tiene HOY. Si un punto cambia de ' +
-                      'grupo, los respaldos nuevos lo guardan en la carpeta nueva; los ya ' +
-                      'descargados quedan donde estaban.',
-        nota: 'Consumo del mes = lectura de cierre − lectura de apertura, ajustado a días calendario.'
+        grupos: archivosGrupo, excel_completo: nombreXlsx,
+        estructura: 'NN Grupo / Fotos / Año / MM-Mes de cierre / fecha_Punto_valor[_fotoN].jpg'
       }, null, 2));
 
       paso('Comprimiendo…');
       const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' },
         m => paso(`Comprimiendo… ${Math.round(m.percent)}%`));
-      const archivo = `Respaldo_${tipo}_${rangoDesde.slice(0,7)}_a_${rangoHasta.slice(0,7)}.zip`;
+      const archivo = `Respaldo_${tipo}_cierres_${cierreDe(rangoDesde).slice(0,7)}_a_${cierreDe(rangoHasta).slice(0,7)}.zip`;
       descargar(blob, archivo);
 
       paso('Registrando el respaldo…');

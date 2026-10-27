@@ -880,6 +880,7 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 .ficha-lectura{margin-bottom:10px}
 .ficha-lectura-valor{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
 .ficha-fotos{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+#modal-cuerpo .ficha-foto{margin:0;display:grid;gap:6px;justify-items:start}
 #modal-cuerpo .ficha-fotos img{max-width:220px;max-height:220px;border-radius:6px;border:1px solid var(--line);display:block}
 .ficha-form{margin-top:10px;display:grid;gap:8px}
 .ficha-revision textarea{width:100%;min-height:70px;margin:8px 0}

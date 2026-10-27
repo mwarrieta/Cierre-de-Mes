@@ -2770,12 +2770,34 @@ async function verConsumo({ variable_id, mes }, ctx) {
     : (c.val.value === '' ? null : { valor_display: Number(c.val.value), valor_mwh: null, valor_kwh: null });
 
   // Fotos de una lectura: miniaturas que abren la imagen completa.
-  const pintarFotos = async (cont, lista) => {
+  // Si `borrable`, cada foto lleva un botón "Quitar" (solo admin/supervisor, lo exige también la RLS).
+  const pintarFotos = async (cont, lista, borrable = false, lecturaId = null) => {
     if (!lista.length) { cont.replaceChildren(el('p', { class: 'ayuda', text: 'Sin foto todavía' })); return; }
-    const nodos = await Promise.all(lista.map(async ft => {
+    const nodos = await Promise.all(lista.map(async (ft, i) => {
       const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 600);
-      return data?.signedUrl ? el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
-        [el('img', { src: data.signedUrl, alt: 'Foto del medidor' })]) : null;
+      if (!data?.signedUrl) return null;
+      const enlace = el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
+        [el('img', { src: data.signedUrl, alt: 'Foto del medidor' })]);
+      if (!borrable) return enlace;
+      const btn = el('button', { type: 'button', class: 'btn chico peligro', text: 'Quitar', onclick: async () => {
+        if (!confirm(`¿Quitar la foto ${i + 1}? No se puede deshacer.`)) return;
+        btn.disabled = true; btn.textContent = 'Quitando…';
+        try {
+          const del = await sb.from('fotos').delete().eq('id', ft.id).select('id');
+          if (del.error) throw del.error;
+          if (!del.data?.length) throw new Error('No tienes permiso para quitar esta foto');
+          // el archivo se borra después de la fila: si esto falla, solo queda un archivo huérfano
+          await sb.storage.from(C.BUCKET).remove([ft.storage_path]).catch(() => {});
+          toast('Foto quitada');
+          const r = await sb.from('fotos').select('id, storage_path, orden').eq('lectura_id', lecturaId).order('orden').order('id');
+          if (ctx.conFoto && !(r.data || []).length) { ctx.conFoto.delete(variable_id + '|' + mes); if (ctx.repintar) ctx.repintar(); }
+          pintarFotos(cont, r.data || [], borrable, lecturaId);
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Quitar';
+          toast(err.message || String(err), true);
+        }
+      } });
+      return el('figure', { class: 'ficha-foto' }, [enlace, btn]);
     }));
     cont.replaceChildren(...nodos.filter(Boolean));
   };
@@ -2786,7 +2808,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
       : doble ? `${num(l.valor_mwh)} MWh + ${num(l.valor_kwh)} kWh`
       : `${num(l.valor_display ?? l.valor, dec)} ${uDisp}`;
     const fotos = el('div', { class: 'ficha-fotos' });
-    pintarFotos(fotos, fotosOrdenadas(l));
+    pintarFotos(fotos, fotosOrdenadas(l), editable && puedo, l.id);
 
     const zonaCorregir = el('div');
     const abrirCorreccion = () => {
@@ -2841,7 +2863,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
       } finally {
         btnFoto.disabled = false; btnFoto.textContent = '+ Agregar foto';
         const r = await sb.from('fotos').select('id, storage_path, orden').eq('lectura_id', l.id).order('orden').order('id');
-        pintarFotos(fotos, r.data || []);
+        pintarFotos(fotos, r.data || [], editable && puedo, l.id);
       }
     });
 

@@ -2182,7 +2182,9 @@ async function vistaConsumos(c, opts = {}) {
     ultimo = { data, desde, hasta, extra: {
       enAlcance, faltantes, noLeidos, avisos, bandas, revisiones, conFoto,
       abrir: clave => verConsumo(clave, ctx),
-      alCaja: k => { R.caja = k; pintar(); acciones.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+      alCaja: k => { R.caja = k; pintar(); acciones.scrollIntoView({ block: 'start', behavior: 'smooth' }); },
+      // Tocar el nombre de un punto en la tabla = ver solo ese punto (igual que "solo este" del filtro).
+      soloPunto: id => { R.puntos = [id]; R.caja = null; textoPuntos(); cargar(); }
     } };
     pintar();
     const r = $('#resumen-rango');
@@ -2209,8 +2211,14 @@ async function vistaConsumos(c, opts = {}) {
     const panel = unPunto && actual.data.length
       ? panelAnalisisPunto(actual.data, meses, { totalizadores: actual.extra.totalizadores, cfg: R.graf, alCambiar: () => pintar() })
       : null;
-    poner(zona, panel, ...armarInforme(actual.data, actual.desde, actual.hasta,
-      { ...actual.extra, caja: R.caja || null, vista: R.vista }));
+    const volver = unPunto && actual.data.length
+      ? el('div', { class: 'fila' }, [el('button', { type: 'button', class: 'btn chico', text: '← Todos los puntos',
+          title: 'Volver a ver todos los puntos del grupo',
+          onclick: () => { R.puntos = []; textoPuntos(); cargar(); } })])
+      : null;
+    poner(zona, volver, panel, ...armarInforme(actual.data, actual.desde, actual.hasta,
+      { ...actual.extra, caja: R.caja || null, vista: R.vista,
+        soloPunto: R.puntos.length === 1 ? null : actual.extra.soloPunto }));
   }
 
   pintarFiltros();
@@ -2355,7 +2363,12 @@ function tablaInforme(cab, grupos, clases = []) {
 function armarInforme(data, desde, hasta, extra = {}) {
   const { enAlcance = [], faltantes = [], noLeidos = [], avisos = [], bandas = {},
           revisiones = new Map(), conFoto = new Set(), abrir, alCaja, caja = null,
-          vista = 'totales', totalizadores = new Map() } = extra;
+          vista = 'totales', totalizadores = new Map(), soloPunto = null } = extra;
+  // El nombre del punto es un enlace: toca y se ve solo ese punto.
+  const nombrePunto = f => soloPunto
+    ? el('button', { type: 'button', class: 'enlace-punto', text: f.punto, title: 'Ver solo este punto',
+        onclick: () => soloPunto(f.punto_id) })
+    : f.punto;
   const meses = [...new Set(data.map(f => f.mes))].sort();
   const partes = [];
 
@@ -2492,7 +2505,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
   }
   if (abrir) partes.push(el('p', { class: 'ayuda pista-rep', text:
     'Toca un valor para ver sus lecturas, fotos y avisos. El círculo de Revisar cuenta lo pendiente: tócalo para ver qué es. ' +
-    'Toca la unidad para ver el nombre completo de la lectura.' }));
+    'Toca la unidad para ver el nombre completo de la lectura. Toca el nombre de un punto para ver solo ese punto.' }));
 
   // Un valor de la tabla: botón que abre la ficha, con el color de su estado.
   const celda = (f, m, texto) => {
@@ -2621,7 +2634,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
           const vacio = c => el('td', { class: c });
           tb.append(
             el('tr', { class: cl() }, [
-              el('td', { class: 'd-punto' }, vi === 0 ? [el('b', { text: f.punto }), f.tag ? el('small', { text: f.tag }) : null] : []),
+              el('td', { class: 'd-punto' }, vi === 0 ? [el('b', {}, [nombrePunto(f)]), f.tag ? el('small', { text: f.tag }) : null] : []),
               el('td', { class: 'd-var' }, [chipVar(f)]),
               el('td', { class: 'd-fila', text: 'Totalizador' }),
               ...meses.map(m => {
@@ -2649,7 +2662,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
     empujar(el('div', { class: 'tabla-caja tabla-detalle' }, [el('table', {}, [thead, tb])]));
   } else if (meses.length === 1) {
     const filas = data.map(f => ({ grupo: f.grupo || 'Sin grupo', celdas: [
-      f.punto, f.tag || '—', chipVar(f),
+      nombrePunto(f), f.tag || '—', chipVar(f),
       celda(f, f.mes, num(f.consumo)), f.dias_asignados,
       circuloRev(f, [f.mes]),
       el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' })] }));
@@ -2667,7 +2680,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
       const vals = meses.map(m => mm[m]);
       const total = vals.reduce((a, v) => a + (v || 0), 0);
       return { grupo: f.grupo || 'Sin grupo', celdas: [
-        f.punto, f.tag || '—', chipVar(f),
+        nombrePunto(f), f.tag || '—', chipVar(f),
         ...meses.map((m, i) => celda(f, m, vals[i] === undefined ? '—' : num(vals[i]))),
         num(total), circuloRev(f, meses)] };
     });

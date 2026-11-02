@@ -1535,3 +1535,8 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 #modal-cuerpo .hist-fila{display:grid;gap:4px;justify-items:start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
 #modal-cuerpo .hist-fila .ayuda{margin:0}
 #modal-cuerpo .hist-valor{font-weight:600}
+
+/* Nombre de punto como enlace: ver solo ese punto */
+.enlace-punto{display:inline;margin:0;padding:2px 0;border:0;background:none;font:inherit;font-weight:inherit;
+  color:var(--marca);text-align:left;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+.enlace-punto:hover,.enlace-punto:focus-visible{text-decoration-style:solid}

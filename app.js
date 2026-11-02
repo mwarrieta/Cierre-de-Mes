@@ -120,8 +120,39 @@ function numCorto(v) {
 }
 
 let tostadaTimer;
+// Los errores técnicos de la base de datos y de la red vienen en inglés; aquí se pasan
+// a un español que se entienda en terreno. Lo que no se reconoce queda tal cual.
+const ERRORES_ES = [
+  [/statement timeout/i, 'El servidor tardó demasiado en responder. Intenta de nuevo en unos segundos.'],
+  [/failed to fetch|networkerror|load failed|network request failed/i, 'No hay conexión con el servidor. Revisa tu señal e intenta de nuevo.'],
+  [/jwt expired|invalid jwt|refresh token/i, 'Tu sesión venció. Cierra sesión y vuelve a entrar.'],
+  [/row-level security|permission denied|not authorized|insufficient privilege/i, 'No tienes permiso para hacer esto.'],
+  [/duplicate key value/i, 'Ese registro ya existe.'],
+  [/violates foreign key/i, 'Esto está en uso en otro registro y no se puede cambiar así.'],
+  [/violates not-null|null value in column/i, 'Falta completar un dato obligatorio.'],
+  [/violates check constraint/i, 'Hay un valor que no es válido.'],
+  [/invalid input syntax/i, 'Hay un dato escrito en un formato que no corresponde.'],
+  [/payload too large|entity too large|exceeded the maximum allowed size/i, 'El archivo es demasiado pesado.'],
+  [/the resource already exists/i, 'Ese archivo ya existe.'],
+  [/object not found|bucket not found/i, 'No se encontró el archivo.'],
+  [/quota|storage.*full|quotaexceeded/i, 'No queda espacio en el dispositivo.'],
+  [/timeout|timed out|aborted/i, 'La operación tardó demasiado. Intenta de nuevo.']
+];
+function traducirError(msg) {
+  const t = String(msg ?? '');
+  const hit = ERRORES_ES.find(([re]) => re.test(t));
+  return hit ? hit[1] : t;
+}
+
 function toast(msg, malo = false) {
   const t = $('#toast');
+  if (malo) {
+    // "No se pudo X: <detalle técnico>" → se traduce el detalle y se conserva el encabezado.
+    const i = String(msg).indexOf(': ');
+    const trad = i > 0 ? traducirError(String(msg).slice(i + 2)) : traducirError(msg);
+    msg = i > 0 && trad !== String(msg).slice(i + 2) ? String(msg).slice(0, i) + ': ' + trad
+        : i > 0 ? msg : trad;
+  }
   t.textContent = msg;
   t.className = 'toast' + (malo ? ' bad' : '');
   t.hidden = false;
@@ -1553,9 +1584,10 @@ async function vistaDispositivo(c) {
         e.target.disabled = true;
         try {
           S.catalogo = await DB.descargarCatalogo();
-          await DB.descargarBandas();
-          toast('Catálogo actualizado');
-        } catch (err) { toast('No se pudo: ' + (err.message || err), true); }
+          // Las bandas son un extra (avisos de valores raros): si fallan, el catálogo igual quedó al día.
+          try { await DB.descargarBandas(); toast('Catálogo actualizado'); }
+          catch (eb) { toast('Catálogo actualizado, pero no se pudieron bajar las bandas: ' + (eb.message || eb), true); }
+        } catch (err) { toast('No se pudo actualizar el catálogo: ' + (err.message || err), true); }
         e.target.disabled = false;
         render();
       } })
@@ -2202,11 +2234,23 @@ async function vistaConsumos(c, opts = {}) {
       for (const x of fl) conFoto.add(x.variable_id + '|' + x.periodo);
     } catch { /* sin el indicador de fotos, la tabla igual sirve */ }
 
+    // Primer periodo con lectura de cada variable: antes de eso la variable todavía no se medía,
+    // y esos meses no son "sin dato" que haya que revisar (p. ej. una variable creada en octubre).
+    const inicio = new Map();
+    try {
+      const ls = await traerTodo(() => sb.from('lecturas').select('variable_id, periodo')
+        .eq('sin_dato', false).neq('estado', 'descartada').order('id'));
+      for (const x of ls) {
+        const pm = String(x.periodo).slice(0, 10);
+        if (!inicio.has(x.variable_id) || pm < inicio.get(x.variable_id)) inicio.set(x.variable_id, pm);
+      }
+    } catch { /* sin esto, vuelven a contarse los meses anteriores al inicio como pendientes */ }
+
     const bandas = await DB.bandasCache().catch(() => ({}));
-    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, revisiones };
+    S.repDatos = { filas: data, desde, hasta, faltantes, noLeidos, avisos, bandas, revisiones, inicio };
     const ctx = { filas: data, hasta, avisos, bandas, revisiones, conFoto, alCambiar: cargar, repintar: () => pintar() };
     ultimo = { data, desde, hasta, extra: {
-      enAlcance, faltantes, noLeidos, avisos, bandas, revisiones, conFoto,
+      enAlcance, faltantes, noLeidos, avisos, bandas, revisiones, conFoto, inicio,
       abrir: clave => verConsumo(clave, ctx),
       alCaja: k => { R.caja = k; pintar(); acciones.scrollIntoView({ block: 'start', behavior: 'smooth' }); },
       // Tocar el nombre de un punto en la tabla = ver solo ese punto (igual que "solo este" del filtro).
@@ -2389,7 +2433,7 @@ function tablaInforme(cab, grupos, clases = []) {
 function armarInforme(data, desde, hasta, extra = {}) {
   const { enAlcance = [], faltantes = [], noLeidos = [], avisos = [], bandas = {},
           revisiones = new Map(), conFoto = new Set(), abrir, alCaja, caja = null,
-          vista = 'totales', totalizadores = new Map(), soloPunto = null } = extra;
+          vista = 'totales', totalizadores = new Map(), soloPunto = null, inicio = new Map() } = extra;
   // El nombre del punto es un enlace: toca y se ve solo ese punto.
   const nombrePunto = f => soloPunto
     ? el('button', { type: 'button', class: 'enlace-punto', text: f.punto, title: 'Ver solo este punto',
@@ -2408,7 +2452,8 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const conValor = new Set(data.map(f => f.variable_id + '|' + f.mes));
   for (const id of new Set(data.map(f => f.variable_id)))
     for (const m of meses)
-      if (!conValor.has(id + '|' + m) && !ncDe(porId0.get(id)?.punto_id, m))
+      if (!conValor.has(id + '|' + m) && !ncDe(porId0.get(id)?.punto_id, m) &&
+          !(inicio.has(id) && m < inicio.get(id)))
         juicios.set(id + '|' + m, { nivel: 'warn', texto: 'sin dato', sinDato: true });
   // Pendiente = marcado y todavía sin corregir ni desestimar.
   const pend = [...juicios.keys()].filter(k => !revisiones.has(k));

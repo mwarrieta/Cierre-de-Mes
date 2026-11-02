@@ -706,7 +706,7 @@ function vistaTerreno(c) {
   const buscador = el('div', { class: 'buscador' }, [
     el('input', {
       type: 'search', placeholder: 'Buscar por TAG, punto o grupo…', value: S.filtro,
-      oninput: e => { S.filtro = e.target.value.toLowerCase(); pintarLista(); }
+      oninput: e => { S.filtro = sinAcentos(e.target.value); pintarLista(); }
     })
   ]);
   const cabecera = el('div', { class: 'fila entre seccion' }, [
@@ -789,8 +789,7 @@ async function pintarLista() {
   const f = S.filtro;
   if (f) puntos = puntos.filter(p => {
     const eq = p.punto.equipo?.tag || '';
-    return `${p.punto.nombre} ${gruposTexto(p.punto)} ${eq} ${p.vars.map(v => v.nombre).join(' ')}`
-      .toLowerCase().includes(f);
+    return sinAcentos(`${p.punto.nombre} ${gruposTexto(p.punto)} ${eq} ${p.vars.map(v => v.nombre).join(' ')}`).includes(f);
   });
 
   const total = puntos.length;
@@ -1693,6 +1692,8 @@ async function resolverDuplicado(d) {
 // Cómo se llama la fila "Consumo del mes" según el grupo: en la Red MT es una
 // transferencia de energía y en los generadores, lo que generaron.
 const normGrupo = g => String(g || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+// Para buscar sin que importen mayúsculas ni acentos: "area" encuentra "Área".
+const sinAcentos = t => String(t ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 function filaConsumoTxt(grupo) {
   const g = normGrupo(grupo);
   if (g.startsWith('red mt')) return 'Transferencia del mes';
@@ -2023,8 +2024,8 @@ async function vistaConsumos(c, opts = {}) {
       pop.remove(); document.removeEventListener('click', fuera, true); textoPuntos(); cargar();
     };
     function pintarLista() {
-      const t = buscar.value.trim().toLowerCase();
-      lista.replaceChildren(...ps.filter(p => !t || String(p.nombre).toLowerCase().includes(t)).map(p => el('div', { class: 'pop-fila' }, [
+      const t = sinAcentos(buscar.value.trim());
+      lista.replaceChildren(...ps.filter(p => !t || sinAcentos(p.nombre).includes(t)).map(p => el('div', { class: 'pop-fila' }, [
         el('label', { class: 'check-linea' }, [el('input', { type: 'checkbox', checked: elegidos.has(p.id) || null,
           onchange: e => { e.target.checked ? elegidos.add(p.id) : elegidos.delete(p.id); } }), el('span', { text: ' ' + p.nombre })]),
         el('button', { type: 'button', class: 'btn-texto chico', text: 'solo este', title: 'Ver solo este punto, con su gráfico',
@@ -3674,14 +3675,14 @@ async function vistaAvisos(c) {
     poner(zona, el('p', { class: 'cargando', text: 'Cargando…' }));
     selEstado.hidden = selVista.value === 'observaciones';
     selGrupo.hidden = btnPdf.hidden = selVista.value === 'observaciones';
-    const q = (buscar.value || '').toLowerCase();
+    const q = sinAcentos(buscar.value || '');
 
     if (selVista.value === 'observaciones') {
       const { data, error } = await sb.from('v_observaciones').select('*')
         .order('fecha_lectura', { ascending: false }).limit(1000);
       if (error) return poner(zona, el('p', { class: 'error', text: error.message }));
       const filas = (data || []).filter(o =>
-        !q || `${o.punto} ${gruposTexto(o)} ${o.variable} ${o.observacion}`.toLowerCase().includes(q));
+        !q || sinAcentos(`${o.punto} ${gruposTexto(o)} ${o.variable} ${o.observacion}`).includes(q));
       if (!filas.length) return poner(zona, el('p', { class: 'vacio', text: 'No hay observaciones.' }));
 
       const listaObs = el('div', { class: 'lista-compacta' },
@@ -3717,7 +3718,7 @@ async function vistaAvisos(c) {
     if (selEstado.value === 'resuelto') avisos = avisos.filter(a => a.estado === 'resuelto');
     if (selGrupo.value) avisos = avisos.filter(a => (a.grupos || []).includes(selGrupo.value));
     if (q) avisos = avisos.filter(a =>
-      `${a.punto} ${gruposTexto(a)} ${a.categoria} ${a.descripcion || ''}`.toLowerCase().includes(q));
+      sinAcentos(`${a.punto} ${gruposTexto(a)} ${a.categoria} ${a.descripcion || ''}`).includes(q));
 
     if (selVista.value === 'informe') return informeAvisos(zona, avisos, selGrupo.value);
 
@@ -4042,7 +4043,7 @@ const ESTADO_EQUIPO = {
 
 async function vistaEquipos(c) {
   const filtro = el('input', { type: 'search', placeholder: 'Buscar por TAG, marca, serie o punto…',
-    oninput: e => { S.filtro = e.target.value.toLowerCase(); pintar(); } });
+    oninput: e => { S.filtro = sinAcentos(e.target.value); pintar(); } });
   const selEstado = el('select', { onchange: pintar });
   selEstado.append(el('option', { value: '', text: 'Todos los estados' }));
   for (const [k, v] of Object.entries(ESTADO_EQUIPO))
@@ -4067,7 +4068,7 @@ async function vistaEquipos(c) {
     const f = S.filtro, est = selEstado.value;
     const lista = equipos.filter(e =>
       (!est || e.estado === est) &&
-      (!f || `${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.punto_actual}`.toLowerCase().includes(f)));
+      (!f || sinAcentos(`${e.tag} ${e.marca} ${e.modelo} ${e.n_serie} ${e.punto_actual}`).includes(f)));
 
     const filas = lista.map(e => [
       e.tag || el('span', { class: 'pill warn', text: 'sin TAG' }),
@@ -4246,7 +4247,7 @@ async function vistaPuntos(c) {
     ]),
     el('div', { class: 'buscador' }, [
       el('input', { type: 'search', placeholder: 'Buscar punto, grupo, tipo o TAG…', value: S.filtro || '',
-        oninput: e => { S.filtro = e.target.value.toLowerCase(); pintar(); } })
+        oninput: e => { S.filtro = sinAcentos(e.target.value); pintar(); } })
     ])
   );
   const zonaChips = el('div', { class: 'filtros-terreno' });
@@ -4307,7 +4308,7 @@ async function vistaPuntos(c) {
       .map(([k, [txt, fn]]) => el('button', { class: 'chip-filtro' + (S.filtroPuntos === k ? ' sel' : ''),
         text: `${txt} · ${data.filter(fn).length}`, onclick: () => { S.filtroPuntos = k; pintar(); } })));
     const lista = data.filter(p => FILTROS[S.filtroPuntos][1](p) && (!f ||
-      `${p.nombre} ${gruposTexto(p)} ${p.tipo || ''} ${p.tag || ''} ${p.marca || ''} ${p.n_serie || ''}`.toLowerCase().includes(f)));
+      sinAcentos(`${p.nombre} ${gruposTexto(p)} ${p.tipo || ''} ${p.tag || ''} ${p.marca || ''} ${p.n_serie || ''}`).includes(f)));
     // Ordenados como el informe: por su primer grupo. Un punto en varios grupos sale una vez.
     const porGrupo = new Map();
     for (const p of lista) {
@@ -5029,10 +5030,10 @@ async function editarGrupo(g) {
     const buscar = el('input', { type: 'search', placeholder: 'Filtrar puntos…', oninput: pintarPuntos });
 
     function pintarPuntos() {
-      const q = buscar.value.toLowerCase();
+      const q = sinAcentos(buscar.value);
       lista.replaceChildren();
       for (const p of puntos) {
-        if (q && !`${p.nombre} ${gruposTexto(p)}`.toLowerCase().includes(q)) continue;
+        if (q && !sinAcentos(`${p.nombre} ${gruposTexto(p)}`).includes(q)) continue;
         const chk = el('input', { type: 'checkbox', checked: dentro.has(p.id) || null,
           onchange: e => { e.target.checked ? dentro.add(p.id) : dentro.delete(p.id); actualizar(); } });
         lista.append(el('label', { class: 'fila', style: 'margin-bottom:6px' },
@@ -5579,7 +5580,7 @@ async function vistaSugerencias(c) {
   }
   const pasa = r => (F.estado === 'todas' || (F.estado === 'pendientes' ? r.estado !== 'resuelta' : r.estado === 'resuelta')) &&
     (!F.tipo || (F.tipo === 'falla') === (r.tipo === 'falla')) && (!F.seccion || r.seccion === F.seccion) &&
-    (!F.buscar || `${r.mensaje} ${r.usuarios?.nombre || ''}`.toLowerCase().includes(F.buscar.toLowerCase()));
+    (!F.buscar || sinAcentos(`${r.mensaje} ${r.usuarios?.nombre || ''}`).includes(sinAcentos(F.buscar)));
   async function cambiar(r, estado) {
     const { error } = await sb.from('sugerencias').update({ estado }).eq('id', r.id);
     if (error) return toast(error.message, true);
@@ -5669,7 +5670,7 @@ async function vistaUsuarios(c) {
       kpi(activos.filter(u => u.rol === 'casa_fuerza' || u.casa_fuerza).length, 'en Casa de Fuerza'),
       kpi(activos.filter(sinAcceso).length, 'sin acceso a puntos', activos.some(sinAcceso) ? 'alerta' : 'ok')]));
     const vis = usuarios.filter(u => (F.estado === '' || (F.estado === 'activos') === !!u.activo) && (!F.rol || u.rol === F.rol) &&
-      (!F.acceso || sinAcceso(u)) && (!F.buscar || `${u.nombre} ${u.correo}`.toLowerCase().includes(F.buscar.toLowerCase())));
+      (!F.acceso || sinAcceso(u)) && (!F.buscar || sinAcentos(`${u.nombre} ${u.correo}`).includes(sinAcentos(F.buscar))));
     const orden = Object.keys(ROLES_DESC);
     const grupos = orden.map(r => ({ nombre: `${r} · ${ROLES_DESC[r]}`, filas: vis.filter(u => u.rol === r).map(u => {
       const rol = selF(orden.map(x => [x, x]), u.rol, async v => {
@@ -5721,8 +5722,8 @@ function selectorAcceso(gruposSel = new Set(), puntosSel = new Set()) {
   const lista = el('div', { class: 'lista-puntos-acceso' });
   const buscar = el('input', { type: 'search', placeholder: 'Filtrar puntos…', oninput: () => pintar() });
   const pintar = () => {
-    const q = buscar.value.toLowerCase();
-    poner(lista, puntos.filter(p => !q || p.nombre.toLowerCase().includes(q)).map(p =>
+    const q = sinAcentos(buscar.value);
+    poner(lista, puntos.filter(p => !q || sinAcentos(p.nombre).includes(q)).map(p =>
       el('label', { class: 'fila' }, [
         el('input', { type: 'checkbox', checked: puntosSel.has(p.id) || null,
           onchange: e => { e.target.checked ? puntosSel.add(p.id) : puntosSel.delete(p.id); } }),
@@ -6021,9 +6022,9 @@ async function vistaAuditoria(c) {
   const esValidacion = a => a.accion === 'UPDATE' && (a.campos_cambiados || []).every(k => AUD_VALIDACION.has(k));
   const gruposDePunto = id => puntoPorId.get(id)?.grupos || [];
   const textoDe = a => [a.punto_nombre, a.variable_nombre, a.generador, a.etiqueta, a.motivo, a.usuario_nombre,
-    a.registro_id, AUD_QUE[a.tabla], puntoPorId.get(a.punto_id)?.equipo?.tag].filter(Boolean).join(' ').toLowerCase();
+    a.registro_id, AUD_QUE[a.tabla], puntoPorId.get(a.punto_id)?.equipo?.tag].filter(Boolean).join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   function visibles() {
-    const t = A.buscar.trim().toLowerCase();
+    const t = sinAcentos(A.buscar.trim());
     return filas.filter(a =>
       (!A.ocultarValid || !esValidacion(a)) &&
       (!A.grupo || gruposDePunto(a.punto_id).includes(A.grupo)) &&
@@ -6270,8 +6271,8 @@ function selectorMulti({ items, elegidos, todosTxt = 'Todos', unidad = 'equipos'
     const cerrar = () => { pop.remove(); document.removeEventListener('click', fuera, true); };
     const aplicar = ids => { cerrar(); alAplicar(ids.length === items.length ? [] : ids); };
     function pintar() {
-      const t = buscar.value.trim().toLowerCase();
-      lista.replaceChildren(...items.filter(i => !t || (i.nombre + ' ' + (i.sub || '')).toLowerCase().includes(t)).map(i => el('div', { class: 'pop-fila' }, [
+      const t = sinAcentos(buscar.value.trim());
+      lista.replaceChildren(...items.filter(i => !t || sinAcentos(i.nombre + ' ' + (i.sub || '')).includes(t)).map(i => el('div', { class: 'pop-fila' }, [
         el('label', { class: 'check-linea' }, [el('input', { type: 'checkbox', checked: marc.has(i.id) || null,
           onchange: e => { e.target.checked ? marc.add(i.id) : marc.delete(i.id); } }),
           el('span', { text: ' ' + i.nombre }), i.sub ? el('small', { class: 'tenue-b', text: ' ' + i.sub }) : null]),
@@ -6703,7 +6704,7 @@ async function vistaGeneradores(c) {
   const pasa = g => (P.estado === '' || (P.estado === 'faena' && !fuera(g)) || (P.estado === 'Operando' && g.estado === 'Operando') ||
       (P.estado === 'detenidos' && !fuera(g) && g.estado !== 'Operando') || (P.estado === 'fuera' && fuera(g))) &&
     (!P.propiedad || (P.propiedad === 'Propio') === (g.propiedad === 'Propio')) &&
-    (!P.buscar || [g.n_interno, g.n_equipo, g.proveedor, g.modelo, g.ubicacion].join(' ').toLowerCase().includes(P.buscar.toLowerCase()));
+    (!P.buscar || sinAcentos([g.n_interno, g.n_equipo, g.proveedor, g.modelo, g.ubicacion].join(' ')).includes(sinAcentos(P.buscar)));
 
   const buscar = el('input', { type: 'search', value: P.buscar, placeholder: 'N° interno, equipo, marca, ubicación…',
     oninput: e => { P.buscar = e.target.value; clearTimeout(buscar._t); buscar._t = setTimeout(pintar, 200); } });

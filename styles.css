@@ -1173,8 +1173,15 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .impresion .grupo-imp-tit{font-size:13px;margin:6px 0 4px;letter-spacing:.04em;text-transform:uppercase}
   .impresion .hoja-informe table.planilla{font-size:9px}
   .impresion table.planilla td,.impresion table.planilla th{padding:2px 4px}
-  .impresion table.detalle-imp td.d-nom{vertical-align:top;max-width:52mm;border-bottom:1px solid #666}
-  .impresion table.detalle-imp td.d-nom span{color:#444;font-size:8px}
+  .impresion table.detalle-imp td.d-nom{vertical-align:top;max-width:46mm;border-bottom:1px solid #666}
+  .impresion table.detalle-imp td.d-nom b{display:block;line-height:1.15}
+  .impresion table.detalle-imp td.d-nom span{display:block;color:#444;font-size:8px}
+  /* la lectura (kWh+, kWh-, h, kW) manda sobre su bloque de tres filas */
+  .impresion table.detalle-imp td.d-var{vertical-align:top;max-width:34mm;border-bottom:1px solid #999}
+  .impresion table.detalle-imp td.d-var b{display:block;line-height:1.15}
+  .impresion table.detalle-imp td.d-var span{display:block;color:#444;font-size:8px;line-height:1.1}
+  /* la segunda lectura de un punto se separa con una línea fina, no con una gruesa */
+  .impresion table.detalle-imp tr.d-sig td{border-top:1px solid #bbb}
   .impresion table.detalle-imp td.d-fila{color:#555;white-space:nowrap}
   .impresion table.detalle-imp tr.d-cons td{font-weight:700}
   .impresion table.detalle-imp tr.d-fin td{border-bottom:1px solid #666;color:#444}
@@ -1635,3 +1642,22 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .fv-cab .check-linea{font-size:12.5px;font-weight:500;color:var(--ink-3);margin-left:auto}
 .fv-cab .check-linea input{width:16px;height:16px}
 .fv-cab .check-linea[hidden]{display:none}
+
+/* ---- Gráfico de varias medidas juntas (energía, horas y potencia) ----
+   Las barras se leen en el eje izquierdo y las líneas en el derecho, porque los
+   kWh son cientos de miles y las horas, cientos. Va dentro de .figura, igual
+   que los demás gráficos de la app. */
+.grafico-combi .ejeY.der{text-anchor:start;fill:var(--ink-3)}
+.grafico-combi .traza{stroke-width:2.2;fill:none;stroke-linecap:round}
+.grafico-combi .punto{stroke:var(--surface);stroke-width:1.2}
+.grafico-combi .linea-a{stroke:var(--warn)}
+.grafico-combi circle.linea-a{fill:var(--warn)}
+.grafico-combi .linea-b{stroke:var(--guardar)}
+.grafico-combi circle.linea-b{fill:var(--guardar)}
+.grafico-combi .leyenda{font-size:10.5px;fill:var(--ink-3)}
+@media print{
+  .impresion .grafico-combi .linea-a{stroke:#A2711A}
+  .impresion .grafico-combi circle.linea-a{fill:#A2711A}
+  .impresion .grafico-combi .linea-b{stroke:#2B5EA7}
+  .impresion .grafico-combi circle.linea-b{fill:#2B5EA7}
+}

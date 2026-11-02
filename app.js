@@ -1639,6 +1639,91 @@ function tabla(cabeceras, filas, opciones = {}) {
    GRÁFICO · barras de una sola serie
    Una serie por unidad: mezclar kWh con m³ en un mismo eje sería mentir.
    =================================================================== */
+/* Gráfico de varias medidas juntas.
+   Los kWh de un generador son cientos de miles y sus horas, cientos: en un solo eje
+   las curvas chicas quedarían pegadas al suelo. Por eso la primera medida va en barras
+   contra el eje izquierdo y las demás en líneas contra un eje derecho propio.
+   datos: [{ etiqueta, valores: { clave: número|null } }] */
+function graficoCombinado(datos, { titulo, series, alto = 230 } = {}) {
+  if (!datos.length || !series.length) return null;
+  const W = 760, H = alto, mIzq = 74, mDer = 64, mArr = 22, mAba = 46;
+  const anchoUtil = W - mIzq - mDer, altoUtil = H - mArr - mAba;
+  const NS = 'http://www.w3.org/2000/svg';
+  const ns = (t, at, txt) => {
+    const n = document.createElementNS(NS, t);
+    for (const [k, v] of Object.entries(at)) n.setAttribute(k, v);
+    if (txt !== undefined) n.textContent = txt;
+    return n;
+  };
+  const valores = cl => datos.map(d => d.valores[cl]).filter(v => v != null && !Number.isNaN(v));
+  // Tope redondeado por eje: las líneas de la grilla quedan en números legibles.
+  const topeDe = claves => {
+    const vs = claves.flatMap(valores);
+    const max = Math.max(...vs, 0) || 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(max)));
+    return Math.max(Math.ceil(max / (mag / 2)) * (mag / 2), mag / 2);
+  };
+  const barras = series.filter(x => x.tipo !== 'linea');
+  const lineas = series.filter(x => x.tipo === 'linea');
+  const topeI = topeDe(barras.map(x => x.clave));
+  const topeD = lineas.length ? topeDe(lineas.map(x => x.clave)) : 1;
+  const yI = v => mArr + altoUtil - (v / topeI) * altoUtil;
+  const yD = v => mArr + altoUtil - (v / topeD) * altoUtil;
+  const paso = anchoUtil / datos.length;
+  const cx = i => mIzq + i * paso + paso / 2;
+
+  const svg = ns('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'grafico grafico-combi' });
+  svg.setAttribute('aria-label', `${titulo}. ` + series.map(se =>
+    `${se.nombre}: ` + datos.map(d => `${d.etiqueta} ${d.valores[se.clave] == null ? 'sin dato' : num(d.valores[se.clave])}`).join(', ')).join('. '));
+
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const v = f * topeI;
+    svg.append(ns('line', { x1: mIzq, x2: W - mDer, y1: yI(v), y2: yI(v), class: 'grid' }));
+    svg.append(ns('text', { x: mIzq - 10, y: yI(v) + 4, class: 'ejeY' }, numCorto(v)));
+    if (lineas.length) svg.append(ns('text', { x: W - mDer + 10, y: yI(v) + 4, class: 'ejeY der' }, numCorto(f * topeD)));
+  }
+
+  // barras (eje izquierdo)
+  const anchoBarra = Math.min(paso - 10, 46);
+  for (const se of barras) datos.forEach((d, i) => {
+    const v = d.valores[se.clave];
+    if (v == null) return;
+    const g = ns('g', { class: 'barra' });
+    g.append(ns('rect', { x: cx(i) - anchoBarra / 2, y: yI(v), width: anchoBarra,
+      height: Math.max(altoUtil - (yI(v) - mArr), v > 0 ? 2 : 0), rx: 4, class: 'marca' }));
+    g.append(ns('title', {}, `${d.etiqueta} · ${se.nombre}: ${num(v)} ${se.unidad}`));
+    svg.append(g);
+  });
+
+  // líneas (eje derecho)
+  lineas.forEach((se, k) => {
+    const pts = datos.map((d, i) => ({ i, v: d.valores[se.clave] })).filter(p => p.v != null);
+    if (!pts.length) return;
+    const clase = 'linea-' + (k % 2 === 0 ? 'a' : 'b');
+    for (let j = 1; j < pts.length; j++)
+      svg.append(ns('line', { x1: cx(pts[j - 1].i), y1: yD(pts[j - 1].v), x2: cx(pts[j].i), y2: yD(pts[j].v), class: 'traza ' + clase }));
+    for (const p of pts) {
+      const c = ns('circle', { cx: cx(p.i), cy: yD(p.v), r: 3.5, class: 'punto ' + clase });
+      c.append(ns('title', {}, `${datos[p.i].etiqueta} · ${se.nombre}: ${num(p.v)} ${se.unidad}`));
+      svg.append(c);
+    }
+  });
+
+  datos.forEach((d, i) => svg.append(ns('text', { x: cx(i), y: H - mAba + 16, class: 'ejeX' }, d.etiqueta)));
+
+  // leyenda al pie
+  let lx = mIzq;
+  series.forEach((se, k) => {
+    const clase = se.tipo === 'linea' ? ('linea-' + ((k - barras.length) % 2 === 0 ? 'a' : 'b')) : '';
+    svg.append(se.tipo === 'linea'
+      ? ns('line', { x1: lx, x2: lx + 16, y1: H - 8, y2: H - 8, class: 'traza ' + clase })
+      : ns('rect', { x: lx, y: H - 13, width: 14, height: 10, rx: 2, class: 'marca' }));
+    svg.append(ns('text', { x: lx + 21, y: H - 4, class: 'leyenda' }, `${se.nombre} (${se.unidad})`));
+    lx += 30 + `${se.nombre} (${se.unidad})`.length * 5.4;
+  });
+  return el('figure', { class: 'figura' }, [el('figcaption', { text: titulo }), svg]);
+}
+
 function graficoBarras(datos, { titulo, unidad, alto = 200 } = {}) {
   if (!datos.length) return null;
   const W = 760, H = alto, mIzq = 74, mDer = 14, mArr = 20, mAba = 30;
@@ -3550,15 +3635,37 @@ async function imprimirInforme() {
   // ---- Detalle mensual: totalizador, consumo y variación por lectura (como en pantalla) ----
   const tablaDetalle = items => {
     const cuerpo = [];
-    for (const { f, m } of items) {
+    // Un punto puede medir varias cosas (kWh+ y kWh-, o kWh, horas y kW). El nombre
+    // va UNA vez y debajo cuelgan todas sus lecturas, cada una con sus tres filas.
+    const porPunto = [];
+    for (const it of items) {
+      const ult = porPunto[porPunto.length - 1];
+      if (ult && ult.punto_id === it.f.punto_id) ult.lecturas.push(it);
+      else porPunto.push({ punto_id: it.f.punto_id, f: it.f, lecturas: [it] });
+    }
+    const esInst = f => f.tipo_acumulacion === 'instantanea';
+    for (const grupoPunto of porPunto) {
+      const filasDelPunto = [];
+      const altoPunto = grupoPunto.lecturas.reduce((a, it) => a + (esInst(it.f) ? 1 : 3), 0);
+      grupoPunto.lecturas.forEach(({ f, m }, k) => {
       const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
       const marca = fueraDeRango({ f, m }) ? ' *' : '';
-      const nombre = el('td', { class: 'd-nom', rowspan: '3' }, [
-        el('b', { text: f.punto }), el('br'),
-        el('span', { text: [f.tag, f.variable, UNIDAD[f.unidad_reporte] || f.unidad_reporte].filter(Boolean).join(' · ') })]);
-      // Cada lectura en su propio <tbody>: así sus tres filas no se parten entre dos hojas.
-      cuerpo.push(el('tbody', { class: 'd-bloque' }, [
-        el('tr', { class: 'd-ini' }, [nombre, el('td', { class: 'd-fila', text: 'Totalizador' }),
+      const nombre = k > 0 ? null : el('td', { class: 'd-nom', rowspan: String(altoPunto) }, [
+        el('b', { text: f.punto }),
+        f.tag ? el('span', { text: f.tag }) : null]);
+      const lectura = el('td', { class: 'd-var', rowspan: esInst(f) ? '1' : '3' }, [
+        el('b', { text: siglaDe(f.variable, f.unidad_reporte) }),
+        el('span', { text: f.variable })]);
+      // La potencia en kW no tiene totalizador ni variación: una sola fila con el valor.
+      if (esInst(f)) {
+        filasDelPunto.push(el('tr', { class: 'd-cons d-fin' + (k ? ' d-sig' : '') }, [nombre, lectura,
+          el('td', { class: 'd-fila', text: 'Valor leído' }),
+          ...meses.map(x => el('td', { class: 'num', text: m[x] === undefined ? vacioTxt(f.punto_id, x) : num(m[x]) })),
+          conTotal ? el('td', { class: 'num' }) : null]));
+        return;
+      }
+      filasDelPunto.push(
+        el('tr', { class: 'd-ini' + (k ? ' d-sig' : '') }, [nombre, lectura, el('td', { class: 'd-fila', text: 'Totalizador' }),
           ...meses.map(x => { const t = totalizadores.get(f.variable_id + '|' + mesSiguiente(x));
             return el('td', { class: 'num', text: t === undefined ? vacioTxt(f.punto_id, x) : num(t) }); }),
           conTotal ? el('td', { class: 'num' }) : null]),
@@ -3570,11 +3677,14 @@ async function imprimirInforme() {
             const a = i > 0 ? m[meses[i - 1]] : undefined, c2 = m[x];
             return el('td', { class: 'num', text: a && c2 ? (c2 > a ? '+' : '') + num(100 * (c2 - a) / a, 1) + '%' : '' });
           }),
-          conTotal ? el('td', { class: 'num' }) : null])]));
+          conTotal ? el('td', { class: 'num' }) : null]));
+      });
+      // Todo el punto en un <tbody>: sus filas no se parten entre dos hojas.
+      cuerpo.push(el('tbody', { class: 'd-bloque' }, filasDelPunto));
     }
     return el('table', { class: 'planilla detalle-imp' }, [
       el('thead', {}, [el('tr', {}, [
-        el('th', { text: 'Punto · variable' }), el('th', { text: '' }),
+        el('th', { text: 'Punto' }), el('th', { text: 'Lectura' }), el('th', { text: '' }),
         ...meses.map(m => el('th', { class: 'num', text: cabMes(m) })),
         conTotal ? el('th', { class: 'num', text: 'Total' }) : null
       ])]),
@@ -3744,41 +3854,71 @@ async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
     doc.text(`Algorta Norte · ${S.usuario?.nombre || ''} · ${fechaCorta(new Date().toISOString())}`, ancho - 10, 12, { align: 'right' });
     doc.setDrawColor(0); doc.setLineWidth(0.3); doc.line(10, 19.5, ancho - 10, 19.5);
   };
-  const body = [];
+  /* Un punto puede medir varias cosas (kWh+ y kWh-, o kWh, horas y kW). El nombre
+     del punto va UNA vez y debajo cuelgan todas sus lecturas, cada una con sus tres
+     filas. Antes el nombre se repetía tantas veces como lecturas tuviera el punto. */
+  const porPunto = [];
   for (const v of filasVar) {
-    const total = meses.reduce((a, m) => a + (v.cons[m] || 0), 0);
-    body.push([{ content: '', rowSpan: 3 },
-      'Totalizador', ...meses.map(m => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.lect[mesSiguiente(m)])), '']);
-    body.push([filaConsumoTxt(v.grupo), ...meses.map(m => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.cons[m])), fmt(total)]);
-    body.push(['Var. % vs mes anterior', ...meses.map((m, i) => {
-      const a = i ? v.cons[meses[i - 1]] : undefined, b = v.cons[m];
-      return a && b ? (b > a ? '+' : '') + (100 * (b - a) / a).toFixed(1).replace('.', ',') + '%' : '';
-    }), '']);
+    const u = porPunto[porPunto.length - 1];
+    if (u && u.punto_id === v.punto_id) u.vars.push(v);
+    else porPunto.push({ punto_id: v.punto_id, punto: v.punto, tag: v.tag, vars: [v] });
+  }
+  const body = [];
+  const puntoEnFila = new Map();      // fila donde empieza el bloque → su punto
+  const tipoFila = [];                // 0 totalizador · 1 el valor · 2 variación
+  const altoDe = v => v.inst ? 1 : 3; // la potencia en kW ocupa una sola fila
+  for (const gp of porPunto) {
+    const alto = gp.vars.reduce((a, v) => a + altoDe(v), 0);
+    gp.vars.forEach((v, k) => {
+      const total = meses.reduce((a, m) => a + (v.cons[m] || 0), 0);
+      const primera = [];
+      if (k === 0) { puntoEnFila.set(body.length, gp); primera.push({ content: '', rowSpan: alto }); }
+      primera.push({ content: txt(siglaDe(v.variable, v.unidad)) + '\n' + txt(v.variable), rowSpan: altoDe(v) });
+      if (v.inst) {
+        // No tiene totalizador ni variación con sentido: es lo que marcaba el equipo.
+        primera.push('Valor leído', ...meses.map(m => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.cons[m])), '');
+        body.push(primera); tipoFila.push(1);
+        return;
+      }
+      primera.push('Totalizador',
+        ...meses.map(m => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.lect[mesSiguiente(m)])), '');
+      body.push(primera); tipoFila.push(0);
+      body.push([filaConsumoTxt(v.grupo), ...meses.map(m => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.cons[m])), fmt(total)]);
+      tipoFila.push(1);
+      body.push(['Var. % vs mes anterior', ...meses.map((m, i) => {
+        const a = i ? v.cons[meses[i - 1]] : undefined, b = v.cons[m];
+        return a && b ? (b > a ? '+' : '') + (100 * (b - a) / a).toFixed(1).replace('.', ',') + '%' : '';
+      }), '']);
+      tipoFila.push(2);
+    });
   }
   doc.autoTable({
     startY: 23, margin: { left: 10, right: 10, top: 23, bottom: 14 }, theme: 'grid',
-    head: [['Punto · lectura', '', ...cabMeses, 'Total']], body,
+    head: [['Punto', 'Lectura', '', ...cabMeses, 'Total']], body,
     styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.1, lineColor: [175, 175, 175], lineWidth: 0.1, textColor: 20, overflow: 'linebreak' },
     headStyles: { fillColor: [232, 232, 232], textColor: 20, fontStyle: 'bold', halign: 'right' },
-    columnStyles: { 0: { cellWidth: 50, valign: 'top' }, 1: { cellWidth: 28, textColor: 90 } },
+    columnStyles: { 0: { cellWidth: 40, valign: 'top' },
+                    1: { cellWidth: 25, valign: 'top', fontSize: 6.6, textColor: 70 },
+                    2: { cellWidth: 30, textColor: 90 } },
     didParseCell: d => {
-      if (d.section === 'head' && d.column.index < 2) d.cell.styles.halign = 'left';
-      if (d.section === 'body' && d.column.index >= 2) d.cell.styles.halign = 'right';
-      if (d.section === 'body' && d.row.index % 3 === 1 && d.column.index >= 1) d.cell.styles.fontStyle = 'bold';
-      if (d.section === 'body' && d.row.index % 3 === 2 && d.column.index >= 1) d.cell.styles.textColor = 90;
+      if (d.section === 'head' && d.column.index < 3) d.cell.styles.halign = 'left';
+      if (d.section === 'body' && d.column.index >= 3) d.cell.styles.halign = 'right';
+      if (d.section === 'body' && tipoFila[d.row.index] === 1 && d.column.index >= 2) d.cell.styles.fontStyle = 'bold';
+      if (d.section === 'body' && tipoFila[d.row.index] === 2 && d.column.index >= 2) d.cell.styles.textColor = 90;
     },
     // El punto y su lectura, en dos renglones propios: así ningún dato queda partido.
     didDrawCell: d => {
-      if (d.section !== 'body' || d.column.index !== 0 || d.row.index % 3) return;
-      const v = filasVar[d.row.index / 3];
-      if (!v) return;
+      if (d.section !== 'body' || d.column.index !== 0) return;
+      const gp = puntoEnFila.get(d.row.index);
+      if (!gp) return;
       const x = d.cell.x + 1.3, ancho = d.cell.width - 2.6;
       doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4);
-      const lineas = doc.splitTextToSize(txt(v.punto), ancho);
+      const lineas = doc.splitTextToSize(txt(gp.punto), ancho);
       doc.text(lineas, x, d.cell.y + 3.6);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.6); doc.setTextColor(95);
-      const sub = txt([v.tag, siglaDe(v.variable, v.unidad)].filter(Boolean).join(' · '));
-      if (sub) doc.text(doc.splitTextToSize(sub, ancho), x, d.cell.y + 3.6 + lineas.length * 3);
+      if (gp.tag) {
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(6.6); doc.setTextColor(95);
+        doc.text(doc.splitTextToSize(txt(gp.tag), ancho), x, d.cell.y + 3.6 + lineas.length * 3);
+      }
     },
     didDrawPage: () => {
       cabecera();
@@ -3848,6 +3988,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
       tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
       punto_id: c.punto_id, variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
       bloque: claveSuma(c.variable, c.unidad_reporte),
+      // la potencia en kW no se acumula: su "consumo del mes" es el valor leído
+      inst: c.tipo_acumulacion === 'instantanea',
       principal: c.principal !== false, cons: {}, estado: {}, metodo: {}, lect: {}
     });
     const v = porVar.get(c.variable_id);
@@ -6943,6 +7085,8 @@ function filasGeneracion(d, meses, F = { propiedad: '', equipos: [] }) {
 
 // Gráfico + cifras de la generación: de un equipo (uno) o de todo lo filtrado.
 function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }) {
+  // "Las tres juntas" no es una métrica más: dibuja kWh, horas y kW en un solo gráfico.
+  if (cfg.metrica === 'todas') return panelGeneracionCombinado(filas, meses, cfg, { uno, alCambiar, imprimir });
   const met = METRICAS_GEN[cfg.metrica] ? cfg.metrica : 'kwh', M = METRICAS_GEN[met];
   const serie = meses.map((m, i) => ({ mes: m, v: agregarGen(filas.map(x => ({ g: x.g, r: x.por[i].r })), met) }));
   const est = estadisticas(serie);
@@ -6966,7 +7110,8 @@ function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }
   const grafico = graficoSerie(serie, { titulo, unidad: M.u, tipo: cfg.tipo, capas: cfg.capas, est, etiquetaMes, imprimir });
   if (imprimir) return el('div', { class: 'analisis-punto imp' }, [cifras, grafico]);
   const controles = el('div', { class: 'controles-punto' }, [
-    el('label', { text: 'Métrica', 'data-ayuda': null }, [selF(Object.entries(METRICAS_GEN).map(([k, m]) => [k, `${m.t} (${m.u})`]), met, x => { cfg.metrica = x; alCambiar(); })]),
+    el('label', { text: 'Métrica', 'data-ayuda': null }, [selF([...Object.entries(METRICAS_GEN).map(([k, m]) => [k, `${m.t} (${m.u})`]),
+      ['todas', 'Las tres juntas (kWh + h + kW)']], met, x => { cfg.metrica = x; alCambiar(); })]),
     el('label', { text: 'Gráfico' }, [selF([['barras', 'Barras'], ['linea', 'Línea']], cfg.tipo, x => { cfg.tipo = x; alCambiar(); })]),
     el('div', { class: 'capas-punto' }, [el('span', { class: 'seg-tit', text: 'Mostrar' }),
       el('div', { class: 'capas-ops' }, Object.entries(CAPAS_PUNTO).map(([k, t]) => el('label', { class: 'check-linea capa-op', 'data-ayuda': AYUDA_CAPA[k] }, [
@@ -6976,6 +7121,45 @@ function panelGeneracion(filas, meses, cfg, { uno, alCambiar, imprimir = false }
   return el('section', { class: 'analisis-punto seccion' }, [
     el('div', { class: 'analisis-cab' }, [el('h3', { text: 'Análisis · ' + (uno ? genNombre(uno.g) : 'parque filtrado') }),
       el('span', { class: 'ayuda', 'data-ayuda': AYUDA_GEN[met], tabindex: '0', text: 'ⓘ Cómo se calcula ' + M.t.toLowerCase() })]),
+    controles, cifras, grafico]);
+}
+
+/* Las tres medidas de los generadores en un gráfico: energía en barras, horas y
+   potencia en líneas sobre su propio eje. Sirve para ver de una mirada si un mes
+   generó menos porque estuvo menos horas o porque estuvo menos cargado. */
+function panelGeneracionCombinado(filas, meses, cfg, { uno, alCambiar, imprimir = false }) {
+  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const etiquetaMes = m => { const t = nombrePeriodo(m).split(' ')[0].slice(0, 3); return variosAnios ? `${t}-${m.slice(2, 4)}` : t; };
+  const porMes = meses.map((m, i) => {
+    const items = filas.map(x => ({ g: x.g, r: x.por[i].r }));
+    // El kW de varios equipos se suma: es la potencia que estaba dando el parque.
+    const kw = items.some(x => x.r.kw != null) ? items.reduce((a, x) => a + (x.r.kw || 0), 0) : null;
+    return { etiqueta: etiquetaMes(m), valores: { kwh: agregarGen(items, 'kwh'), horas: agregarGen(items, 'horas'), kw } };
+  });
+  const quien = uno ? genNombre(uno.g) : `${filas.length} equipos`;
+  const grafico = graficoCombinado(porMes, {
+    titulo: `${quien} · energía, horas y potencia`,
+    series: [{ clave: 'kwh', nombre: 'Energía generada', unidad: 'kWh', tipo: 'barra' },
+             { clave: 'horas', nombre: 'Horas de marcha', unidad: 'h', tipo: 'linea' },
+             { clave: 'kw', nombre: 'Potencia leída', unidad: 'kW', tipo: 'linea' }] });
+  const tot = k => porMes.reduce((a, p) => a + (p.valores[k] || 0), 0);
+  const cifra = (v, k, extra) => el('div', { class: 'cifra' }, [
+    el('div', { class: 'v', text: v }), el('div', { class: 'k', text: k }),
+    extra ? el('div', { class: 's', text: extra }) : null]);
+  const horas = tot('horas');
+  const cifras = el('div', { class: 'cifras-punto' }, [
+    cifra(num(tot('kwh')) + ' kWh', 'Energía del periodo'),
+    cifra(num(horas) + ' h', 'Horas del periodo'),
+    horas ? cifra(num(tot('kwh') / horas) + ' kW', 'Potencia media', 'Energía ÷ horas') : null
+  ]);
+  if (imprimir) return el('div', { class: 'analisis-punto imp' }, [cifras, grafico]);
+  const controles = el('div', { class: 'controles-punto' }, [
+    el('label', { text: 'Métrica' }, [selF([...Object.entries(METRICAS_GEN).map(([k, m]) => [k, `${m.t} (${m.u})`]),
+      ['todas', 'Las tres juntas (kWh + h + kW)']], 'todas', x => { cfg.metrica = x; alCambiar(); })])
+  ]);
+  return el('section', { class: 'analisis-punto seccion' }, [
+    el('div', { class: 'analisis-cab' }, [el('h3', { text: 'Análisis · ' + (uno ? genNombre(uno.g) : 'parque filtrado') }),
+      el('span', { class: 'ayuda', text: 'Las barras y el eje izquierdo son kWh; las líneas y el eje derecho, horas y kW.' })]),
     controles, cifras, grafico]);
 }
 
@@ -7486,8 +7670,12 @@ async function fichaGenerador(g) {
     ]),
     g.observaciones ? el('p', { class: 'banda neutro', text: g.observaciones }) : null,
     el('div', { class: 'grid2' }, [mov('Ingreso a faena', ingreso), mov('Devolución', devol)]),
-    graficoBarras(conDato.filter(x => x.r.kwhMes != null).map(x => ({ etiqueta: nombrePeriodo(x.m).split(' ')[0].slice(0, 3), valor: x.r.kwhMes })),
-      { titulo: 'Energía generada por mes', unidad: 'kWh' }),
+    graficoCombinado(conDato.map(x => ({ etiqueta: nombrePeriodo(x.m).split(' ')[0].slice(0, 3),
+      valores: { kwh: x.r.kwhMes, horas: x.r.horasMes, kw: x.r.kw } })), {
+      titulo: 'Energía, horas y potencia por mes',
+      series: [{ clave: 'kwh', nombre: 'Energía generada', unidad: 'kWh', tipo: 'barra' },
+               { clave: 'horas', nombre: 'Horas de marcha', unidad: 'h', tipo: 'linea' },
+               { clave: 'kw', nombre: 'Potencia leída', unidad: 'kW', tipo: 'linea' }] }),
     tabla(['Mes', 'Toma', 'kW', 'kWh acumulado', 'kWh del mes', 'Horómetro', 'Horas del mes', 'Factor carga', 'Litros', 'L/kWh', 'Tomada por'],
       [...filas].reverse().map(({ m, r }) => [
         nombrePeriodo(m), r.toma ? fechaCorta(r.toma.fecha_lectura) : '—', r.kw != null ? num(r.kw) : r.vacio,

@@ -1540,3 +1540,28 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .enlace-punto{display:inline;margin:0;padding:2px 0;border:0;background:none;font:inherit;font-weight:inherit;
   color:inherit;text-align:left;cursor:pointer;text-decoration:none}
 .enlace-punto:focus-visible{outline:2px solid var(--marca);outline-offset:2px;border-radius:3px}
+
+/* ---- Visor de fotos ----
+   La foto ampliada se ve encima de todo, sin abrir otra pestaña. El contenedor recorta
+   la imagen cuando se acerca, así el zoom no empuja el resto de la pantalla. */
+.visor-foto{position:fixed;inset:0;z-index:300;background:rgba(8,18,20,.95);
+  display:grid;grid-template-rows:auto 1fr auto;gap:8px;padding:10px;
+  padding-top:calc(10px + env(safe-area-inset-top));
+  padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+.visor-barra{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.visor-btn{appearance:none;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.12);
+  color:#fff;border-radius:10px;min-width:44px;height:44px;padding:0 12px;
+  font-size:16px;font-weight:600;line-height:1;cursor:pointer}
+.visor-btn:hover{background:rgba(255,255,255,.22)}
+.visor-lienzo{position:relative;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;min-height:0}
+.visor-img{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;cursor:zoom-in;
+  transform-origin:center center;user-select:none;-webkit-user-select:none;-webkit-user-drag:none}
+.visor-img.ampliada{cursor:grab}
+.visor-flecha{position:absolute;top:50%;transform:translateY(-50%);font-size:26px;z-index:2}
+.visor-flecha.izq{left:4px}
+.visor-flecha.der{right:4px}
+.visor-pie{text-align:center;color:rgba(255,255,255,.78);font-size:13px;min-height:18px}
+.foto-zoom{appearance:none;border:0;background:none;padding:0;margin:0;line-height:0;
+  cursor:zoom-in;display:block;border-radius:6px}
+.foto-zoom:focus-visible{outline:2px solid var(--acento);outline-offset:2px}

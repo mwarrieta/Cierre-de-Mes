@@ -664,6 +664,136 @@ const ordenVariables = (a, b) => rangoVar(a) - rangoVar(b) ||
 const fotosOrdenadas = l => [...(l.fotos || [])]
   .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id);
 
+/* Visor de fotos: la imagen ampliada se ve encima de la pantalla, sin abrir otra pestaña.
+   Zoom con pellizco en el celular y con rueda, doble clic o los botones en el computador.
+   No usa el modal porque la ficha del registro ya lo está ocupando. */
+let _visorCerrar = null;
+function abrirVisorFoto(lista, inicio = 0) {
+  const fotos = (lista || []).filter(f => f && f.url);
+  if (!fotos.length) return;
+  if (_visorCerrar) _visorCerrar();
+  let n = Math.min(Math.max(0, inicio), fotos.length - 1);
+  let esc = 1, x = 0, y = 0;
+
+  const img = el('img', { class: 'visor-img', alt: 'Foto del medidor', draggable: 'false' });
+  const pie = el('div', { class: 'visor-pie' });
+  const aplicar = () => {
+    img.style.transform = `translate(${x}px, ${y}px) scale(${esc})`;
+    img.classList.toggle('ampliada', esc > 1.01);
+  };
+  const ajustar = () => { esc = 1; x = 0; y = 0; aplicar(); };
+  // Al acercar, el punto que se tocó se queda donde está.
+  const zoom = (factor, cx, cy) => {
+    const antes = esc;
+    esc = Math.min(8, Math.max(1, esc * factor));
+    if (esc === antes) return;
+    const r = img.getBoundingClientRect();
+    const mx = r.left + r.width / 2, my = r.top + r.height / 2;
+    x -= ((cx ?? mx) - mx) * (esc / antes - 1);
+    y -= ((cy ?? my) - my) * (esc / antes - 1);
+    if (esc === 1) { x = 0; y = 0; }
+    aplicar();
+  };
+  const mostrar = () => {
+    img.src = fotos[n].url;
+    pie.textContent = [fotos[n].titulo, fotos.length > 1 ? `Foto ${n + 1} de ${fotos.length}` : '']
+      .filter(Boolean).join(' · ');
+    ajustar();
+  };
+  const ir = d => { n = (n + d + fotos.length) % fotos.length; mostrar(); };
+
+  const btn = (txt, titulo, fn, clase = '') => el('button', { type: 'button', class: 'visor-btn ' + clase,
+    text: txt, title: titulo, 'aria-label': titulo, onclick: e => { e.stopPropagation(); fn(); } });
+  const cerrar = () => {
+    document.removeEventListener('keydown', teclas, true);
+    capa.remove();
+    _visorCerrar = null;
+  };
+  const teclas = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); cerrar(); }
+    else if (e.key === 'ArrowLeft') ir(-1);
+    else if (e.key === 'ArrowRight') ir(1);
+    else if (e.key === '+' || e.key === '=') zoom(1.4);
+    else if (e.key === '-') zoom(1 / 1.4);
+  };
+  const lienzo = el('div', { class: 'visor-lienzo' }, [
+    fotos.length > 1 ? btn('‹', 'Foto anterior', () => ir(-1), 'visor-flecha izq') : null,
+    img,
+    fotos.length > 1 ? btn('›', 'Foto siguiente', () => ir(1), 'visor-flecha der') : null
+  ]);
+  const capa = el('div', { class: 'visor-foto', role: 'dialog', 'aria-label': 'Foto ampliada' }, [
+    el('div', { class: 'visor-barra' }, [
+      el('div', { class: 'fila' }, [
+        btn('−', 'Alejar', () => zoom(1 / 1.4)),
+        btn('+', 'Acercar', () => zoom(1.4)),
+        btn('Ajustar', 'Ver la foto completa', ajustar)
+      ]),
+      btn('✕', 'Cerrar', cerrar)
+    ]),
+    lienzo, pie
+  ]);
+  // Tocar el fondo cierra; tocar la foto no.
+  capa.addEventListener('click', e => { if (e.target === capa || e.target === lienzo) cerrar(); });
+
+  // ---- pellizco para el zoom y arrastre cuando está ampliada ----
+  const pts = new Map();
+  let d0 = 0, esc0 = 1, movX = 0, movY = 0, movido = false, ultimoToque = 0;
+  img.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    img.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    movido = false;
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      d0 = Math.hypot(a.x - b.x, a.y - b.y); esc0 = esc;
+    } else { movX = e.clientX; movY = e.clientY; }
+  });
+  img.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d0 > 0) { esc = Math.min(8, Math.max(1, esc0 * d / d0)); movido = true; aplicar(); }
+    } else if (esc > 1.01) {
+      x += e.clientX - movX; y += e.clientY - movY;
+      movX = e.clientX; movY = e.clientY; movido = true; aplicar();
+    }
+  });
+  const soltar = e => {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) d0 = 0;
+    // doble toque en el celular: acerca y aleja
+    if (e.type === 'pointerup' && e.pointerType !== 'mouse' && !movido) {
+      const t = Date.now();
+      if (t - ultimoToque < 320) { esc > 1.01 ? ajustar() : zoom(2.5, e.clientX, e.clientY); ultimoToque = 0; }
+      else ultimoToque = t;
+    }
+  };
+  img.addEventListener('pointerup', soltar);
+  img.addEventListener('pointercancel', soltar);
+  img.addEventListener('dblclick', e => {
+    e.preventDefault();
+    esc > 1.01 ? ajustar() : zoom(2.5, e.clientX, e.clientY);
+  });
+  img.addEventListener('wheel', e => {
+    e.preventDefault();
+    zoom(e.deltaY < 0 ? 1.18 : 1 / 1.18, e.clientX, e.clientY);
+  }, { passive: false });
+
+  document.body.append(capa);
+  document.addEventListener('keydown', teclas, true);
+  _visorCerrar = cerrar;
+  mostrar();
+  return cerrar;
+}
+
+// Miniatura que abre el visor en la foto que se tocó.
+const miniaturaFoto = (galeria, i, clase = '') => el('button', {
+  type: 'button', class: 'foto-zoom', title: 'Ampliar la foto', 'aria-label': 'Ampliar la foto',
+  onclick: () => abrirVisorFoto(galeria, i)
+}, [el('img', { class: clase, src: galeria[i].url, alt: 'Foto del medidor' })]);
+
 // Leyenda amarilla al pie de cada vista: abre el formulario para contar una falla o una idea.
 const avisoBeta = () => el('button', { type: 'button', class: 'aviso-beta',
   text: 'Versión beta · ¿Algo falla o se puede mejorar? Cuéntanos', onclick: () => formSugerencia() });
@@ -1243,10 +1373,12 @@ async function abrirCaptura(entrada) {
     zonaExistente.append(el('p', { class: 'ayuda', text: 'Fotos ya guardadas de este punto:' }), fotos);
     if (navigator.onLine) {
       (async () => {
+        const galeria = [];
         for (const l of conFoto) for (const f of fotosOrdenadas(l)) {
           const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 600);
-          if (data?.signedUrl) fotos.append(el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
-            [el('img', { class: 'miniatura', src: data.signedUrl, alt: 'Foto guardada de esta lectura' })]));
+          if (!data?.signedUrl) continue;
+          galeria.push({ url: data.signedUrl, titulo: punto.nombre });
+          fotos.append(miniaturaFoto(galeria, galeria.length - 1, 'miniatura'));
         }
       })();
     } else {
@@ -2889,11 +3021,16 @@ async function verConsumo({ variable_id, mes }, ctx) {
   // Si `borrable`, cada foto lleva un botón "Quitar" (solo admin/supervisor, lo exige también la RLS).
   const pintarFotos = async (cont, lista, borrable = false, lecturaId = null) => {
     if (!lista.length) { cont.replaceChildren(el('p', { class: 'ayuda', text: 'Sin foto todavía' })); return; }
-    const nodos = await Promise.all(lista.map(async (ft, i) => {
+    // Primero los enlaces firmados: así el visor puede pasar de una foto a otra con las flechas.
+    const urls = await Promise.all(lista.map(async ft => {
       const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 600);
-      if (!data?.signedUrl) return null;
-      const enlace = el('a', { href: data.signedUrl, target: '_blank', rel: 'noopener' },
-        [el('img', { src: data.signedUrl, alt: 'Foto del medidor' })]);
+      return data?.signedUrl || null;
+    }));
+    const galeria = [];
+    const pos = urls.map(u => u ? galeria.push({ url: u, titulo: `${puntoNombre} · ${nMes}` }) - 1 : -1);
+    const nodos = await Promise.all(lista.map(async (ft, i) => {
+      if (pos[i] < 0) return null;
+      const enlace = miniaturaFoto(galeria, pos[i]);
       if (!borrable) return enlace;
       const btn = el('button', { type: 'button', class: 'btn chico peligro', text: 'Quitar', onclick: async () => {
         if (!confirm(`¿Quitar la foto ${i + 1}? No se puede deshacer.`)) return;

@@ -105,6 +105,10 @@
     for (const p of instalados.data) porPunto[p.id] = p.equipo_id ? p : null;
     const gruposDe = {};
     for (const g of (gruposPunto.data || [])) gruposDe[g.punto_id] = g.grupos || [];
+    // Un punto desactivado (un generador devuelto, un equipo dado de baja) ya no se
+    // recorre en terreno ni cuenta como pendiente. Su historia sigue en los informes,
+    // que leen los consumos del servidor y no este catálogo.
+    puntos.data = puntos.data.filter(v => v.punto.activo !== false);
     for (const v of puntos.data) {
       v.punto.equipo = porPunto[v.punto.id] || null;
       v.punto.grupos = gruposDe[v.punto.id] || [];
@@ -334,6 +338,20 @@
             idAviso = (data && data.avisos && data.avisos[0]) || null;
             item.rpcHecho = true; item.principalId = idPrincipal; item.principalVar = variablePrincipal;
             item.avisoId = idAviso;
+            await idb.guardar('cola', item);
+          }
+          // Estado del generador visto en esta toma. Va aparte de guardar_captura
+          // porque es del EQUIPO, no de una lectura, y se marca una sola vez.
+          if (fila.generador && !item.estadoHecho) {
+            const { error: e6 } = await sb.rpc('registrar_estado_generador', {
+              p_generador_id: fila.generador.id,
+              p_periodo: fila.periodo,
+              p_estado: fila.generador.estado,
+              p_obs: fila.generador.observacion ?? null,
+              p_observado_en: fila.fecha_lectura
+            });
+            if (e6) throw e6;
+            item.estadoHecho = true;
             await idb.guardar('cola', item);
           }
           if (!idPrincipal && ids.length && idAviso) {

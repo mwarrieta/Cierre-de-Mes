@@ -1411,6 +1411,26 @@ async function abrirCaptura(entrada) {
       '<b>Nota anterior de esta lectura:</b> ' + esc(yaConObs.yaHay.observacion) }) : null
   ]);
 
+  /* ---- estado del equipo (solo generadores) ----
+     Lo que se marca acá es lo que se VIO el día de la toma. Un generador que el 1
+     de noviembre estaba operando pudo quedar fuera de servicio el día 2, así que
+     se guarda con su fecha y los informes lo muestran como "estado al <fecha>". */
+  const gen = (S.catalogo.generadores || []).find(g => g.punto_id === punto.id);
+  let zonaGen = null, selEstadoGen = null, obsEstadoGen = null;
+  if (gen) {
+    const estados = [...new Set([...(gen.estado ? [gen.estado] : []), ...ESTADOS_GEN])];
+    selEstadoGen = el('select', {}, estados.map(e =>
+      el('option', { value: e, text: e, selected: e === gen.estado || null })));
+    obsEstadoGen = el('input', { type: 'text', placeholder: 'Nota del estado (opcional)' });
+    zonaGen = el('div', { class: 'card estado-gen' }, [
+      el('h3', { class: 'paso', style: 'margin-top:0', text: '3 · Estado del equipo' }),
+      el('p', { class: 'ayuda', text: `Hoy está como "${gen.estado || 'sin estado'}". Marca cómo lo ves ahora: ` +
+        'queda guardado con la fecha de esta toma y actualiza el estado del equipo.' }),
+      el('label', { text: 'Estado' }, [selEstadoGen]),
+      el('label', { text: 'Nota' }, [obsEstadoGen])
+    ]);
+  }
+
   const cuerpo = el('div', { class: 'captura' }, [
     punto.instruccion_lectura
       ? el('p', { class: 'banda acento', text: punto.instruccion_lectura })
@@ -1421,6 +1441,7 @@ async function abrirCaptura(entrada) {
     el('h3', { class: 'paso', text: vars.length > 1 ? `2 · Lecturas (${vars.length})` : '2 · Lectura' }),
     zonaLecturas,
     zonaMedidor,
+    zonaGen,
     extras,
     el('div', { class: 'acciones-fijas dos' }, [
       el('button', { class: 'btn cancelar', text: 'Cancelar', onclick: () => salir(true) }),
@@ -1508,7 +1529,14 @@ async function abrirCaptura(entrada) {
       }
     }
 
-    if (nuevas.length || avisos.length) {
+    // El estado del generador viaja con la captura: si cambió, o si hay lecturas
+    // nuevas, queda registrado para este periodo.
+    const estadoGen = gen && selEstadoGen
+      ? { id: gen.id, estado: selEstadoGen.value, observacion: obsEstadoGen.value.trim() || null }
+      : null;
+    const cambioEstado = !!(estadoGen && (estadoGen.estado !== gen.estado || estadoGen.observacion));
+
+    if (nuevas.length || avisos.length || cambioEstado) {
       await DB.encolar({
         tipo: 'captura',
         punto_id: punto.id,
@@ -1517,6 +1545,7 @@ async function abrirCaptura(entrada) {
         lecturas: nuevas,
         avisos: avisos.map(a => ({ categoria_id: a.categoria_id, descripcion: a.descripcion })),
         observacion: null,
+        generador: estadoGen,
         dispositivo: navigator.userAgent.slice(0, 120)
       }, nuevasFotos.map(f => f.blob));
     }
@@ -1524,6 +1553,7 @@ async function abrirCaptura(entrada) {
     cerrarModal();
     const partes = [];
     if (nuevas.length) partes.push(nuevas.length === 1 ? '1 lectura' : `${nuevas.length} lecturas`);
+    if (cambioEstado) partes.push('estado del equipo');
     if (correcciones.length) partes.push(`${correcciones.length} corregida(s)`);
     if (avisos.length) partes.push(avisos.length === 1 ? '1 aviso' : `${avisos.length} avisos`);
     toast(partes.length ? partes.join(' · ') + ' guardado en el dispositivo' : 'Foto agregada');
@@ -2923,7 +2953,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const gente = S.catalogo?.gente || {};
   const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado', validado: 'Validado' };
 
-  const cuerpo = el('div', { class: 'ficha-consumo' });
+  const cuerpo = el('div', { class: 'ficha-consumo ficha-validar' });
   const opcionesModal = { subtitulo: `${puntoNombre} · ${varNombre}`, completo: true, tituloGrande: true };
   modal('Registro de ' + nMes, el('p', { class: 'cargando', text: 'Cargando lecturas…' }), opcionesModal);
 
@@ -2956,7 +2986,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const { data: lects, error } = await sb.from('lecturas')
     .select('id, periodo, valor, valor_display, valor_mwh, valor_kwh, fecha_lectura, observacion, estado, tomada_por, origen, sin_dato, es_reset, fotos(id, storage_path, orden)')
     .eq('variable_id', variable_id).in('periodo', [mes, sig]).neq('estado', 'descartada').order('fecha_lectura');
-  if (error) { cuerpo.append(el('p', { class: 'error', text: error.message })); }
+  const errLect = error ? el('p', { class: 'error', text: error.message }) : null;
 
   // La foto del medidor se saca una vez por punto y queda colgada de UNA de sus lecturas
   // (casi siempre la de kWh+). Al revisar otra lectura del mismo punto hay que poder verla:
@@ -2967,9 +2997,9 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const otrasVars = idsPunto.filter(id => id !== variable_id);
   if (puntoId && otrasVars.length) {
     try {
-      const r = await sb.from('lecturas').select('id, periodo, variable_id, fotos(id, storage_path, orden)')
+      const r = await sb.from('lecturas').select('id, periodo, variable_id')
         .in('variable_id', otrasVars).in('periodo', [mes, sig]).neq('estado', 'descartada');
-      hermanas = (r.data || []).filter(x => (x.fotos || []).length);
+      hermanas = r.data || [];
     } catch { /* sin esto, solo se ven las fotos de esta lectura */ }
   }
   // Tras subir o quitar una foto, el icono de la tabla se recalcula mirando TODO el punto.
@@ -2989,7 +3019,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const rango = b && b.sigma
     ? `Rango habitual: ${num(Math.max(0, b.media - 1.5 * b.sigma))} – ${num(b.media + 1.5 * b.sigma)} ${uRep} (promedio ${num(b.media)})`
     : 'Todavía no hay historia suficiente para un rango habitual (hacen falta 4 meses).';
-  cuerpo.append(el('div', { class: 'ficha-resultado' + (j ? ' ' + j.nivel : '') }, [
+  const resultado = el('div', { class: 'ficha-resultado' + (j ? ' ' + j.nivel : '') }, [
     el('div', { class: 'res-et', text: 'Total del mes calculado' }),
     f ? el('div', { class: 'res-valor', text: `${num(f.consumo)} ${uRep}` })
       : el('div', { class: 'res-valor falta', text: 'Sin calcular' }),
@@ -3002,7 +3032,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
     ]),
     el('p', { class: 'ayuda', text: f ? rango
       : `Falta una de las dos lecturas: la de ${nAnt} o la de ${nMes}.` })
-  ]));
+  ]);
 
   const campoValor = (valores = {}) => doble
     ? { mwh: el('input', { type: 'number', step: 'any', value: valores.mwh ?? '', placeholder: 'MWh' }),
@@ -3017,72 +3047,160 @@ async function verConsumo({ variable_id, mes }, ctx) {
     ? (c.mwh.value === '' && c.kwh.value === '' ? null : { valor_display: null, valor_mwh: Number(c.mwh.value || 0), valor_kwh: Number(c.kwh.value || 0) })
     : (c.val.value === '' || Number.isNaN(aNumero(c.val.value)) ? null : { valor_display: aNumero(c.val.value), valor_mwh: null, valor_kwh: null });
 
-  // Fotos de una lectura: miniaturas que abren la imagen completa.
-  // Si `borrable`, cada foto lleva un botón "Quitar" (solo admin/supervisor, lo exige también la RLS).
-  const pintarFotos = async (cont, lista, borrable = false, lecturaId = null) => {
-    if (!lista.length) { cont.replaceChildren(el('p', { class: 'ayuda', text: 'Sin foto todavía' })); return; }
-    // Primero los enlaces firmados: así el visor puede pasar de una foto a otra con las flechas.
-    const urls = await Promise.all(lista.map(async ft => {
-      const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 600);
-      return data?.signedUrl || null;
-    }));
-    const galeria = [];
-    const pos = urls.map(u => u ? galeria.push({ url: u, titulo: `${puntoNombre} · ${nMes}` }) - 1 : -1);
-    const nodos = await Promise.all(lista.map(async (ft, i) => {
-      if (pos[i] < 0) return null;
-      const enlace = miniaturaFoto(galeria, pos[i]);
-      if (!borrable) return enlace;
-      const btn = el('button', { type: 'button', class: 'btn chico peligro', text: 'Quitar', onclick: async () => {
-        if (!confirm(`¿Quitar la foto ${i + 1}? No se puede deshacer.`)) return;
-        btn.disabled = true; btn.textContent = 'Quitando…';
-        try {
-          const del = await sb.from('fotos').delete().eq('id', ft.id).select('id');
-          if (del.error) throw del.error;
-          if (!del.data?.length) throw new Error('No tienes permiso para quitar esta foto');
-          // el archivo se borra después de la fila: si esto falla, solo queda un archivo huérfano
-          await sb.storage.from(C.BUCKET).remove([ft.storage_path]).catch(() => {});
-          toast('Foto quitada');
-          const r = await sb.from('fotos').select('id, storage_path, orden').eq('lectura_id', lecturaId).order('orden').order('id');
-          await refrescarIcono();
-          pintarFotos(cont, r.data || [], borrable, lecturaId);
-        } catch (err) {
-          btn.disabled = false; btn.textContent = 'Quitar';
-          toast(err.message || String(err), true);
-        }
-      } });
-      return el('figure', { class: 'ficha-foto' }, [enlace, btn]);
-    }));
-    cont.replaceChildren(...nodos.filter(Boolean));
+  /* ---- Panel de fotos ----
+     La foto es lo que se mira para validar, así que ocupa el lado grande de la pantalla.
+     Junta TODAS las fotos del punto en este registro: las del cierre del mes, las del mes
+     anterior y las que están cargadas en otra lectura del mismo punto (kWh+ / kWh-).
+     La foto sigue siendo una sola en la base: acá solo se muestra. */
+  const nombreVar = id => S.catalogo.variables.find(x => x.id === id)?.nombre || 'otra lectura';
+  const lecturasFoto = [
+    ...(lects || []).map(l => ({ id: l.id, periodo: l.periodo, variable_id, propia: true })),
+    ...hermanas.map(h => ({ id: h.id, periodo: h.periodo, variable_id: h.variable_id, propia: false }))
+  ];
+  const lectEditable = (lects || []).find(l => l.periodo === sig) || null;
+
+  const fvMarco = el('div', { class: 'fv-marco' });
+  const fvTira = el('div', { class: 'fv-tira' });
+  const fvPie = el('div', { class: 'fv-pie' });
+  let galeria = [], sel = 0, comparar = true;
+  const chkComparar = el('label', { class: 'check-linea chico', hidden: '' }, [
+    el('input', { type: 'checkbox', checked: '', onchange: e => { comparar = e.target.checked; pintarPanel(); } }),
+    el('span', { text: 'Comparar con el otro mes' })
+  ]);
+
+  // Subir fotos al cierre de este mes (es la lectura que se está revisando).
+  const inputFoto = el('input', { type: 'file', accept: 'image/*', multiple: '', hidden: '' });
+  const btnFoto = el('button', { type: 'button', class: 'btn chico', text: '+ Agregar foto', onclick: () => {
+    if (!navigator.onLine) return toast('Sin señal: la foto necesita conexión para subirse', true);
+    inputFoto.click();
+  } });
+  inputFoto.addEventListener('change', async () => {
+    const archivos = [...inputFoto.files]; inputFoto.value = '';
+    if (!archivos.length || !lectEditable) return;
+    btnFoto.disabled = true; btnFoto.textContent = 'Subiendo…';
+    let ok = 0;
+    try {
+      for (const a of archivos) {
+        const blob = await DB.comprimirFoto(a, (v && v.punto.foto_calidad) || 'normal');
+        // la fecha del archivo es lo más parecido a cuándo se sacó la foto
+        const cuando = a.lastModified && a.lastModified <= Date.now()
+          ? new Date(a.lastModified).toISOString() : lectEditable.fecha_lectura;
+        await DB.subirFotoALectura({ lectura_id: lectEditable.id, periodo: lectEditable.periodo, variable_id, blob, tomada_en: cuando });
+        ok++;
+      }
+      toast(ok === 1 ? 'Foto agregada' : `${ok} fotos agregadas`);
+      if (ok) { sel = 0; await refrescarIcono(); }
+    } catch (err) {
+      toast(`${ok ? ok + ' subida(s). ' : ''}No se pudo subir la foto: ${err.message || err}`, true);
+    } finally {
+      btnFoto.disabled = false; btnFoto.textContent = '+ Agregar foto';
+      await cargarFotos();
+    }
+  });
+
+  const quitarFoto = async (g, btn) => {
+    if (!confirm('¿Quitar esta foto? No se puede deshacer.')) return;
+    btn.disabled = true; btn.textContent = 'Quitando…';
+    try {
+      const del = await sb.from('fotos').delete().eq('id', g.id).select('id');
+      if (del.error) throw del.error;
+      if (!del.data?.length) throw new Error('No tienes permiso para quitar esta foto');
+      // el archivo se borra después de la fila: si esto falla, solo queda un archivo huérfano
+      await sb.storage.from(C.BUCKET).remove([g.storage_path]).catch(() => {});
+      toast('Foto quitada');
+      await refrescarIcono();
+      await cargarFotos();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Quitar esta foto';
+      toast(err.message || String(err), true);
+    }
   };
+
+  const pintarPanel = () => {
+    if (!galeria.length) {
+      fvMarco.replaceChildren(el('div', { class: 'fv-vacio' }, [
+        el('p', { text: 'Este registro no tiene foto' }),
+        el('p', { class: 'ayuda', text: lectEditable
+          ? 'Puedes agregar la del medidor para dejar respaldo de la lectura.'
+          : 'Todavía no hay lectura de cierre a la cual colgarla.' })]));
+      fvTira.replaceChildren();
+      fvPie.replaceChildren(el('span', { class: 'ayuda', text: 'Sin respaldo fotográfico' }),
+        lectEditable && puedo ? el('div', { class: 'fila' }, [btnFoto, inputFoto]) : null);
+      return;
+    }
+    const g = galeria[sel];
+    // Las fotos de medidor suelen ser verticales y sobra ancho: en pantalla grande se
+    // muestra al lado la del otro mes, así los dos totalizadores se comparan de una mirada.
+    const hayDeAmbos = galeria.some(x => x.periodo === sig) && galeria.some(x => x.periodo === mes);
+    const ancha = window.matchMedia('(min-width:1400px)').matches;
+    const otra = (comparar && ancha && hayDeAmbos) ? galeria.find(x => x.periodo !== g.periodo) : null;
+    const marco = x => el('figure', { class: 'fv-foto' + (x === g ? ' elegida' : '') }, [
+      el('img', { src: x.url, alt: 'Foto del medidor', title: 'Clic para ampliar y hacer zoom',
+        onclick: () => abrirVisorFoto(galeria, galeria.indexOf(x)) }),
+      el('figcaption', { text: x.titulo })
+    ]);
+    fvMarco.className = 'fv-marco' + (otra ? ' comparando' : '');
+    // en orden de mes: primero el cierre anterior, después el que se está validando
+    fvMarco.replaceChildren(...(otra
+      ? [g, otra].sort((a, b) => String(a.periodo).localeCompare(String(b.periodo))).map(marco)
+      : [marco(g)]));
+    chkComparar.hidden = !(ancha && hayDeAmbos);
+    fvTira.replaceChildren(...galeria.map((x, i) => el('button', {
+      type: 'button', class: 'fv-thumb' + (i === sel ? ' sel' : ''), title: x.titulo,
+      onclick: () => { sel = i; pintarPanel(); } }, [
+        el('img', { src: x.url, alt: '' }),
+        el('span', { class: 'et', text: x.etiqueta })])));
+    fvPie.replaceChildren(
+      el('span', { class: 'ayuda', text: g.titulo + (galeria.length > 1 ? ` · ${sel + 1} de ${galeria.length}` : '') }),
+      el('div', { class: 'fila' }, [
+        el('button', { class: 'btn chico', text: 'Ampliar', onclick: () => abrirVisorFoto(galeria, sel) }),
+        // Quitar solo la que cuelga de la lectura que se está revisando.
+        (g.propia && g.periodo === sig && puedo)
+          ? el('button', { class: 'btn chico peligro', text: 'Quitar esta foto',
+              onclick: e => quitarFoto(g, e.target) }) : null,
+        // La de otra lectura del punto se administra desde su propia ficha.
+        !g.propia ? el('button', { class: 'btn chico', text: `Abrir ${nombreVar(g.variable_id)}`,
+            title: 'Ir a esa lectura para agregar o quitar su foto',
+            onclick: () => verConsumo({ variable_id: g.variable_id, mes }, ctx) }) : null,
+        // Agregar siempre cuelga la foto del cierre de este mes, mires la que mires.
+        (lectEditable && puedo) ? btnFoto : null, inputFoto
+      ]));
+  };
+
+  async function cargarFotos() {
+    galeria = [];
+    const meta = new Map(lecturasFoto.map(x => [x.id, x]));
+    const ids = [...meta.keys()];
+    if (ids.length) {
+      const r = await sb.from('fotos').select('id, storage_path, orden, lectura_id')
+        .in('lectura_id', ids).order('orden').order('id');
+      // Primero el cierre de ESTE mes (es el que se valida) y, dentro, las de esta lectura.
+      const orden = (r.data || []).slice().sort((a, b) => {
+        const A = meta.get(a.lectura_id) || {}, B = meta.get(b.lectura_id) || {};
+        return (A.periodo === sig ? 0 : 1) - (B.periodo === sig ? 0 : 1) ||
+               (B.propia === true) - (A.propia === true) ||
+               (a.orden ?? 99) - (b.orden ?? 99) || a.id - b.id;
+      });
+      for (const ft of orden) {
+        const m = meta.get(ft.lectura_id); if (!m) continue;
+        const { data } = await sb.storage.from(C.BUCKET).createSignedUrl(ft.storage_path, 900);
+        if (!data?.signedUrl) continue;
+        const cierra = m.periodo === sig ? nMes : nAnt;
+        galeria.push({ url: data.signedUrl, id: ft.id, storage_path: ft.storage_path,
+          lectura_id: ft.lectura_id, periodo: m.periodo, propia: m.propia, variable_id: m.variable_id,
+          etiqueta: cierra.split(' ')[0] + (m.propia ? '' : ' · ' + siglaDe(nombreVar(m.variable_id), (v || f).unidad_reporte)),
+          titulo: `Cierre de ${cierra}` + (m.propia ? '' : ` · cargada en ${nombreVar(m.variable_id)}`) });
+      }
+    }
+    if (sel >= galeria.length) sel = 0;
+    pintarPanel();
+  }
 
   // editable = la lectura de ESTE mes. La del mes anterior solo se mira.
   const tarjetaLectura = (l, editable) => {
     const valorTxt = l.sin_dato ? 'No se pudo leer'
       : doble ? `${num(l.valor_mwh)} MWh + ${num(l.valor_kwh)} kWh`
       : `${num(l.valor_display ?? l.valor, dec)} ${uDisp}`;
-    const fotos = el('div', { class: 'ficha-fotos' });
-    pintarFotos(fotos, fotosOrdenadas(l), editable && puedo, l.id);
-
-    // Fotos de este punto que cuelgan de otra de sus lecturas: solo para mirar.
-    const zonaOtras = el('div');
-    const deOtras = hermanas.filter(x => x.periodo === l.periodo);
-    if (deOtras.length) {
-      const nombreVar = id => S.catalogo.variables.find(x => x.id === id)?.nombre || 'otra lectura';
-      zonaOtras.append(el('p', { class: 'ayuda',
-        html: '<b>Foto del punto</b>, cargada en ' + esc([...new Set(deOtras.map(x => nombreVar(x.variable_id)))].join(', ')) +
-              '. Se saca una sola vez por punto y sirve para todas sus lecturas.' }));
-      for (const x of deOtras) {
-        const c = el('div', { class: 'ficha-fotos' });
-        pintarFotos(c, fotosOrdenadas(x), false);
-        zonaOtras.append(c);
-      }
-      // Para quitarla o agregar otra hay que abrir la lectura dueña de la foto: el botón lleva allá.
-      zonaOtras.append(el('div', { class: 'fila' }, [...new Set(deOtras.map(x => x.variable_id))].map(id =>
-        el('button', { type: 'button', class: 'btn chico', text: `Abrir ${nombreVar(id)}`,
-          title: 'Ir a esa lectura para agregar o quitar la foto',
-          onclick: () => verConsumo({ variable_id: id, mes }, ctx) }))));
-    }
-
     const zonaCorregir = el('div');
     const abrirCorreccion = () => {
       const c = campoValor({ val: l.valor_display, mwh: l.valor_mwh, kwh: l.valor_kwh });
@@ -3109,36 +3227,6 @@ async function verConsumo({ variable_id, mes }, ctx) {
         ])
       ]));
     };
-
-    // Agregar fotos de este mes, una o varias, sin pedir ninguna nota.
-    const inputFoto = el('input', { type: 'file', accept: 'image/*', multiple: '', hidden: '' });
-    const btnFoto = el('button', { type: 'button', class: 'btn chico', text: '+ Agregar foto', onclick: () => {
-      if (!navigator.onLine) return toast('Sin señal: la foto necesita conexión para subirse', true);
-      inputFoto.click();
-    } });
-    inputFoto.addEventListener('change', async () => {
-      const archivos = [...inputFoto.files]; inputFoto.value = '';
-      if (!archivos.length) return;
-      btnFoto.disabled = true; btnFoto.textContent = 'Subiendo…';
-      let ok = 0;
-      try {
-        for (const a of archivos) {
-          const blob = await DB.comprimirFoto(a, (v && v.punto.foto_calidad) || 'normal');
-          // la fecha del archivo es lo más parecido a cuándo se sacó la foto
-          const cuando = a.lastModified && a.lastModified <= Date.now() ? new Date(a.lastModified).toISOString() : l.fecha_lectura;
-          await DB.subirFotoALectura({ lectura_id: l.id, periodo: l.periodo, variable_id, blob, tomada_en: cuando });
-          ok++;
-        }
-        toast(ok === 1 ? 'Foto agregada' : `${ok} fotos agregadas`);
-        if (ok) await refrescarIcono();
-      } catch (err) {
-        toast(`${ok ? ok + ' subida(s). ' : ''}No se pudo subir la foto: ${err.message || err}`, true);
-      } finally {
-        btnFoto.disabled = false; btnFoto.textContent = '+ Agregar foto';
-        const r = await sb.from('fotos').select('id, storage_path, orden').eq('lectura_id', l.id).order('orden').order('id');
-        pintarFotos(fotos, r.data || [], editable && puedo, l.id);
-      }
-    });
 
     // ---- Historial de cambios de valor, con "Restaurar" (solo admin/supervisor) ----
     const zonaHistorial = el('div');
@@ -3204,9 +3292,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
         `Tomada el ${fechaHora(l.fecha_lectura)} · ${gente[l.tomada_por] || (l.origen === 'importacion' ? 'Importado' : 'sin autor')} · ${l.estado}` +
         (l.es_reset ? ' · reinicio del totalizador' : '') }),
       l.observacion ? el('p', { class: 'ayuda', html: '<b>Observación:</b> ' + esc(l.observacion) }) : null,
-      fotos, zonaOtras,
       editable && puedo ? el('div', { class: 'fila' }, [
-        el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }), btnFoto, inputFoto,
+        el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }),
         el('button', { class: 'btn chico', text: 'Historial', onclick: abrirHistorial })]) : null,
       zonaCorregir, zonaHistorial
     ]);
@@ -3251,19 +3338,9 @@ async function verConsumo({ variable_id, mes }, ctx) {
     ]));
   };
 
-  // ---- 2 · las dos lecturas: la del mes anterior (solo lectura) y la de este mes (editable) ----
+  // ---- 2 · las dos lecturas, una sobre otra en la columna de datos ----
   const delPeriodo = p => (lects || []).filter(l => l.periodo === p);
   const irAlAnterior = () => verConsumo({ variable_id, mes: ant }, ctx);
-
-  const deAnt = delPeriodo(mes);
-  const colAnterior = el('div', { class: 'ficha-col anterior' }, [
-    el('div', { class: 'col-cab' }, [el('h4', { text: 'Lectura del mes anterior' }), el('span', { class: 'pill neutro', text: 'Solo lectura' })]),
-    el('p', { class: 'ayuda', text: `Totalizador al cierre de ${nAnt}` }),
-    ...(deAnt.length ? deAnt.map(l => tarjetaLectura(l, false))
-      : [el('p', { class: 'banda warn', text: `No hay lectura de cierre de ${nAnt}.` })]),
-    el('p', { class: 'ayuda', text: `No se modifica desde aquí: es el cierre de ${nAnt}.` }),
-    el('button', { class: 'btn chico', text: `Ir al registro de ${nAnt}`, onclick: irAlAnterior })
-  ]);
 
   const deEste = delPeriodo(sig);
   const zonaNueva = el('div');
@@ -3276,32 +3353,50 @@ async function verConsumo({ variable_id, mes }, ctx) {
         onclick: () => formularioAtrasada(sig, zonaNueva) }) : null,
       zonaNueva])
   ]);
-  cuerpo.append(el('div', { class: 'grid2 ficha-lecturas' }, [colAnterior, colEste]));
+
+  const deAnt = delPeriodo(mes);
+  const colAnterior = el('div', { class: 'ficha-col anterior' }, [
+    el('div', { class: 'col-cab' }, [el('h4', { text: 'Lectura del mes anterior' }), el('span', { class: 'pill neutro', text: 'Solo lectura' })]),
+    el('p', { class: 'ayuda', text: `Totalizador al cierre de ${nAnt}` }),
+    ...(deAnt.length ? deAnt.map(l => tarjetaLectura(l, false))
+      : [el('p', { class: 'banda warn', text: `No hay lectura de cierre de ${nAnt}.` })]),
+    el('button', { class: 'btn chico', text: `Ir al registro de ${nAnt}`, onclick: irAlAnterior })
+  ]);
 
   // ---- 3 · la alerta de este registro ----
   const pidNC = v ? v.punto.id : f?.punto_id;
   const ncAqui = pidNC != null ? ncDe(pidNC, mes) : null;
   const caja = el('div', { class: 'card ficha-revision' });
+  // El botón de validar vive en la barra de abajo, siempre a la vista: es la acción de un clic.
+  const barra = el('div', { class: 'fv-barra' });
+  const estadoBarra = el('div', { class: 'fv-estado' });
+  const accionesBarra = el('div', { class: 'fila' });
+  barra.append(estadoBarra, accionesBarra);
+
   if (rev) {
-    caja.append(
-      el('h4', { style: 'margin-top:0', text: 'Revisión hecha' }),
-      el('p', { html: `<b>${tipoTxt[rev.tipo]}</b> por ${esc(gente[rev.por] || '—')} el ${fechaHora(rev.en)}` }),
-      el('p', { class: 'ayuda', text: rev.motivo }),
-      puedo ? el('button', { class: 'btn chico peligro', text: rev.tipo === 'validado' ? 'Quitar validación' : 'Quitar la marca (vuelve a por revisar)', onclick: async () => {
+    estadoBarra.append(
+      el('span', { class: 'pill ' + (rev.tipo === 'validado' ? 'ok' : 'neutro'), text: tipoTxt[rev.tipo] }),
+      el('span', { class: 'ayuda', text: `por ${gente[rev.por] || '—'} el ${fechaHora(rev.en)}` +
+        (rev.motivo && rev.motivo !== 'Validado' ? ` · ${rev.motivo}` : '') }));
+    if (puedo) accionesBarra.append(el('button', { class: 'btn chico peligro',
+      text: rev.tipo === 'validado' ? 'Quitar validación' : 'Quitar la marca', onclick: async () => {
         const { error: e3 } = await sb.from('revisiones_consumo').delete().eq('id', rev.id);
         if (e3) return toast(e3.message, true);
         await terminar(rev.tipo === 'validado' ? 'Validación quitada' : 'Marca quitada');
-      } }) : null);
-  } else if (puedo && (j || !f || f)) {
-    if (f) caja.append(
-      el('h4', { style: 'margin-top:0', text: '¿El registro está bien?' }),
-      el('p', { class: 'ayuda', text: 'Márcalo como validado y aparecerá con ✓ en la tabla. No pide nota.' }),
-      el('button', { class: 'btn', text: '✓ Registro validado', onclick: async e => {
+      } }));
+  } else {
+    estadoBarra.append(j
+      ? el('span', { class: 'pill ' + j.nivel, text: f ? `El valor está ${j.texto}` : 'Falta el dato de este mes' })
+      : el('span', { class: 'ayuda', text: 'Sin alertas: el valor está dentro de lo habitual.' }));
+    if (puedo && f) accionesBarra.append(el('button', { class: 'btn grande ok', text: '✓ Registro validado',
+      title: 'Marca el registro como revisado y correcto', onclick: async e => {
         e.target.disabled = true;
         try { await registrar('validado', 'Validado'); await terminar('Registro validado'); }
         catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
       } }));
   }
+
+  // La justificación necesita texto, así que se queda en la columna, junto al valor.
   if (!rev && puedo && (j || !f) && !(ncAqui && !f)) {
     const motivo = el('textarea', { placeholder: f
       ? 'Por qué el valor está bien aunque salga del rango (obligatorio)'
@@ -3318,33 +3413,48 @@ async function verConsumo({ variable_id, mes }, ctx) {
         catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
       } }));
   }
-  if (caja.childNodes.length) cuerpo.append(caja);
 
   // ---- 3b · no corresponde (n/c) ----
-  if (pidNC != null && (ncAqui || (puedo && !f)))
-    cuerpo.append(el('div', { class: 'card ficha-nc' }, [
+  const cajaNC = (pidNC != null && (ncAqui || (puedo && !f)))
+    ? el('div', { class: 'card ficha-nc' }, [
       el('h4', { style: 'margin-top:0', text: ncAqui ? 'No corresponde este mes (n/c)' : '¿Este mes no corresponde?' }),
       el('p', { class: 'ayuda', text: ncAqui ? ncAqui.motivo
         : 'Si el equipo no estaba instalado o no estaba en faena, márcalo: la tabla muestra n/c en vez de s/d y no cuenta como pendiente.' }),
       puedo ? el('button', { class: 'btn chico', text: ncAqui ? 'Ver o cambiar los meses n/c' : 'Marcar como no corresponde (n/c)',
-        onclick: () => gestionarNC(pidNC, puntoNombre, { mes, alCambiar: ctx.alCambiar }) }) : null]));
+        onclick: () => gestionarNC(pidNC, puntoNombre, { mes, alCambiar: ctx.alCambiar }) }) : null])
+    : null;
 
   // ---- 4 · avisos abiertos del punto ----
   const pid = v ? v.punto.id : f.punto_id;
   const suyos = (ctx.avisos || []).filter(a => a.punto_id === pid);
-  if (suyos.length) {
-    cuerpo.append(el('h4', { text: `Avisos abiertos del punto (${suyos.length})` }),
-      ...suyos.map(a => el('div', { class: 'fila entre aviso-linea' }, [
-        el('span', {}, [
-          el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn' }[a.severidad] || 'neutro'), text: a.severidad }),
-          el('span', { text: ` ${a.categoria?.categoria || ''} · ${a.descripcion || ''}` })]),
-        el('button', { class: 'btn chico', text: 'Abrir aviso', onclick: async () => {
-          const { data, error: e2 } = await sb.from('v_avisos').select('*').eq('id', a.id).single();
-          if (e2) return toast(e2.message, true);
-          verDetalleAviso(data, () => ctx.alCambiar());
-        } })
-      ])));
-  }
+  const cajaAvisos = suyos.length ? el('div', { class: 'card' }, [
+    el('h4', { style: 'margin-top:0', text: `Avisos abiertos del punto (${suyos.length})` }),
+    ...suyos.map(a => el('div', { class: 'fila entre aviso-linea' }, [
+      el('span', {}, [
+        el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn' }[a.severidad] || 'neutro'), text: a.severidad }),
+        el('span', { text: ` ${a.categoria?.categoria || ''} · ${a.descripcion || ''}` })]),
+      el('button', { class: 'btn chico', text: 'Abrir aviso', onclick: async () => {
+        const { data, error: e2 } = await sb.from('v_avisos').select('*').eq('id', a.id).single();
+        if (e2) return toast(e2.message, true);
+        verDetalleAviso(data, () => ctx.alCambiar());
+      } })
+    ]))]) : null;
+
+  /* ---- armado: datos a la izquierda, foto grande a la derecha, barra fija abajo ----
+     En el computador las tres zonas caben sin scroll; en el celular se apilan. */
+  const datos = el('div', { class: 'fv-datos' }, [
+    errLect, resultado, colEste, colAnterior,
+    caja.childNodes.length ? caja : null, cajaNC, cajaAvisos
+  ]);
+  const panelFotos = el('div', { class: 'fv-fotos' }, [
+    el('div', { class: 'fv-cab' }, [
+      el('h4', { text: 'Respaldo fotográfico' }),
+      el('span', { class: 'ayuda', text: 'Toca la foto para ampliarla y hacer zoom' }),
+      chkComparar]),
+    fvMarco, fvTira, fvPie
+  ]);
+  cuerpo.replaceChildren(datos, panelFotos, barra);
+  cargarFotos();
 
   modal('Registro de ' + nMes, cuerpo, opcionesModal);
 }
@@ -6554,7 +6664,8 @@ const TIPOS_MOV = {
   devolucion: 'Devolución al proveedor',
   baja:       'Baja definitiva'
 };
-const ESTADOS_GEN = ['Operando', 'Disponible', 'Detenido', 'En Revisión', 'Devuelto', 'De baja'];
+const ESTADOS_GEN = ['Operando', 'Disponible', 'En revisión', 'Fuera de servicio',
+                     'Para devolución', 'Devuelto', 'De baja'];
 
 /* ===================================================================
    CASA DE FUERZA · piezas comunes de las tres pantallas (PC, pantalla completa)

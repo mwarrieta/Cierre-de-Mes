@@ -2939,6 +2939,11 @@ async function verConsumo({ variable_id, mes }, ctx) {
         pintarFotos(c, fotosOrdenadas(x), false);
         zonaOtras.append(c);
       }
+      // Para quitarla o agregar otra hay que abrir la lectura dueña de la foto: el botón lleva allá.
+      zonaOtras.append(el('div', { class: 'fila' }, [...new Set(deOtras.map(x => x.variable_id))].map(id =>
+        el('button', { type: 'button', class: 'btn chico', text: `Abrir ${nombreVar(id)}`,
+          title: 'Ir a esa lectura para agregar o quitar la foto',
+          onclick: () => verConsumo({ variable_id: id, mes }, ctx) }))));
     }
 
     const zonaCorregir = el('div');

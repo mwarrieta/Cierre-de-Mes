@@ -3434,6 +3434,8 @@ async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
   const ancho = doc.internal.pageSize.getWidth(), alto = doc.internal.pageSize.getHeight();
+  // La tipografía del PDF no tiene los exponentes: m³ saldría como "m ".
+  const txt = t => String(t ?? '').replace(/³/g, '3').replace(/²/g, '2');
   const fmt = v => v === undefined || v === null || v === '' ? '-'
     : Number(v).toLocaleString('es-CL', { maximumFractionDigits: Math.abs(Number(v)) < 100 ? 2 : 0 });
   const cabecera = () => {
@@ -3447,8 +3449,7 @@ async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
   const body = [];
   for (const v of filasVar) {
     const total = meses.reduce((a, m) => a + (v.cons[m] || 0), 0);
-    const u = UNIDAD[v.unidad] || v.unidad || '';
-    body.push([{ content: `${v.punto}\n${[v.tag, v.variable, u].filter(Boolean).join(' · ')}`, rowSpan: 3 },
+    body.push([{ content: '', rowSpan: 3 },
       'Totalizador', ...meses.map(m => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.lect[mesSiguiente(m)])), '']);
     body.push([filaConsumoTxt(v.grupo), ...meses.map(m => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : fmt(v.cons[m])), fmt(total)]);
     body.push(['Var. % vs mes anterior', ...meses.map((m, i) => {
@@ -3461,12 +3462,25 @@ async function pdfDetalleMensual({ grupo, rango, meses, cabMeses, filasVar }) {
     head: [['Punto · lectura', '', ...cabMeses, 'Total']], body,
     styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.1, lineColor: [175, 175, 175], lineWidth: 0.1, textColor: 20, overflow: 'linebreak' },
     headStyles: { fillColor: [232, 232, 232], textColor: 20, fontStyle: 'bold', halign: 'right' },
-    columnStyles: { 0: { cellWidth: 52, fontStyle: 'bold', valign: 'top' }, 1: { cellWidth: 30, textColor: 90 } },
+    columnStyles: { 0: { cellWidth: 50, valign: 'top' }, 1: { cellWidth: 28, textColor: 90 } },
     didParseCell: d => {
       if (d.section === 'head' && d.column.index < 2) d.cell.styles.halign = 'left';
       if (d.section === 'body' && d.column.index >= 2) d.cell.styles.halign = 'right';
       if (d.section === 'body' && d.row.index % 3 === 1 && d.column.index >= 1) d.cell.styles.fontStyle = 'bold';
       if (d.section === 'body' && d.row.index % 3 === 2 && d.column.index >= 1) d.cell.styles.textColor = 90;
+    },
+    // El punto y su lectura, en dos renglones propios: así ningún dato queda partido.
+    didDrawCell: d => {
+      if (d.section !== 'body' || d.column.index !== 0 || d.row.index % 3) return;
+      const v = filasVar[d.row.index / 3];
+      if (!v) return;
+      const x = d.cell.x + 1.3, ancho = d.cell.width - 2.6;
+      doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4);
+      const lineas = doc.splitTextToSize(txt(v.punto), ancho);
+      doc.text(lineas, x, d.cell.y + 3.6);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.6); doc.setTextColor(95);
+      const sub = txt([v.tag, siglaDe(v.variable, v.unidad)].filter(Boolean).join(' · '));
+      if (sub) doc.text(doc.splitTextToSize(sub, ancho), x, d.cell.y + 3.6 + lineas.length * 3);
     },
     didDrawPage: () => {
       cabecera();
@@ -3492,16 +3506,21 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     });
   }
   paso('Consultando consumos…');
-  const cons = await traerTodo(() => {
-    let q = sb.from('v_consumos').select('*').gte('mes', desde).lte('mes', hasta)
+  // La hoja "Resumen anual" muestra SIEMPRE el año completo del periodo elegido, así que se
+  // piden todos sus meses; las demás hojas y el PDF usan solo los meses elegidos en la app.
+  const anioDesde = desde.slice(0, 4) + '-01-01';
+  const anioHasta = hasta.slice(0, 4) + '-12-01';
+  const consAnio = await traerTodo(() => {
+    let q = sb.from('v_consumos').select('*').gte('mes', anioDesde).lte('mes', anioHasta)
               .order('mes').order('punto');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     return q.eq('en_informe', true);
   });
   if (filtros.puntos && filtros.puntos.length) {
     const sel = new Set(filtros.puntos);
-    for (let i = cons.length - 1; i >= 0; i--) if (!sel.has(cons[i].punto_id)) cons.splice(i, 1);
+    for (let i = consAnio.length - 1; i >= 0; i--) if (!sel.has(consAnio[i].punto_id)) consAnio.splice(i, 1);
   }
+  const cons = consAnio.filter(c => c.mes >= desde && c.mes <= hasta);
   if (!cons.length) { paso(''); if (filtros.devolver) return null; return toast('No hay consumos en ese periodo', true); }
 
   paso('Consultando lecturas…');
@@ -3517,12 +3536,15 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
 
   paso('Armando el libro…');
   const meses = [...new Set(cons.map(c => c.mes))].sort();
-  const variosAnios = new Set(meses.map(m => m.slice(0, 4))).size > 1;
+  const mesesAnio = [...new Set(consAnio.map(c => c.mes))].sort();
+  const variosAnios = new Set(mesesAnio.map(m => m.slice(0, 4))).size > 1;
   const cabMeses = meses.map(m => etiquetaMes(m, variosAnios));
+  const cabMesesAnio = mesesAnio.map(m => etiquetaMes(m, variosAnios));
 
   // ---- datos por variable ----
   const porVar = new Map();
-  for (const c of cons) {
+  const delPeriodo = new Set(cons.map(c => c.variable_id));
+  for (const c of consAnio) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
       tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
       punto_id: c.punto_id, variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
@@ -3538,15 +3560,18 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     const v = porVar.get(f.variable_id);
     if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
   }
+  for (const [id] of porVar) if (!delPeriodo.has(id)) porVar.delete(id);
   const filasVar = [...porVar.values()].sort(ordenFilaInforme);
 
-  const totalFila = v => meses.reduce((s, m) => s + (v.cons[m] || 0), 0);
+  const totalFila = (v, ms = meses) => ms.reduce((s, m) => s + (v.cons[m] || 0), 0);
   // celdas sin valor: s/d (debía estar) o n/c (no corresponde ese mes)
   const vc = (v, m) => v.cons[m] === undefined ? vacioTxt(v.punto_id, m) : redondear(v.cons[m]);
   const vl = (v, m) => v.lect[mesSiguiente(m)] === undefined ? vacioTxt(v.punto_id, m) : redondear(v.lect[mesSiguiente(m)]);
 
   const rango = desde.slice(0, 7) === hasta.slice(0, 7) ? nombrePeriodo(desde)
               : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
+  const anioTxt = desde.slice(0, 4) === hasta.slice(0, 4) ? desde.slice(0, 4)
+                : `${desde.slice(0, 4)}-${hasta.slice(0, 4)}`;
   // fecha y hora de Chile, en 24 h y sin "a. m.": se lee y se ordena mejor en Excel
   const fechaExcel = iso => new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago',
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '');
@@ -3555,10 +3580,11 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   // ---- 1 · Resumen anual: una fila por punto y lectura, en Tabla con filtros ----
   // Sin filas de subtotal intercaladas: romperían los filtros. La fila "Total filtrado"
   // usa SUBTOTAL, así suma solo lo que queda visible al filtrar.
-  const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMeses, 'TOTAL']];
+  const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMesesAnio, 'TOTAL']];
   for (const v of filasVar)
     resumen.push([v.tag, (v.grupos.length ? v.grupos : [v.grupo]).join(' · '), v.punto, v.variable,
-      UNIDAD[v.unidad] || v.unidad, ...meses.map(m => vc(v, m)), redondear(totalFila(v))]);
+      UNIDAD[v.unidad] || v.unidad, ...mesesAnio.map(m => vc(v, m)),
+      redondear(totalFila(v, mesesAnio))]);
 
   // ---- 2 · Detalle mensual: totalizador, consumo y variación ----
   // TAG, grupo, punto y unidad se VEN una vez por punto, y la variable una vez por
@@ -3641,7 +3667,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     [{ v: 'Por', fuente: 'b' }, S.usuario.nombre],
     [],
     [{ v: 'Contenido', fuente: 'titulo' }],
-    [{ v: 'Resumen anual', fuente: 'b' }, 'Consumo de cada punto por mes, con totales filtrables y gráfico.'],
+    [{ v: 'Resumen anual', fuente: 'b' }, `Consumo de cada punto mes a mes en ${anioTxt}, con totales filtrables y gráfico.`],
     [{ v: 'Detalle mensual', fuente: 'b' }, 'Totalizador, consumo del mes y variación de cada punto.'],
     [{ v: 'Lecturas', fuente: 'b' }, 'Cada lectura tomada en terreno, con fecha y autor.'],
     [{ v: 'Avisos', fuente: 'b' }, 'Avisos de los puntos de este informe.'],
@@ -3651,12 +3677,13 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const hojas = [
     { nombre: nombreHoja('Portada', usados), filas: portada, portada: true, anchos: [22, 70], encabezado: grupoTxt },
     { nombre: nombreHoja('Resumen anual', usados), filas: resumen, encabezado: grupoTxt,
-      intro: [`${grupoTxt} · Resumen anual · ${rango}`,
+      intro: [`${grupoTxt} · Resumen anual · ${anioTxt}`,
+        `Todos los meses cerrados de ${anioTxt}, aunque el informe sea de ${rango}.`,
         'Consumo de cada mes = lectura que cierra el mes − lectura anterior.',
         'Total filtrado y gráfico suman solo las filas visibles: filtra una sola Unidad.',
         `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.`],
       tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: colMes0 } },
-      grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + meses.length - 1 } },
+      grafico: { titulo: 'Consumo mensual (filas filtradas)', desde: colMes0, hasta: colMes0 + mesesAnio.length - 1 } },
     { nombre: nombreHoja('Detalle mensual', usados), filas: detalle, encabezado: grupoTxt,
       intro: [`${grupoTxt} · Detalle mensual · ${rango}`,
         'Totalizador: lo que marca el medidor al cerrar el mes. Consumo: diferencia con el mes anterior. Var. %: cambio del consumo.'],
@@ -3702,9 +3729,11 @@ async function descargarInformeConFotos(desde, hasta, filtros = {}) {
 
   paso('Consultando las fotos…');
   const sel = filtros.puntos && filtros.puntos.length ? new Set(filtros.puntos) : null;
+  // Solo las fotos de los meses elegidos: la foto va al mes que CIERRA, así que la toma
+  // del 1 de octubre (que cierra septiembre) no entra si se pidió solo octubre.
   let lect = await traerTodo(() => {
     let q = sb.from('v_respaldo').select('*')
-             .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
+             .gte('periodo', mesSiguiente(desde)).lte('periodo', mesSiguiente(hasta))
              .order('periodo').order('punto').order('lectura_id').order('foto_n');
     if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
     return q;
@@ -3716,9 +3745,7 @@ async function descargarInformeConFotos(desde, hasta, filtros = {}) {
   // Mes de cierre de una toma: la del 1 de octubre cierra septiembre.
   const etqMes = m => { const d = new Date(m + 'T00:00:00Z'); return [d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()]]; };
   const usados = new Set();
-  const indice = [['Ruta dentro del ZIP', 'Año', 'Mes de cierre', 'Punto', 'TAG', 'Variable', 'Unidad',
-                   'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
-  let fallidas = 0;
+  let bajadas = 0, fallidas = 0;
   for (let i = 0; i < conFoto.length; i++) {
     const f = conFoto[i];
     paso(`Descargando fotos… ${i + 1} de ${conFoto.length}`);
@@ -3734,31 +3761,15 @@ async function descargarInformeConFotos(desde, hasta, filtros = {}) {
       if (usados.has(`${carpeta}/${nombre}`)) nombre = nombre.replace(/\.jpg$/, `_l${f.lectura_id}.jpg`);
       usados.add(`${carpeta}/${nombre}`);
       zip.file(`${carpeta}/${nombre}`, blob);
-      indice.push([`${carpeta}/${nombre}`, anio, mesN, f.punto, f.tag || '', f.variable, f.unidad,
-        String(f.fecha_lectura).slice(0, 19).replace('T', ' '), f.valor === null ? '' : Number(f.valor), f.estado,
-        S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
+      bajadas++;
     } catch { fallidas++; }
   }
-  if (indice.length > 1) zip.file('Indice de fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
-  zip.file('LEEME.txt', [
-    `Informe con respaldo fotográfico · ${filtros.grupo || 'Todos los grupos'}`,
-    `Generado el ${new Date().toLocaleString('es-CL')} por ${S.usuario.nombre}.`,
-    `Meses: ${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}.`,
-    '',
-    `${plan.nombre}   La planilla, igual a la de Consumos e informes.`,
-    'Detalle_mensual_....pdf   Totalizador, consumo y variación por punto.',
-    'Fotos/Año/Mes            Las fotos, en el MES QUE CIERRAN: la toma del 1 de octubre va en septiembre.',
-    'Indice de fotos.xlsx     Una fila por foto con su ruta, punto, valor y quién la tomó.',
-    '',
-    `Fotos incluidas: ${indice.length - 1}` + (fallidas ? ` · no se pudieron bajar: ${fallidas}` : '') +
-      (sinFotoN ? ` · lecturas del periodo sin foto: ${sinFotoN}` : '') + '.'
-  ].join('\r\n'));
-
   paso('Comprimiendo…');
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
   descargar(blob, `Informe_con_fotos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}_${alcance}.zip`);
   paso('');
-  toast(`Listo: informe y ${indice.length - 1} fotos` + (fallidas ? ` (${fallidas} no se pudieron bajar)` : ''));
+  toast(`Listo: informe y ${bajadas} fotos` + (fallidas ? ` (${fallidas} no se pudieron bajar)` : '') +
+        (sinFotoN ? ` · ${sinFotoN} lecturas sin foto` : ''));
 }
 
 // Excel guarda lo que le den: conviene no arrastrar 12 decimales de un prorrateo.
@@ -5420,8 +5431,6 @@ async function vistaRespaldo(c) {
       const conFoto = filas.filter(f => f.storage_path && !(tipo === 'nuevo' && f.foto_respaldado_en));
       const idsFoto = [];
       const nombresUsados = new Set();
-      const indice = [['Ruta dentro del respaldo', 'Grupo', 'Año', 'Mes de cierre', 'Punto', 'TAG',
-                       'Variable', 'Unidad', 'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
       for (let i = 0; i < conFoto.length; i++) {
         const f = conFoto[i];
         paso(`Descargando fotos… ${i + 1} de ${conFoto.length}`);
@@ -5441,33 +5450,9 @@ async function vistaRespaldo(c) {
         nombresUsados.add(`${carpeta}/${nombre}`);
         zip.file(`${carpeta}/${nombre}`, blob);
         idsFoto.push(f.foto_id);
-        indice.push([`${carpeta}/${nombre}`, g, anio, mesN, f.punto, f.tag || '', f.variable, f.unidad,
-          String(f.fecha_lectura).slice(0, 19).replace('T', ' '),
-          f.valor === null ? '' : Number(f.valor), f.estado,
-          S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
       }
-      if (indice.length > 1)
-        zip.file('00 Indice de fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
-
-      // ---- léame y manifiesto ----
+      // ---- manifiesto ----
       const idsLectura = [...new Set(filas.map(f => f.lectura_id))];
-      zip.file('LEEME.txt', [
-        'Respaldo de Cierre de Mes',
-        `Generado el ${new Date().toLocaleString('es-CL')} por ${S.usuario.nombre}.`,
-        `Tomas incluidas: ${nombrePeriodo(rangoDesde)} a ${nombrePeriodo(rangoHasta)} (cierres de ${nombrePeriodo(cierreDe(rangoDesde))} a ${nombrePeriodo(cierreDe(rangoHasta))}).`,
-        '',
-        'Una carpeta por grupo, numerada en el orden de la app:',
-        '  Consumos_..._Grupo.xlsx   La planilla del grupo, igual a la de Consumos e informes.',
-        `                            Cubre ${nombrePeriodo(desdeC)} a ${nombrePeriodo(hastaC)} (solo meses cerrados).`,
-        '  Detalle_mensual_....pdf   Totalizador, consumo y variación por punto, en carta horizontal.',
-        '  Fotos/Año/Mes             Las fotos, en el MES QUE CIERRAN: la toma del 1 de octubre va en septiembre.',
-        '',
-        'NN Casa de Fuerza/            Informe de generación (kWh, horas, litros, L/kWh, factor) y combustible del periodo.',
-        '00 Datos completos_....xlsx  Todo en un libro: lecturas, consumos, inventario, avisos y auditoría.',
-        '00 Indice de fotos.xlsx      Una fila por foto con su ruta: filtra por punto, mes o persona.',
-        '',
-        'Las carpetas usan el grupo que cada punto tiene HOY.'
-      ].join('\r\n'));
       zip.file('manifiesto.json', JSON.stringify({
         generado_en: new Date().toISOString(), generado_por: S.usuario.nombre,
         tipo, periodo_desde: rangoDesde, periodo_hasta: rangoHasta,

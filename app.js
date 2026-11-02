@@ -3546,6 +3546,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   const delPeriodo = new Set(cons.map(c => c.variable_id));
   for (const c of consAnio) {
     if (!porVar.has(c.variable_id)) porVar.set(c.variable_id, {
+      id: c.variable_id,
       tag: c.tag || '', grupo: c.grupo || 'Sin grupo', punto: c.punto,
       punto_id: c.punto_id, variable: c.variable, unidad: c.unidad_reporte, grupos: c.grupos || [],
       bloque: claveSuma(c.variable, c.unidad_reporte),
@@ -3560,8 +3561,8 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     const v = porVar.get(f.variable_id);
     if (v && f.valor !== null) v.lect[f.periodo] = Number(f.valor);
   }
-  for (const [id] of porVar) if (!delPeriodo.has(id)) porVar.delete(id);
-  const filasVar = [...porVar.values()].sort(ordenFilaInforme);
+  const filasAnio = [...porVar.values()].sort(ordenFilaInforme);
+  const filasVar = filasAnio.filter(v => delPeriodo.has(v.id));
 
   const totalFila = (v, ms = meses) => ms.reduce((s, m) => s + (v.cons[m] || 0), 0);
   // celdas sin valor: s/d (debía estar) o n/c (no corresponde ese mes)
@@ -3581,7 +3582,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   // Sin filas de subtotal intercaladas: romperían los filtros. La fila "Total filtrado"
   // usa SUBTOTAL, así suma solo lo que queda visible al filtrar.
   const resumen = [['TAG', 'Grupo', 'Punto', 'Variable', 'Unidad', ...cabMesesAnio, 'TOTAL']];
-  for (const v of filasVar)
+  for (const v of filasAnio)
     resumen.push([v.tag, (v.grupos.length ? v.grupos : [v.grupo]).join(' · '), v.punto, v.variable,
       UNIDAD[v.unidad] || v.unidad, ...mesesAnio.map(m => vc(v, m)),
       redondear(totalFila(v, mesesAnio))]);
@@ -3679,6 +3680,7 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
     { nombre: nombreHoja('Resumen anual', usados), filas: resumen, encabezado: grupoTxt,
       intro: [`${grupoTxt} · Resumen anual · ${anioTxt}`,
         `Todos los meses cerrados de ${anioTxt}, aunque el informe sea de ${rango}.`,
+        'Un punto que dejó de medirse igual aparece: sus meses sin lectura dicen s/d (o n/c si no correspondía).',
         'Consumo de cada mes = lectura que cierra el mes − lectura anterior.',
         'Total filtrado y gráfico suman solo las filas visibles: filtra una sola Unidad.',
         `Generado el ${fechaExcel(new Date().toISOString())} por ${S.usuario.nombre}.`],

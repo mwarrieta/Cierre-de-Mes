@@ -6987,11 +6987,20 @@ async function excelGeneracion(datos, F, paso, opts = {}) {
   const desde = meses[0], hasta = meses[meses.length - 1];
   paso('Consultando combustible y movimientos…');
   const ids = new Set(filas.map(x => x.g.id));
-  const [rec, mov] = await Promise.all([
+  const [rec, mov, est] = await Promise.all([
     sb.from('v_recargas').select('*').gte('periodo', desde).lte('periodo', hasta).order('fecha_hora'),
-    sb.from('generador_movimientos').select('*, generador:generadores(n_equipo, n_interno)').order('fecha')
+    sb.from('generador_movimientos').select('*, generador:generadores(n_equipo, n_interno)').order('fecha'),
+    // El estado que se vio el día de cada toma: no es el estado de todo el mes.
+    sb.from('generador_estado_toma').select('*').order('periodo')
   ]);
   for (const r of [rec, mov]) if (r.error) throw r.error;
+  const estados = est.error ? [] : (est.data || []);
+  const estadoEn = (gid, mes) => estados.find(e => e.generador_id === gid && String(e.periodo).slice(0, 10) === mesSiguiente(mes));
+  const ultimoEstado = gid => estados.filter(e => e.generador_id === gid).slice(-1)[0] || null;
+  // Las lecturas importadas no traen usuario: el responsable viaja en la observación.
+  const quienTomo = l => !l ? '' : (S.catalogo?.gente?.[l.tomada_por] || (l.origen === 'importacion'
+    ? ((l.observacion || '').split(' · ').find(t => t.startsWith('Responsable en planilla: '))?.slice(25) || 'Planilla')
+    : ''));
   const rango = desde === hasta ? nombrePeriodo(desde) : `${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}`;
   const sel = F.equipos.length === 1 ? genNombre(filas[0].g) : F.propiedad ? (F.propiedad === 'Propio' ? 'Generadores propios' : 'Generadores de arriendo') : 'Todo el parque';
   const cabM = meses.map(m => nombrePeriodo(m).split(' ')[0].slice(0, 3) + '-' + m.slice(2, 4));
@@ -7007,17 +7016,81 @@ async function excelGeneracion(datos, F, paso, opts = {}) {
     tomas.push([nombrePeriodo(p.m), x.g.n_interno || '', x.g.n_equipo, r.toma.fecha_lectura ? fechaHoraCL(r.toma.fecha_lectura) : '',
       r.kwhAcum ?? '', r.horAcum ?? '', r.kw ?? '', S.catalogo?.gente?.[r.toma.tomada_por] || '']);
   }
+  /* ---- Estado del parque: la foto de hoy, una fila por equipo ----
+     Es la hoja con la que trabaja Casa de Fuerza: el acumulado que marca cada
+     equipo en su última toma, con su estado, ubicación y sincronismo. */
+  const ultimaToma = x => [...x.por].reverse().find(p => p.r.toma) || null;
+  const parque = [['N° interno', 'Equipo', 'Marca', 'Propiedad', 'Pot. nominal kW', 'Carga base kW',
+                   'POT. leída kW', 'kWh generado (acumulado)', 'Horómetro', 'Ubicación', 'Sincronismo',
+                   'Estado', 'Estado visto en', 'Combustible', 'Observaciones']];
+  for (const x of filas) {
+    const u = ultimaToma(x), rr = u ? u.r : null;
+    const e = ultimoEstado(x.g.id);
+    parque.push([x.g.n_interno || '', x.g.n_equipo, x.g.proveedor || '', x.g.propiedad || '',
+      Number(x.g.potencia_nominal_kw) || '', Number(x.g.carga_base_kw) || '',
+      rr && rr.kw != null ? rr.kw : '', rr && rr.kwhAcum != null ? rr.kwhAcum : '',
+      rr && rr.horAcum != null ? rr.horAcum : '',
+      x.g.ubicacion || '', x.g.sincronismo || '', x.g.estado || '',
+      e ? fechaCorta(e.observado_en) : (rr && rr.toma ? fechaCorta(rr.toma.fecha_lectura) : ''),
+      x.g.combustible || '', x.g.observaciones || '']);
+  }
+
+  /* ---- una hoja por generador ----
+     La planilla que Casa de Fuerza lleva a mano: un mes por fila, con lo que marcaba
+     el equipo en cada toma y lo que generó ese mes, más el gráfico de las tres curvas. */
+  const usadas = new Set(['Portada', 'Estado del parque', 'Resumen', 'kWh por mes', 'Horas por mes',
+    'Litros por mes', 'L-kWh por mes', 'Factor por mes', 'Tomas', 'Combustible', 'Movimientos']);
+  const hojasGen = filas.map(x => {
+    const g = x.g;
+    const cuerpo = x.por.map(({ m, r }) => {
+      const e = estadoEn(g.id, m);
+      return [nombrePeriodo(m).replace(/^./, c => c.toUpperCase()),
+        r.toma ? fechaCorta(r.toma.fecha_lectura) : r.vacio,
+        r.kw != null ? r.kw : '', r.kwhAcum != null ? r.kwhAcum : '',
+        r.kwhMes != null ? { v: r.kwhMes, fuente: 'b' } : '',
+        r.horAcum != null ? r.horAcum : '', r.horasMes != null ? r.horasMes : '',
+        r.litros != null ? r.litros : '',
+        r.factor != null ? { v: r1(r.factor), s: 'pct' } : '',
+        e ? e.estado : '', quienTomo(r.toma)];
+    });
+    const ficha = [g.proveedor, g.propiedad,
+      g.potencia_nominal_kw ? `Potencia nominal ${num(g.potencia_nominal_kw)} kW` : null,
+      g.carga_base_kw ? `Carga base ${num(g.carga_base_kw)} kW` : null,
+      g.ubicacion ? `Ubicación ${g.ubicacion}` : null,
+      g.sincronismo, g.combustible, g.estado ? `Estado hoy: ${g.estado}` : null
+    ].filter(Boolean).join(' · ');
+    return {
+      nombre: nombreHoja(genNombre(g), usadas), encabezado: 'Casa de Fuerza',
+      tabla: { nombre: 'G' + g.id, franjas: false },
+      intro: [`${genNombre(g)} · ${rango}`, ficha,
+        'kWh acumulado y horómetro: lo que marcaba el equipo en la toma. kWh y horas del mes: la diferencia con la toma anterior.',
+        'La potencia en kW es la del momento de la toma, y el estado es el que se vio ese día.'],
+      filas: [['Mes', 'Fecha de la toma', 'POT. (kW)', 'kWh acumulado', 'kWh del mes',
+               'Horómetro', 'Horas del mes', 'Litros del mes', 'Factor de carga %',
+               'Estado en la toma', 'Responsable'], ...cuerpo],
+      grafico: { titulo: `${genNombre(g)} · energía, horas y potencia`, cat: 0,
+        ejeIzq: 'kWh del mes', ejeDer: 'Horas y kW',
+        series: [
+          { col: 4, nombre: 'kWh del mes', tipo: 'bar',  eje: 1, color: '4F6F7A' },
+          { col: 6, nombre: 'Horas del mes', tipo: 'line', eje: 2, color: 'C08A2E' },
+          { col: 2, nombre: 'POT. leída (kW)', tipo: 'line', eje: 2, color: '2E7D6B' }
+        ] }
+    };
+  });
+
   const hojas = [
     { nombre: 'Portada', portada: true, anchos: [24, 70], encabezado: 'Casa de Fuerza', filas: [
       [{ v: 'Cierre de Mes · Casa de Fuerza', fuente: 'nota' }], [{ v: 'Informe de generación', fuente: 'grande' }],
       [{ v: `${sel} · ${rango}`, fuente: 'titulo' }], [],
       [{ v: 'Generado', fuente: 'b' }, fechaHoraCL(new Date().toISOString())], [{ v: 'Por', fuente: 'b' }, S.usuario.nombre], [],
       [{ v: 'Contenido', fuente: 'titulo' }],
+      [{ v: 'Estado del parque', fuente: 'b' }, 'La foto de hoy: acumulado, potencia leída, estado, ubicación y sincronismo de cada equipo.'],
       [{ v: 'Resumen', fuente: 'b' }, 'Un equipo por fila con lo del periodo: kWh, horas, factor de carga, litros y L/kWh.'],
       [{ v: 'kWh por mes · Horas por mes · Litros por mes', fuente: 'b' }, 'Un equipo por fila y un mes por columna.'],
       [{ v: 'L-kWh por mes · Factor por mes', fuente: 'b' }, 'Indicadores de eficiencia y carga, mes a mes.'],
       [{ v: 'Tomas', fuente: 'b' }, 'Las tomas de cierre de cada mes: kWh acumulado, horómetro y kW.'],
-      [{ v: 'Combustible', fuente: 'b' }, 'Cada carga del periodo.'], [{ v: 'Movimientos', fuente: 'b' }, 'Ingresos, devoluciones y traslados.'], [],
+      [{ v: 'Combustible', fuente: 'b' }, 'Cada carga del periodo.'], [{ v: 'Movimientos', fuente: 'b' }, 'Ingresos, devoluciones y traslados.'],
+      [{ v: 'Una hoja por equipo', fuente: 'b' }, `${filas.length} hoja(s) al final: la historia mes a mes de cada generador, con su gráfico.`], [],
       [{ v: 'Solo meses cerrados: un mes cierra con la toma del día 1 del mes siguiente.', fuente: 'nota' }]] },
     { nombre: 'Resumen', encabezado: 'Casa de Fuerza', tabla: { nombre: 'Resumen', totales: { etiqueta: 'Total filtrado', desde: 5, hasta: 8 } },
       intro: [`Casa de Fuerza · ${sel} · ${rango}`, 'kWh y horas = toma de cierre − toma anterior. Factor de carga = kW medio ÷ potencia nominal.'],
@@ -7042,8 +7115,16 @@ async function excelGeneracion(datos, F, paso, opts = {}) {
       intro: ['Movimientos de equipos', 'Ingresos, devoluciones y traslados.'],
       filas: [['Fecha', 'Generador', 'Movimiento', 'Horómetro', 'kWh', 'Ubicación', 'Observaciones'],
         ...((mov.data || []).filter(m => ids.has(m.generador_id)).map(m => [m.fecha, m.generador ? (m.generador.n_interno ? m.generador.n_interno + ' · ' : '') + m.generador.n_equipo : '',
-          m.tipo, m.horometro != null ? Number(m.horometro) : '', m.kwh != null ? Number(m.kwh) : '', m.ubicacion || '', m.observaciones || '']))] }
+          m.tipo, m.horometro != null ? Number(m.horometro) : '', m.kwh != null ? Number(m.kwh) : '', m.ubicacion || '', m.observaciones || '']))] },
+    ...hojasGen
   ];
+  // la foto del parque va justo después de la portada: es lo primero que se mira
+  hojas.splice(1, 0, { nombre: 'Estado del parque', encabezado: 'Casa de Fuerza',
+    tabla: { nombre: 'Parque' },
+    intro: ['Casa de Fuerza · Estado del parque', `Al ${fechaCorta(new Date().toISOString())}.`,
+      'El acumulado y la potencia son los de la ÚLTIMA toma de cada equipo dentro del periodo.',
+      'El estado es el que se vio ese día: un equipo pudo cambiar de condición después.'],
+    filas: parque });
   for (const h of hojas) if (h.filas.length === 1) h.filas.push(['', 'Sin datos en el periodo']);
   paso('Escribiendo el archivo…');
   const blob = await R.construirExcel(hojas);

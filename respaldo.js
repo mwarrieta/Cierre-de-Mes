@@ -158,7 +158,67 @@ function armarHoja(h, n, est) {
     rels.push({ id: 'rIdT', tipo: TIPO('table'), destino: `../tables/table${n}.xml` });
   }
 
-  if (h.grafico && tot) {
+  /* Gráfico de varias columnas: una categoría por fila (los meses) y una serie por
+     columna. Sirve para ver juntos valores de tamaños muy distintos — los kWh de un
+     generador son cientos de miles y sus horas, cientos — poniendo cada grupo en su
+     propio eje: barras a la izquierda, líneas a la derecha.
+     grafico: { titulo, cat, series: [{ col, nombre, tipo:'bar'|'line', eje:1|2, color }] } */
+  if (h.grafico && h.grafico.series) {
+    const G = h.grafico;
+    const datos = filas.slice(1);
+    const rango = j => `${refHoja(h.nombre)}!$${col(j + 1)}$${filaCab + 1}:$${col(j + 1)}$${ultimaDato}`;
+    const cats = datos.map(f => valorDe(f[G.cat]));
+    const fCats = rango(G.cat);
+    const catXml = `<c:cat><c:strRef><c:f>${xmlEsc(fCats)}</c:f><c:strCache><c:ptCount val="${cats.length}"/>` +
+      cats.map((c, i) => `<c:pt idx="${i}"><c:v>${xmlEsc(c == null ? '' : String(c))}</c:v></c:pt>`).join('') +
+      `</c:strCache></c:strRef></c:cat>`;
+    const serXml = (se, idx) => {
+      const vals = datos.map(f => { const v = valorDe(f[se.col]); return typeof v === 'number' ? v : null; });
+      const pts = vals.map((v, i) => v == null ? '' : `<c:pt idx="${i}"><c:v>${Math.round(v * 1000) / 1000}</c:v></c:pt>`).join('');
+      const pintar = se.tipo === 'line'
+        ? `<c:spPr><a:ln w="22225"><a:solidFill><a:srgbClr val="${se.color}"/></a:solidFill></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/></c:marker>`
+        : `<c:spPr><a:solidFill><a:srgbClr val="${se.color}"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/>`;
+      return `<c:ser><c:idx val="${idx}"/><c:order val="${idx}"/><c:tx><c:v>${xmlEsc(se.nombre)}</c:v></c:tx>${pintar}${catXml}` +
+        `<c:val><c:numRef><c:f>${xmlEsc(rango(se.col))}</c:f><c:numCache><c:formatCode>General</c:formatCode>` +
+        `<c:ptCount val="${vals.length}"/>${pts}</c:numCache></c:numRef></c:val>${se.tipo === 'line' ? '<c:smooth val="0"/>' : ''}</c:ser>`;
+    };
+    const dePrimero = G.series.filter(x => (x.eje || 1) === 1);
+    const deSegundo = G.series.filter(x => (x.eje || 1) === 2);
+    let i = 0;
+    const bloque = (lista, ejeA, ejeB) => {
+      if (!lista.length) return '';
+      const barras = lista.filter(x => x.tipo !== 'line'), lineas = lista.filter(x => x.tipo === 'line');
+      let out = '';
+      if (barras.length) out += `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>` +
+        barras.map(se => serXml(se, i++)).join('') + `<c:gapWidth val="60"/><c:axId val="${ejeA}"/><c:axId val="${ejeB}"/></c:barChart>`;
+      if (lineas.length) out += `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>` +
+        lineas.map(se => serXml(se, i++)).join('') + `<c:marker val="1"/><c:axId val="${ejeA}"/><c:axId val="${ejeB}"/></c:lineChart>`;
+      return out;
+    };
+    const rejilla = `<c:majorGridlines><c:spPr><a:ln w="6350"><a:solidFill><a:srgbClr val="E0E0E0"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>`;
+    const catAx = (id, cruza, oculto) => `<c:catAx><c:axId val="${id}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="${oculto ? 1 : 0}"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="${cruza}"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>`;
+    const valAx = (id, cruza, pos, titulo, conRejilla) => `<c:valAx><c:axId val="${id}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${pos}"/>${conRejilla ? rejilla : ''}` +
+      (titulo ? `<c:title><c:tx><c:rich><a:bodyPr rot="-5400000" vert="horz"/><a:p><a:r><a:rPr lang="es-CL" sz="900"/><a:t>${xmlEsc(titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>` : '') +
+      `<c:numFmt formatCode="#,##0" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="${cruza}"/><c:crosses val="${pos === 'r' ? 'max' : 'autoZero'}"/><c:crossBetween val="between"/></c:valAx>`;
+    graficoXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="${NS_C}" xmlns:a="${NS_A}" xmlns:r="${NS_R}"><c:roundedCorners val="0"/>
+<c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:pPr><a:defRPr sz="1200" b="1"/></a:pPr><a:r><a:rPr lang="es-CL" sz="1200" b="1"/><a:t>${xmlEsc(G.titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
+<c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>
+${bloque(dePrimero, 5001, 5002)}${bloque(deSegundo, 5003, 5004)}
+${catAx(5001, 5002, false)}${valAx(5002, 5001, 'l', G.ejeIzq || null, true)}
+${deSegundo.length ? catAx(5003, 5004, true) + valAx(5004, 5003, 'r', G.ejeDer || null, false) : ''}
+</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>`;
+    const c0 = ncol + 1, r0 = filaCab - 1;
+    dibujoXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="${NS_A}">
+<xdr:twoCellAnchor><xdr:from><xdr:col>${c0}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${r0}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+<xdr:to><xdr:col>${c0 + 11}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${r0 + 22}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Grafico ${n}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>
+<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>
+<a:graphic><a:graphicData uri="${NS_C}"><c:chart xmlns:c="${NS_C}" xmlns:r="${NS_R}" r:id="rId1"/></a:graphicData></a:graphic>
+</xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+    rels.push({ id: 'rIdD', tipo: TIPO('drawing'), destino: `../drawings/drawing${n}.xml` });
+  } else if (h.grafico && tot) {
     const d = h.grafico.desde, hasta = h.grafico.hasta;           // columnas 0-based de los meses
     const cats = filas[0].slice(d, hasta + 1);
     const vals = [];

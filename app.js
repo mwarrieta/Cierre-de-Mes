@@ -79,6 +79,19 @@ function campanaSugerida(hoy = new Date()) {
     : hoy;
   return primerDiaDelMes(d);
 }
+// Lee un número escrito a mano con coma o con punto decimal.
+// "18355,914" y "18355.914" valen lo mismo; "1.234,5" -> 1234.5; "18.355" (punto + 3 dígitos) son miles.
+function aNumero(t) {
+  let s = String(t ?? '').trim().replace(/\s/g, '');
+  if (s === '') return NaN;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+// Número -> texto para un campo de captura, con coma decimal.
+const aTextoCampo = v => (v === null || v === undefined || v === '') ? '' : String(v).replace('.', ',');
+
 function num(v, dec = 0) {
   if (v === null || v === undefined || v === '') return '—';
   return Number(v).toLocaleString('es-CL', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -1058,8 +1071,10 @@ async function abrirCaptura(entrada) {
 
     // Sin "0" de ejemplo: se confundía con un cero escrito y el campo quedaba vacío.
     // Si la lectura es cero, hay que escribir el 0.
-    c.valor = doble ? null : el('input', { type: 'number', inputmode: 'decimal',
-      class: 'dato-grande', step: paso, placeholder: 'Escribir lectura', oninput: evaluar });
+    // Texto (no "number"): con type=number el navegador del teléfono rechaza la coma según su idioma.
+    c.valor = doble ? null : el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off',
+      class: 'dato-grande', placeholder: 'Escribir lectura',
+      oninput: e => { const t = e.target.value.replace(/[^\d.,\-]/g, ''); if (t !== e.target.value) e.target.value = t; evaluar(); } });
     c.mwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
       placeholder: 'Escribir', oninput: evaluar }) : null;
     c.kwh = doble ? el('input', { type: 'number', inputmode: 'numeric', class: 'dato-grande',
@@ -1078,13 +1093,13 @@ async function abrirCaptura(entrada) {
         return (Number(c.mwh.value || 0) * 1000) + Number(c.kwh.value || 0);
       }
       if (c.valor.value === '') return null;
-      const bruto = Number(c.valor.value);
+      const bruto = aNumero(c.valor.value);
       return v.unidad_display === 'MWh' && v.unidad_reporte === 'kWh' ? bruto * 1000 : bruto;
     };
     c.anterior = anterior;
 
     if (yaHay) {
-      if (!doble && yaHay.valor_display != null) c.valor.value = yaHay.valor_display;
+      if (!doble && yaHay.valor_display != null) c.valor.value = aTextoCampo(yaHay.valor_display);
       if (doble) { c.mwh.value = yaHay.valor_mwh ?? ''; c.kwh.value = yaHay.valor_kwh ?? ''; }
       if (yaHay.sin_dato) { c.sinDato.checked = true; c.sinDato.dispatchEvent(new Event('change')); }
     }
@@ -1260,6 +1275,8 @@ async function abrirCaptura(entrada) {
     }
 
     const conValor = campos.filter(c => c.valorActual() !== null || c.sinDato.checked);
+    const malEscritas = conValor.filter(c => !c.sinDato.checked && Number.isNaN(c.valorActual()));
+    if (malEscritas.length) return toast('Revisa el número: usa una sola coma para los decimales (ej. 18355,914)', true);
     const obligatoriasVacias = campos.filter(c => !c.v.opcional && !c.sinDato.checked
                                                   && c.valorActual() === null && !c.yaHay);
     if (!conValor.length && !avisos.length) {
@@ -1280,7 +1297,7 @@ async function abrirCaptura(entrada) {
       const val = c.valorActual();
       const fila = {
         variable_id: c.v.id,
-        valor_display: c.doble ? null : (c.valor.value === '' ? null : Number(c.valor.value)),
+        valor_display: c.doble ? null : (c.valor.value === '' ? null : aNumero(c.valor.value)),
         valor_mwh: c.doble ? Number(c.mwh.value || 0) : null,
         valor_kwh: c.doble ? Number(c.kwh.value || 0) : null,
         sin_dato: c.sinDato.checked
@@ -2773,14 +2790,15 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const campoValor = (valores = {}) => doble
     ? { mwh: el('input', { type: 'number', step: 'any', value: valores.mwh ?? '', placeholder: 'MWh' }),
         kwh: el('input', { type: 'number', step: 'any', value: valores.kwh ?? '', placeholder: 'kWh' }) }
-    : { val: el('input', { type: 'number', step: dec > 0 ? '0.' + '0'.repeat(dec - 1) + '1' : '1',
-                           value: valores.val ?? '', placeholder: `Valor en ${uDisp}`, inputmode: 'decimal' }) };
+    : { val: el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off',
+                           value: aTextoCampo(valores.val), placeholder: `Valor en ${uDisp} (con coma si lleva decimales)`,
+                           oninput: e => { const t = e.target.value.replace(/[^\d.,\-]/g, ''); if (t !== e.target.value) e.target.value = t; } }) };
   const nodosValor = c => doble
     ? [el('label', { text: 'MWh' }, [c.mwh]), el('label', { text: 'kWh' }, [c.kwh])]
     : [el('label', { text: `Valor del display (${uDisp})` }, [c.val])];
   const leerValor = c => doble
     ? (c.mwh.value === '' && c.kwh.value === '' ? null : { valor_display: null, valor_mwh: Number(c.mwh.value || 0), valor_kwh: Number(c.kwh.value || 0) })
-    : (c.val.value === '' ? null : { valor_display: Number(c.val.value), valor_mwh: null, valor_kwh: null });
+    : (c.val.value === '' || Number.isNaN(aNumero(c.val.value)) ? null : { valor_display: aNumero(c.val.value), valor_mwh: null, valor_kwh: null });
 
   // Fotos de una lectura: miniaturas que abren la imagen completa.
   // Si `borrable`, cada foto lleva un botón "Quitar" (solo admin/supervisor, lo exige también la RLS).

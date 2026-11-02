@@ -2226,12 +2226,16 @@ async function vistaConsumos(c, opts = {}) {
     } catch { /* sin revisiones, todo lo marcado sigue por revisar */ }
 
     // Registros con foto: la foto de un mes cuelga de la lectura de cierre (periodo del mes siguiente).
+    // La foto se saca una vez por PUNTO y queda colgada de una sola de sus lecturas, así que el
+    // indicador es del punto: si el medidor de kWh+ tiene foto, la fila de kWh- también la tiene.
+    const puntoDeVar = new Map(S.catalogo.variables.map(v => [v.id, v.punto.id]));
+    for (const f of r0.data) puntoDeVar.set(f.variable_id, f.punto_id);
     const conFoto = new Set();
     try {
       const fl = await traerTodo(() => sb.from('lecturas').select('variable_id, periodo, fotos!inner(id)')
         .gte('periodo', mesSiguiente(desde)).lte('periodo', mesSiguiente(hasta)).neq('estado', 'descartada')
         .order('id'));
-      for (const x of fl) conFoto.add(x.variable_id + '|' + x.periodo);
+      for (const x of fl) conFoto.add(puntoDeVar.get(x.variable_id) + '|' + x.periodo);
     } catch { /* sin el indicador de fotos, la tabla igual sirve */ }
 
     // Primer periodo con lectura de cada variable: antes de eso la variable todavía no se medía,
@@ -2593,7 +2597,7 @@ function armarInforme(data, desde, hasta, extra = {}) {
       onclick: () => abrir({ variable_id: f.variable_id, mes: m })
     }, [el('span', { text: texto }),
         rev ? el('span', { class: 'marca-rev', title: 'Registro ' + (nombreTipo[rev.tipo] || 'revisado'), text: ' ✓' }) : null,
-        conFoto.has(f.variable_id + '|' + mesSiguiente(m)) ? el('span', { class: 'ico-foto', title: 'Tiene registro fotográfico', html: ICONO_FOTO }) : null]);
+        conFoto.has(f.punto_id + '|' + mesSiguiente(m)) ? el('span', { class: 'ico-foto', title: 'Tiene registro fotográfico', html: ICONO_FOTO }) : null]);
   };
   // La columna Revisar dice QUÉ pasa y en qué mes; cada marca abre su ficha.
   const marcas = (f, mesesFila, conMes) => {
@@ -2822,6 +2826,33 @@ async function verConsumo({ variable_id, mes }, ctx) {
     .eq('variable_id', variable_id).in('periodo', [mes, sig]).neq('estado', 'descartada').order('fecha_lectura');
   if (error) { cuerpo.append(el('p', { class: 'error', text: error.message })); }
 
+  // La foto del medidor se saca una vez por punto y queda colgada de UNA de sus lecturas
+  // (casi siempre la de kWh+). Al revisar otra lectura del mismo punto hay que poder verla:
+  // se muestra solo para mirar, sin copiarla, así no se duplica ni en la base ni en el respaldo.
+  const puntoId = v ? v.punto.id : f?.punto_id;
+  const idsPunto = S.catalogo.variables.filter(x => x.punto.id === puntoId).map(x => x.id);
+  let hermanas = [];
+  const otrasVars = idsPunto.filter(id => id !== variable_id);
+  if (puntoId && otrasVars.length) {
+    try {
+      const r = await sb.from('lecturas').select('id, periodo, variable_id, fotos(id, storage_path, orden)')
+        .in('variable_id', otrasVars).in('periodo', [mes, sig]).neq('estado', 'descartada');
+      hermanas = (r.data || []).filter(x => (x.fotos || []).length);
+    } catch { /* sin esto, solo se ven las fotos de esta lectura */ }
+  }
+  // Tras subir o quitar una foto, el icono de la tabla se recalcula mirando TODO el punto.
+  const refrescarIcono = async () => {
+    if (!ctx.conFoto || !puntoId) return;
+    const clave = puntoId + '|' + sig;
+    try {
+      const r = await sb.from('lecturas').select('id, fotos!inner(id)')
+        .in('variable_id', idsPunto.length ? idsPunto : [variable_id])
+        .eq('periodo', sig).neq('estado', 'descartada').limit(1);
+      if ((r.data || []).length) ctx.conFoto.add(clave); else ctx.conFoto.delete(clave);
+    } catch { /* el icono queda como estaba */ }
+    if (ctx.repintar) ctx.repintar();
+  };
+
   // ---- 1 · el resultado, lo primero que se ve ----
   const rango = b && b.sigma
     ? `Rango habitual: ${num(Math.max(0, b.media - 1.5 * b.sigma))} – ${num(b.media + 1.5 * b.sigma)} ${uRep} (promedio ${num(b.media)})`
@@ -2875,7 +2906,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
           await sb.storage.from(C.BUCKET).remove([ft.storage_path]).catch(() => {});
           toast('Foto quitada');
           const r = await sb.from('fotos').select('id, storage_path, orden').eq('lectura_id', lecturaId).order('orden').order('id');
-          if (ctx.conFoto && !(r.data || []).length) { ctx.conFoto.delete(variable_id + '|' + mes); if (ctx.repintar) ctx.repintar(); }
+          await refrescarIcono();
           pintarFotos(cont, r.data || [], borrable, lecturaId);
         } catch (err) {
           btn.disabled = false; btn.textContent = 'Quitar';
@@ -2894,6 +2925,21 @@ async function verConsumo({ variable_id, mes }, ctx) {
       : `${num(l.valor_display ?? l.valor, dec)} ${uDisp}`;
     const fotos = el('div', { class: 'ficha-fotos' });
     pintarFotos(fotos, fotosOrdenadas(l), editable && puedo, l.id);
+
+    // Fotos de este punto que cuelgan de otra de sus lecturas: solo para mirar.
+    const zonaOtras = el('div');
+    const deOtras = hermanas.filter(x => x.periodo === l.periodo);
+    if (deOtras.length) {
+      const nombreVar = id => S.catalogo.variables.find(x => x.id === id)?.nombre || 'otra lectura';
+      zonaOtras.append(el('p', { class: 'ayuda',
+        html: '<b>Foto del punto</b>, cargada en ' + esc([...new Set(deOtras.map(x => nombreVar(x.variable_id)))].join(', ')) +
+              '. Se saca una sola vez por punto y sirve para todas sus lecturas.' }));
+      for (const x of deOtras) {
+        const c = el('div', { class: 'ficha-fotos' });
+        pintarFotos(c, fotosOrdenadas(x), false);
+        zonaOtras.append(c);
+      }
+    }
 
     const zonaCorregir = el('div');
     const abrirCorreccion = () => {
@@ -2942,7 +2988,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
           ok++;
         }
         toast(ok === 1 ? 'Foto agregada' : `${ok} fotos agregadas`);
-        if (ok && ctx.conFoto) { ctx.conFoto.add(variable_id + '|' + mes); if (ctx.repintar) ctx.repintar(); }
+        if (ok) await refrescarIcono();
       } catch (err) {
         toast(`${ok ? ok + ' subida(s). ' : ''}No se pudo subir la foto: ${err.message || err}`, true);
       } finally {
@@ -3016,7 +3062,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
         `Tomada el ${fechaHora(l.fecha_lectura)} · ${gente[l.tomada_por] || (l.origen === 'importacion' ? 'Importado' : 'sin autor')} · ${l.estado}` +
         (l.es_reset ? ' · reinicio del totalizador' : '') }),
       l.observacion ? el('p', { class: 'ayuda', html: '<b>Observación:</b> ' + esc(l.observacion) }) : null,
-      fotos,
+      fotos, zonaOtras,
       editable && puedo ? el('div', { class: 'fila' }, [
         el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }), btnFoto, inputFoto,
         el('button', { class: 'btn chico', text: 'Historial', onclick: abrirHistorial })]) : null,

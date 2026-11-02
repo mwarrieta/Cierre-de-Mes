@@ -2091,6 +2091,14 @@ async function vistaConsumos(c, opts = {}) {
       } catch (err) { toast('No se pudo armar la planilla: ' + (err.message || err), true); }
       finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
     } }),
+    el('button', { class: 'btn', text: 'Informe con fotos (ZIP)',
+      title: 'Planilla Excel + PDF + respaldo fotográfico del grupo y periodo elegidos', onclick: async e => {
+      const b = e.target; b.disabled = true;
+      const [d, h] = limites();
+      try { await descargarInformeConFotos(d, h, { grupo: R.grupo, puntos: puntosExcel() }); }
+      catch (err) { toast('No se pudo armar el informe: ' + (err.message || err), true); }
+      finally { b.disabled = false; $('#planilla-paso').textContent = ''; }
+    } }),
     el('button', { class: 'btn', text: 'Vista para imprimir', onclick: () => imprimirInforme() })
   ]);
   const zona = el('div');
@@ -3633,6 +3641,81 @@ async function descargarPlanilla(desde, hasta, filtros = {}) {
   toast(`Planilla lista: ${filasVar.length} puntos, ${meses.length} meses`);
 }
 
+// Informe de un grupo (o de los puntos elegidos) con su respaldo fotográfico, todo en un ZIP:
+// la planilla Excel, el PDF del detalle mensual y las fotos por año y mes de cierre.
+// Usa el grupo que se elige en la pantalla: un punto que está en varios grupos sale en cada uno.
+async function descargarInformeConFotos(desde, hasta, filtros = {}) {
+  const paso = filtros.paso || (t => { const p = $('#planilla-paso'); if (p) p.textContent = t; });
+  const plan = await descargarPlanilla(desde, hasta, { grupo: filtros.grupo, puntos: filtros.puntos,
+                                                      devolver: true, conPdf: true, paso });
+  if (!plan) return toast('No hay consumos en ese periodo', true);
+  const R = window.RESPALDO;
+  const zip = new JSZip();
+  const alcance = filtros.grupo ? R.limpio(filtros.grupo) : 'Todos los grupos';
+  zip.file(plan.nombre, plan.blob);
+  if (plan.pdf) zip.file(plan.nombre.replace(/^Consumos_/, 'Detalle_mensual_').replace(/\.xlsx$/, '.pdf'), plan.pdf);
+
+  paso('Consultando las fotos…');
+  const sel = filtros.puntos && filtros.puntos.length ? new Set(filtros.puntos) : null;
+  let lect = await traerTodo(() => {
+    let q = sb.from('v_respaldo').select('*')
+             .gte('periodo', desde).lte('periodo', mesSiguiente(hasta))
+             .order('periodo').order('punto').order('lectura_id').order('foto_n');
+    if (filtros.grupo) q = q.contains('grupos', [filtros.grupo]);
+    return q;
+  });
+  if (sel) lect = lect.filter(f => sel.has(f.punto_id));
+  const conFoto = lect.filter(f => f.storage_path);
+  const sinFotoN = new Set(lect.filter(f => !f.storage_path && !f.sin_dato).map(f => f.lectura_id)).size;
+
+  // Mes de cierre de una toma: la del 1 de octubre cierra septiembre.
+  const etqMes = m => { const d = new Date(m + 'T00:00:00Z'); return [d.getUTCFullYear(), R.MESES_N[d.getUTCMonth()]]; };
+  const usados = new Set();
+  const indice = [['Ruta dentro del ZIP', 'Año', 'Mes de cierre', 'Punto', 'TAG', 'Variable', 'Unidad',
+                   'Fecha de lectura', 'Valor', 'Estado', 'Tomada por', 'Foto']];
+  let fallidas = 0;
+  for (let i = 0; i < conFoto.length; i++) {
+    const f = conFoto[i];
+    paso(`Descargando fotos… ${i + 1} de ${conFoto.length}`);
+    try {
+      const { data: url } = await sb.storage.from(C.BUCKET).createSignedUrl(f.storage_path, 900);
+      if (!url?.signedUrl) throw new Error('sin enlace');
+      const blob = await (await fetch(url.signedUrl)).blob();
+      const [anio, mesN] = etqMes(mesAnterior(String(f.periodo).slice(0, 10)));
+      const carpeta = `Fotos/${anio}/${mesN}`;
+      const varias = (f.variable && !/^energ[ií]a activa importada\b/i.test(f.variable)) ? '_' + R.limpio(f.variable) : '';
+      const sufijo = Number(f.foto_total) > 1 ? `_foto${f.foto_n}` : '';
+      let nombre = `${String(f.fecha_dia).slice(0, 10)}_${R.limpio(f.punto)}${varias}_${f.valor ?? 'sd'}${sufijo}.jpg`;
+      if (usados.has(`${carpeta}/${nombre}`)) nombre = nombre.replace(/\.jpg$/, `_l${f.lectura_id}.jpg`);
+      usados.add(`${carpeta}/${nombre}`);
+      zip.file(`${carpeta}/${nombre}`, blob);
+      indice.push([`${carpeta}/${nombre}`, anio, mesN, f.punto, f.tag || '', f.variable, f.unidad,
+        String(f.fecha_lectura).slice(0, 19).replace('T', ' '), f.valor === null ? '' : Number(f.valor), f.estado,
+        S.catalogo.gente?.[f.tomada_por] || '', `${f.foto_n} de ${f.foto_total}`]);
+    } catch { fallidas++; }
+  }
+  if (indice.length > 1) zip.file('Indice de fotos.xlsx', await R.construirExcel([{ nombre: 'Fotos', filas: indice }]));
+  zip.file('LEEME.txt', [
+    `Informe con respaldo fotográfico · ${filtros.grupo || 'Todos los grupos'}`,
+    `Generado el ${new Date().toLocaleString('es-CL')} por ${S.usuario.nombre}.`,
+    `Meses: ${nombrePeriodo(desde)} a ${nombrePeriodo(hasta)}.`,
+    '',
+    `${plan.nombre}   La planilla, igual a la de Consumos e informes.`,
+    'Detalle_mensual_....pdf   Totalizador, consumo y variación por punto.',
+    'Fotos/Año/Mes            Las fotos, en el MES QUE CIERRAN: la toma del 1 de octubre va en septiembre.',
+    'Indice de fotos.xlsx     Una fila por foto con su ruta, punto, valor y quién la tomó.',
+    '',
+    `Fotos incluidas: ${indice.length - 1}` + (fallidas ? ` · no se pudieron bajar: ${fallidas}` : '') +
+      (sinFotoN ? ` · lecturas del periodo sin foto: ${sinFotoN}` : '') + '.'
+  ].join('\r\n'));
+
+  paso('Comprimiendo…');
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+  descargar(blob, `Informe_con_fotos_${desde.slice(0, 7)}_a_${hasta.slice(0, 7)}_${alcance}.zip`);
+  paso('');
+  toast(`Listo: informe y ${indice.length - 1} fotos` + (fallidas ? ` (${fallidas} no se pudieron bajar)` : ''));
+}
+
 // Excel guarda lo que le den: conviene no arrastrar 12 decimales de un prorrateo.
 function redondear(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return '';
@@ -5055,7 +5138,10 @@ async function editarGrupo(g) {
             .insert([...dentro].map(punto_id => ({ grupo_id: g.id, punto_id })));
           if (ins.error) return toast(ins.error.message, true);
         }
-        cerrarModal(); toast('Puntos del grupo actualizados'); render();
+        cerrarModal(); toast('Puntos del grupo actualizados');
+        // Sin esto el grupo no aparecía en Consumos e informes hasta la siguiente descarga del catálogo.
+        S.catalogo = await DB.descargarCatalogo().catch(() => S.catalogo);
+        render();
       } })
     );
     pintarPuntos();

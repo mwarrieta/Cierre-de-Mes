@@ -1529,3 +1529,9 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 }
 @media (max-width:820px){ .filtros-admin,.filtros-bitacora{grid-template-columns:1fr} }
 .tabla-bitacora td:nth-child(2) .in-gen{flex:0 0 140px;width:140px}
+
+/* Historial de cambios de una lectura */
+#modal-cuerpo .ficha-historial{display:grid;gap:8px;margin-top:8px}
+#modal-cuerpo .hist-fila{display:grid;gap:4px;justify-items:start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+#modal-cuerpo .hist-fila .ayuda{margin:0}
+#modal-cuerpo .hist-valor{font-weight:600}

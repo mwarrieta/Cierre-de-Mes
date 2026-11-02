@@ -2867,6 +2867,64 @@ async function verConsumo({ variable_id, mes }, ctx) {
       }
     });
 
+    // ---- Historial de cambios de valor, con "Restaurar" (solo admin/supervisor) ----
+    const zonaHistorial = el('div');
+    const valorDeAuditoria = d => {
+      if (!d) return '—';
+      if (d.sin_dato) return 'No se pudo leer';
+      if (d.valor == null) return '—';
+      if (doble) return `${num(d.valor_mwh)} MWh + ${num(d.valor_kwh)} kWh`;
+      const fac = (v && v.unidad_display === 'MWh' && v.unidad_reporte === 'kWh') ? 1000 : 1;
+      return `${num(Number(d.valor) / fac, dec)} ${uDisp}`;
+    };
+    const abrirHistorial = async () => {
+      if (zonaHistorial.childElementCount) { zonaHistorial.replaceChildren(); return; }
+      zonaHistorial.replaceChildren(el('p', { class: 'ayuda', text: 'Cargando historial…' }));
+      const { data, error } = await sb.from('auditoria')
+        .select('id, ocurrido_en, usuario_id, accion, campos_cambiados, datos_antes, datos_despues, motivo')
+        .eq('tabla', 'lecturas').eq('registro_id', String(l.id))
+        .order('ocurrido_en', { ascending: false }).limit(60);
+      if (error) { zonaHistorial.replaceChildren(el('p', { class: 'error', text: error.message })); return; }
+      const cambiaValor = a => a.accion === 'UPDATE' &&
+        (a.campos_cambiados || []).some(c => ['valor', 'valor_mwh', 'valor_kwh', 'sin_dato'].includes(c));
+      const filas = [];
+      for (const a of (data || [])) {
+        const quien = gente[a.usuario_id] || 'sistema';
+        if (a.accion === 'INSERT') {
+          filas.push(el('div', { class: 'hist-fila' }, [
+            el('div', { class: 'hist-valor', text: `Lectura original: ${valorDeAuditoria(a.datos_despues)}` }),
+            el('p', { class: 'ayuda', text: `${fechaHora(a.ocurrido_en)} · ${a.usuario_id ? quien : (l.origen === 'importacion' ? 'Importada' : 'sin autor')}` })
+          ]));
+        } else if (cambiaValor(a)) {
+          const esRestauracion = (a.motivo || '').startsWith('Restaurado');
+          const antesOk = a.datos_antes && !a.datos_antes.sin_dato && a.datos_antes.valor != null;
+          const yaEsEse = antesOk && Number(a.datos_antes.valor) === Number(l.valor) && !l.sin_dato;
+          filas.push(el('div', { class: 'hist-fila' }, [
+            el('div', { class: 'hist-valor' }, [
+              `${valorDeAuditoria(a.datos_antes)} → ${valorDeAuditoria(a.datos_despues)} `,
+              esRestauracion ? el('span', { class: 'pill neutro', text: 'restauración' }) : null
+            ]),
+            el('p', { class: 'ayuda', text: `${fechaHora(a.ocurrido_en)} · ${quien}` + (a.motivo ? ` · ${a.motivo}` : '') }),
+            (editable && puedo && antesOk && !yaEsEse)
+              ? el('button', { class: 'btn chico', text: `Restaurar ${valorDeAuditoria(a.datos_antes)}`, onclick: async e => {
+                  if (!confirm(`¿Restaurar el valor ${valorDeAuditoria(a.datos_antes)}?\n\nHoy esta lectura dice ${valorTxt}.\n` +
+                               `El cambio quedará en el historial a tu nombre.`)) return;
+                  e.target.disabled = true;
+                  try {
+                    const r = await sb.rpc('restaurar_lectura', { p_auditoria_id: a.id });
+                    if (r.error) throw r.error;
+                    await terminar('Valor restaurado');
+                  } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+                } })
+              : (yaEsEse ? el('span', { class: 'ayuda', text: 'Es el valor actual' }) : null)
+          ]));
+        }
+      }
+      const hayCambios = (data || []).some(cambiaValor);
+      if (!hayCambios) filas.push(el('p', { class: 'ayuda', text: 'Esta lectura no ha tenido cambios de valor.' }));
+      zonaHistorial.replaceChildren(el('div', { class: 'ficha-historial' }, filas));
+    };
+
     return el('div', { class: 'ficha-lectura' }, [
       el('div', { class: 'ficha-lectura-valor', text: valorTxt }),
       el('p', { class: 'ayuda', text:
@@ -2875,8 +2933,9 @@ async function verConsumo({ variable_id, mes }, ctx) {
       l.observacion ? el('p', { class: 'ayuda', html: '<b>Observación:</b> ' + esc(l.observacion) }) : null,
       fotos,
       editable && puedo ? el('div', { class: 'fila' }, [
-        el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }), btnFoto, inputFoto]) : null,
-      zonaCorregir
+        el('button', { class: 'btn chico', text: 'Corregir valor', onclick: abrirCorreccion }), btnFoto, inputFoto,
+        el('button', { class: 'btn chico', text: 'Historial', onclick: abrirHistorial })]) : null,
+      zonaCorregir, zonaHistorial
     ]);
   };
 
@@ -4809,7 +4868,9 @@ function editarVariable(x, punto, alGuardar) {
     el('label', { text: 'Unidad en la que se informa' }, [f.reporte]),
     el('p', { class: 'ayuda', text:
       'Si el display muestra MWh y el informe va en kWh, la app convierte sola: en terreno se ' +
-      'escribe tal cual se lee en el equipo.' }),
+      'escribe tal cual se lee en el equipo. Si cambias la unidad del display de un punto que ya tiene ' +
+      'lecturas (kWh \u2194 MWh), las lecturas guardadas se convierten solas: el valor en kWh no cambia, ' +
+      'solo cómo se muestra.' }),
     el('label', { text: 'Decimales del display' }, [f.dec]),
     el('label', { text: 'Formato de la lectura' }, [f.formato]),
     el('label', { class: 'fila' }, [f.informe,

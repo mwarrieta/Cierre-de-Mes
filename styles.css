@@ -959,12 +959,18 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 @media (min-width:821px) and (max-width:1200px){
   .cajas-rep{grid-template-columns:repeat(4,minmax(0,1fr))}
 }
-.kpi-btn{font:inherit;text-align:left;cursor:pointer;color:inherit;width:100%;
+.kpi-btn{position:relative;font:inherit;text-align:left;cursor:pointer;color:inherit;width:100%;
   transition:border-color .15s,box-shadow .15s,background .15s}
 .kpi-btn:hover{border-color:var(--acento)}
 .kpi-btn:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
 .kpi-btn.sel{border-color:var(--acento);background:var(--acento-suave);box-shadow:inset 0 0 0 1px var(--acento)}
-.kpi-btn .k{font-weight:600}
+.kpi-btn .k{font-weight:600;padding-right:14px}
+/* La flecha avisa que la caja es un filtro y no una tarjeta de solo lectura. */
+.kpi-flecha{position:absolute;top:8px;right:10px;font-size:17px;line-height:1;color:var(--ink-3);
+  opacity:.55;transition:opacity .14s ease,transform .14s ease}
+.kpi-btn:hover .kpi-flecha,.kpi-btn:focus-visible .kpi-flecha{opacity:1;transform:translateX(2px)}
+.kpi-btn.sel .kpi-flecha{opacity:1;transform:none;color:var(--acento)}
+@media print{.kpi-flecha{display:none!important}}
 
 .detalle-cab{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 4px}
 .detalle-cab h3{margin:0;font-size:17px}

@@ -2823,7 +2823,8 @@ function armarInforme(data, desde, hasta, extra = {}) {
       'aria-pressed': caja === k ? 'true' : 'false',
       title: caja === k ? 'Volver a la tabla' : 'Ver ' + c.titulo.toLowerCase(),
       onclick: () => alCaja && alCaja(caja === k ? null : k)
-    }, [el('div', { class: 'v', text: String(cuenta[k]) }), el('div', { class: 'k', text: c.titulo })]))));
+    }, [el('div', { class: 'v', text: String(cuenta[k]) }), el('div', { class: 'k', text: c.titulo }),
+        el('span', { class: 'kpi-flecha', 'aria-hidden': 'true', text: caja === k ? '×' : '›' })]))));
 
   // ---- detalle de una caja ----
   if (caja && CAJAS_REP[caja]) {
@@ -2911,8 +2912,9 @@ function armarInforme(data, desde, hasta, extra = {}) {
     return partes;
   }
   if (abrir) partes.push(el('p', { class: 'ayuda pista-rep', text:
-    'Toca un valor para ver sus lecturas, fotos y avisos. El círculo de Revisar cuenta lo pendiente: tócalo para ver qué es. ' +
-    'Toca la unidad para ver el nombre completo de la lectura. Toca el nombre de un punto para ver solo ese punto.' }));
+    'Las cajas de arriba son filtros: toca una y abajo aparece solo lo que cuenta esa caja. ' +
+    'Toca un valor para ver sus lecturas, fotos y avisos. Toca la unidad para ver el nombre completo de la lectura. ' +
+    'Toca el nombre de un punto para ver solo ese punto.' }));
 
   // Un valor de la tabla: botón que abre la ficha, con el color de su estado.
   const celda = (f, m, texto) => {

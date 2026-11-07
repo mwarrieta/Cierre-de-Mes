@@ -391,6 +391,16 @@ tbody tr:hover{background:var(--surface-2)}
 .modal-tit{flex:1;min-width:0;display:flex;flex-direction:column}
 .modal-tit strong{font-size:16px;line-height:1.25}
 .modal-tit small{font-size:13px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Cabecera de la ficha: el punto es el título y debajo van los chips que dicen
+   qué mes se revisa, qué se lee y en qué unidad. Se abarca de una mirada. */
+#modal-subtitulo.con-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  margin-top:6px;white-space:normal;overflow:visible;text-overflow:clip}
+.chip-cab{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12.5px;
+  font-weight:600;line-height:1.5;white-space:nowrap;background:var(--surface-2);
+  color:var(--ink-2);box-shadow:inset 0 0 0 1px var(--line)}
+.chip-cab.mes{background:var(--acento-suave);color:var(--acento-ink);
+  box-shadow:inset 0 0 0 1px var(--acento);text-transform:uppercase;letter-spacing:.05em}
+.chip-cab.unidad{color:var(--ink-3);font-variant-numeric:tabular-nums}
 #modal-cuerpo{padding:18px;overflow:auto}
 #modal-cuerpo img{max-width:100%;border-radius:var(--radio)}
 
@@ -1588,6 +1598,7 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
    =================================================================== */
 .ficha-validar{display:flex;flex-direction:column;gap:12px}
 .fv-datos{display:grid;gap:12px;align-content:start;min-width:0;scrollbar-gutter:stable}
+.fv-sep{display:none}
 .fv-fotos{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
 .fv-cab{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .fv-cab h4{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
@@ -1616,6 +1627,9 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .fv-marco.comparando .fv-foto.elegida img{outline:2px solid var(--acento);outline-offset:2px}
 .fv-marco.comparando .fv-foto.elegida figcaption{color:var(--acento-ink);font-weight:600}
 .fv-vacio{text-align:center;color:var(--ink-3);padding:24px 16px}
+/* Un marco sin foto no se estira: el hueco gigante gris no aporta nada y empuja
+   el pie fuera de la vista. Se encoge a lo que ocupa su mensaje. */
+.fv-marco:has(.fv-vacio){min-height:0;flex:0 0 auto}
 .fv-vacio p{margin:0 0 4px;font-weight:600}
 .fv-vacio .ayuda{font-weight:400}
 .fv-tira{display:flex;gap:8px;overflow-x:auto;padding:2px 0}
@@ -1641,19 +1655,37 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   .modal.completo:has(.ficha-validar) .modal-caja{max-width:none;border-left:0;border-right:0}
   #modal-cuerpo:has(.ficha-validar){padding:0;overflow:hidden}
   .ficha-validar{display:grid;height:100%;gap:0;
-    grid-template-columns:minmax(380px,30%) minmax(0,1fr);
+    grid-template-columns:var(--fv-col,minmax(380px,30%)) 9px minmax(0,1fr);
     grid-template-rows:minmax(0,1fr) auto;
-    grid-template-areas:"datos fotos" "barra barra"}
+    grid-template-areas:"datos sep fotos" "barra barra barra"}
+  /* Las cajas se reparten solas: una columna mientras sea angosta, dos en cuanto
+     el divisor le da ancho. Así se ven todas juntas sin scroll. */
   .ficha-validar .fv-datos{grid-area:datos;overflow:auto;padding:14px 16px 28px;
-    border-right:1px solid var(--line)}
+    grid-template-columns:repeat(auto-fit,minmax(286px,1fr));align-items:start}
+  /* El total del mes y la lectura editable mandan: siempre a lo ancho. */
+  .ficha-validar .fv-datos > .ficha-resultado,
+  .ficha-validar .fv-datos > .ficha-col.actual{grid-column:1 / -1}
+  /* Divisor arrastrable. La columna es ancha para poder agarrarla; la línea, fina. */
+  .ficha-validar .fv-sep{display:block;grid-area:sep;position:relative;cursor:col-resize;
+    background:none;border:0;padding:0;touch-action:none}
+  .ficha-validar .fv-sep::before{content:'';position:absolute;top:0;bottom:0;left:50%;
+    width:1px;transform:translateX(-50%);background:var(--line);transition:width .1s,background .1s}
+  .ficha-validar .fv-sep:hover::before,
+  .ficha-validar .fv-sep:focus-visible::before{width:3px;background:var(--acento)}
+  .ficha-validar .fv-sep:focus-visible{outline:none}
+  .ficha-validar.redimensionando{user-select:none}
+  .ficha-validar.redimensionando .fv-sep::before{width:3px;background:var(--acento)}
+  /* Al ensanchar la columna, las cajas se reparten en dos y se ven todas sin scroll.
+     El total del mes y la lectura editable mandan: siguen ocupando el ancho completo. */
   .ficha-validar .fv-fotos{grid-area:fotos;padding:14px 16px;overflow:hidden}
   .ficha-validar .fv-marco{flex:1;max-height:none}
+  .ficha-validar .fv-marco:has(.fv-vacio){flex:0 0 auto;min-height:0}
   .ficha-validar .fv-barra{grid-area:barra;margin:0;position:static}
   /* la foto grande se aprovecha mejor que las miniaturas de antes */
   .ficha-validar .fv-thumb img{width:74px;height:74px}
 }
 @media (min-width:1600px){
-  .ficha-validar{grid-template-columns:minmax(420px,24%) minmax(0,1fr)}
+  .ficha-validar{grid-template-columns:var(--fv-col,minmax(420px,24%)) 9px minmax(0,1fr)}
 }
 .fv-cab .check-linea{font-size:12.5px;font-weight:500;color:var(--ink-3);margin-left:auto}
 .fv-cab .check-linea input{width:16px;height:16px}

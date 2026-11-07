@@ -170,8 +170,12 @@ function modal(titulo, nodo, opts = {}) {
   _modalOpts = opts || {};
   $('#modal-titulo').textContent = titulo;
   const sub = $('#modal-subtitulo');
-  sub.textContent = _modalOpts.subtitulo || '';
-  sub.hidden = !_modalOpts.subtitulo;
+  // El subtítulo admite texto o nodos: la ficha de validación lo usa para sus chips.
+  const st = _modalOpts.subtitulo;
+  const conChips = !!(st && typeof st === 'object');
+  if (conChips) { sub.replaceChildren(...[].concat(st).filter(Boolean)); sub.hidden = false; }
+  else { sub.textContent = st || ''; sub.hidden = !st; }
+  sub.classList.toggle('con-chips', conChips);
   $('#modal').classList.toggle('completo', !!_modalOpts.completo);
   $('#modal').classList.toggle('titulo-grande', !!_modalOpts.tituloGrande);
   $('#modal-cuerpo').replaceChildren(...[].concat(nodo));
@@ -3040,8 +3044,18 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const tipoTxt = { corregido: 'Corregido', desestimado: 'Desestimado', validado: 'Validado' };
 
   const cuerpo = el('div', { class: 'ficha-consumo ficha-validar' });
-  const opcionesModal = { subtitulo: `${puntoNombre} · ${varNombre}`, completo: true, tituloGrande: true };
-  modal('Registro de ' + nMes, el('p', { class: 'cargando', text: 'Cargando lecturas…' }), opcionesModal);
+  /* Cabecera: dónde estoy parado de una sola mirada. El nombre del punto es el título
+     (es lo que identifica), y debajo tres chips: el mes que se revisa, qué se está
+     leyendo y en qué unidad. El mes va destacado porque es lo que cambia al navegar. */
+  const chipsCab = () => [
+    el('span', { class: 'chip-cab mes', text: nMes }),
+    el('span', { class: 'chip-cab', text: varNombre }),
+    el('span', { class: 'chip-cab unidad', text: uDisp === uRep ? uRep : `${uDisp} → ${uRep}`,
+      title: uDisp === uRep ? `Se lee y se informa en ${uRep}`
+        : `El display se lee en ${uDisp} y se informa en ${uRep}` })
+  ];
+  const opcionesModal = () => ({ subtitulo: chipsCab(), completo: true, tituloGrande: true });
+  modal(puntoNombre, el('p', { class: 'cargando', text: 'Cargando lecturas…' }), opcionesModal());
 
   // Si se llegó desde otro mes (p. ej. "ir al registro anterior"), el consumo y su revisión
   // pueden no estar en lo que ya trajo la pantalla: se piden aquí.
@@ -3230,9 +3244,17 @@ async function verConsumo({ variable_id, mes }, ctx) {
             ? 'Puedes agregar la del medidor para dejar respaldo de la lectura.'
             : 'Todavía no hay lectura de cierre a la cual colgarla.' })]));
       fvTira.replaceChildren();
-      fvPie.replaceChildren(
+      /* replaceChildren escribe literalmente "null" si se le pasa null: los hijos se
+         arman en un array y se filtran. Ese era el "null" suelto bajo el panel. */
+      fvPie.replaceChildren(...[
         el('span', { class: 'ayuda', text: soloAnterior ? `Sin respaldo fotográfico de ${nMes}` : 'Sin respaldo fotográfico' }),
-        lectEditable && puedo ? el('div', { class: 'fila' }, [btnFoto, inputFoto]) : null);
+        // Sin lectura de cierre no hay de dónde colgar la foto: el atajo es cargarla.
+        el('div', { class: 'fila' }, lectEditable
+          ? [puedo ? btnFoto : null, inputFoto]
+          : [puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura atrasada',
+                title: `La foto se cuelga de la lectura de cierre de ${nMes}: primero hay que cargarla`,
+                onclick: () => { formularioAtrasada(sig, zonaNueva); zonaNueva.scrollIntoView({ block: 'center', behavior: 'smooth' }); } }) : null])
+      ].filter(Boolean));
       return;
     }
     // sel indexa la galería completa; si lo elegido quedó fuera de lo visible, se reencuadra.
@@ -3274,7 +3296,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
             onclick: () => verConsumo({ variable_id: g.variable_id, mes }, ctx) }) : null,
         // Agregar siempre cuelga la foto del cierre de este mes, mires la que mires.
         (lectEditable && puedo) ? btnFoto : null, inputFoto
-      ]));
+      ].filter(Boolean)));
   };
 
   async function cargarFotos() {
@@ -3589,10 +3611,61 @@ async function verConsumo({ variable_id, mes }, ctx) {
       chkComparar]),
     fvMarco, fvTira, fvPie
   ]);
-  cuerpo.replaceChildren(datos, panelFotos, barra);
+  /* Divisor arrastrable entre los datos y las fotos. El ancho elegido se recuerda en
+     este navegador: cada punto se revisa distinto (unos piden leer, otros mirar la foto)
+     y rearmar la proporción en cada registro es tiempo perdido. */
+  const CLAVE_ANCHO = 'cm.fichaValidar.ancho';
+  const sep = el('div', { class: 'fv-sep', role: 'separator', tabindex: '0',
+    'aria-orientation': 'vertical', 'aria-label': 'Ajustar el ancho de la columna de datos',
+    title: 'Arrastra para ajustar · doble clic para volver al ancho normal' });
+  const anchoMin = 320, margenFotos = 380;
+  const fijarAncho = (px, guardar) => {
+    const tope = cuerpo.clientWidth - margenFotos;
+    const v2 = Math.round(Math.max(anchoMin, Math.min(px, Math.max(anchoMin, tope))));
+    cuerpo.style.setProperty('--fv-col', v2 + 'px');
+    if (guardar) { try { localStorage.setItem(CLAVE_ANCHO, String(v2)); } catch { /* modo privado */ } }
+  };
+  const anchoNormal = () => {
+    cuerpo.style.removeProperty('--fv-col');
+    try { localStorage.removeItem(CLAVE_ANCHO); } catch { /* modo privado */ }
+  };
+  try {
+    const g = Number(localStorage.getItem(CLAVE_ANCHO));
+    if (g > 0) cuerpo.style.setProperty('--fv-col', g + 'px');
+  } catch { /* modo privado: queda el ancho por defecto */ }
+
+  let arrastrando = false;
+  sep.addEventListener('pointerdown', ev => {
+    if (!window.matchMedia('(min-width:1100px)').matches) return;
+    arrastrando = true; sep.setPointerCapture(ev.pointerId);
+    cuerpo.classList.add('redimensionando'); ev.preventDefault();
+  });
+  sep.addEventListener('pointermove', ev => {
+    if (!arrastrando) return;
+    fijarAncho(ev.clientX - cuerpo.getBoundingClientRect().left, false);
+  });
+  const soltar = ev => {
+    if (!arrastrando) return;
+    arrastrando = false;
+    try { sep.releasePointerCapture(ev.pointerId); } catch { /* ya liberado */ }
+    cuerpo.classList.remove('redimensionando');
+    fijarAncho(parseFloat(cuerpo.style.getPropertyValue('--fv-col')) || anchoMin, true);
+  };
+  sep.addEventListener('pointerup', soltar);
+  sep.addEventListener('pointercancel', soltar);
+  sep.addEventListener('dblclick', anchoNormal);
+  // Con el teclado: flechas de a 24 px, Inicio vuelve al ancho normal.
+  sep.addEventListener('keydown', ev => {
+    const actual = parseFloat(cuerpo.style.getPropertyValue('--fv-col')) || datos.getBoundingClientRect().width;
+    if (ev.key === 'ArrowLeft') { fijarAncho(actual - 24, true); ev.preventDefault(); }
+    else if (ev.key === 'ArrowRight') { fijarAncho(actual + 24, true); ev.preventDefault(); }
+    else if (ev.key === 'Home') { anchoNormal(); ev.preventDefault(); }
+  });
+
+  cuerpo.replaceChildren(datos, sep, panelFotos, barra);
   cargarFotos();
 
-  modal('Registro de ' + nMes, cuerpo, opcionesModal);
+  modal(puntoNombre, cuerpo, opcionesModal());
 }
 
 /* ---------- informe imprimible ----------

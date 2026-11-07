@@ -3664,17 +3664,19 @@ async function verConsumo({ variable_id, mes }, ctx) {
       } }));
   }
 
-  // La justificación necesita texto, así que se queda en la columna, junto al valor.
-  if (!rev && puedo && (j || !f) && !(ncAqui && !f)) {
-    const motivo = el('textarea', { placeholder: f
-      ? 'Por qué el valor está bien aunque salga del rango (obligatorio)'
-      : 'Por qué no hay dato este mes (obligatorio)' });
+  /* ---- 3 · la acción del mes ----
+     Antes había tres cajas en paralelo (justificar, n/c, eventos) y para elegir bien
+     había que conocer el modelo de datos. Ahora hay una sola pregunta y cada respuesta
+     dice qué pasa con el INFORME, no qué pasa en la base. */
+
+  // Con valor y alerta la decisión es una sola: el valor está bien o hay que corregirlo.
+  if (!rev && puedo && f && j) {
+    const motivo = el('textarea', { placeholder: 'Por qué el valor está bien aunque salga del rango (obligatorio)' });
     caja.append(
-      el('h4', { style: 'margin-top:0', text: f ? `Alerta: el valor está ${j.texto}` : 'Falta el dato de este mes' }),
-      el('p', { class: 'ayuda', text: f ? 'Si el valor es correcto, déjalo como está y desestima la alerta con su motivo. Si no, corrige la lectura de arriba.'
-                                        : 'No se carga nada; queda constancia del motivo y pasa a "desestimado".' }),
+      el('h4', { style: 'margin-top:0', text: `Alerta: el valor está ${j.texto}` }),
+      el('p', { class: 'ayuda', text: 'Si el valor es correcto, déjalo como está y desestima la alerta con su motivo. Si no, corrige la lectura de arriba.' }),
       motivo,
-      el('button', { class: 'btn', text: f ? 'Desestimar alerta' : 'Justificar la falta de dato', onclick: async e => {
+      el('button', { class: 'btn', text: 'Desestimar alerta', onclick: async e => {
         if (!motivo.value.trim()) return toast('Escribe el motivo', true);
         e.target.disabled = true;
         try { await registrar('desestimado', motivo.value.trim()); await terminar('Marcado como desestimado'); }
@@ -3682,35 +3684,83 @@ async function verConsumo({ variable_id, mes }, ctx) {
       } }));
   }
 
-  // ---- 3b · no corresponde (n/c) ----
-  const cajaNC = (pidNC != null && (ncAqui || (puedo && !f)))
+  const evsAqui = pidNC != null ? eventosDe(pidNC, mes, variable_id) : [];
+
+  // Sin valor: la pregunta guiada. Cada opción explica su efecto en el informe.
+  let cajaQuePaso = null;
+  if (!rev && puedo && !f && !ncAqui && pidNC != null) {
+    const OPC = [
+      { k: 'nodato', t: 'Se fue a leer y no se pudo',
+        d: 'Display apagado, tablero cerrado, no había llave de acceso. El mes queda como s/d con tu motivo y deja de contar como pendiente.',
+        btn: 'Dejar constancia', ph: 'Qué impidió tomar la lectura (obligatorio)', min: 1 },
+      { k: 'nc', t: 'El punto no correspondía este mes',
+        d: 'El equipo no estaba instalado o no estaba en faena. En las tablas aparece n/c en vez de s/d y no cuenta como pendiente.',
+        btn: 'Marcar n/c solo este mes', ph: 'Por qué no correspondía (obligatorio)', min: 1 },
+      { k: 'baja', t: 'El punto dejó de medirse desde este mes',
+        d: 'Se retiró el medidor, o el consumo pasó a medirse en otro punto. Queda n/c de este mes EN ADELANTE, y se registra un evento que lo explica en el informe. No hay que volver a marcarlo cada mes.',
+        btn: 'Dar de baja desde este mes', ph: 'Qué pasó, quién lo hizo y si el consumo se mide en otro lado (mínimo 15 caracteres)', min: 15 },
+      { k: 'atrasada', t: 'La lectura existe, falta cargarla',
+        d: 'Está anotada en papel, en el opto o en el PLC. Cárgala con «Cargar lectura atrasada», arriba: el mes pasa a ser medido y no hace falta justificar nada.',
+        btn: null }
+    ];
+    let elegida = null;
+    const motivo = el('textarea', { placeholder: '' });
+    const zonaMotivo = el('div', { class: 'opc-motivo', hidden: true }, [motivo]);
+    const accion = el('div', { class: 'opc-accion' });
+    const lista = el('div', { class: 'opc-lista' });
+
+    const pintarOpc = () => {
+      lista.replaceChildren(...OPC.map(o => el('button', {
+        type: 'button', class: 'opc-fila' + (elegida === o.k ? ' sel' : ''),
+        'aria-pressed': elegida === o.k ? 'true' : 'false',
+        onclick: () => { elegida = elegida === o.k ? null : o.k; pintarOpc(); }
+      }, [el('span', { class: 'opc-marca', 'aria-hidden': 'true' }),
+          el('span', {}, [el('b', { text: o.t }), el('span', { class: 'ayuda', text: o.d })])])));
+      const o = OPC.find(x => x.k === elegida);
+      zonaMotivo.hidden = !(o && o.btn);
+      if (o && o.btn) motivo.placeholder = o.ph;
+      accion.replaceChildren(...(o && o.btn ? [el('button', { class: 'btn primario', text: o.btn,
+        onclick: async e => {
+          const txt = motivo.value.trim();
+          if (txt.length < o.min) return toast(o.min > 1 ? `Escribe al menos ${o.min} caracteres` : 'Escribe el motivo', true);
+          e.target.disabled = true;
+          try {
+            if (o.k === 'nodato') { await registrar('desestimado', txt); await terminar('Constancia registrada'); return; }
+            if (o.k === 'nc') {
+              const { error: e1 } = await sb.from('no_corresponde').insert({ punto_id: pidNC, desde: mes, hasta: mes, motivo: txt });
+              if (e1) throw e1;
+              await cargarNC(); await terminar('Marcado como n/c este mes'); return;
+            }
+            // baja: n/c abierto + evento. El evento es lo que lee la auditoría.
+            const { error: e2 } = await sb.rpc('registrar_evento_punto', {
+              p_punto_id: pidNC, p_tipo: 'cambio_equipo', p_desde: mes,
+              p_titulo: 'Punto dado de baja', p_motivo: txt, p_hasta: null,
+              p_variable_id: null, p_excluir_de_banda: true });
+            if (e2) throw e2;
+            const { error: e3 } = await sb.from('no_corresponde').insert({ punto_id: pidNC, desde: mes, hasta: null, motivo: txt });
+            if (e3) throw e3;
+            await cargarNC(); await cargarEventos();
+            await terminar('Punto dado de baja desde ' + nombrePeriodo(mes));
+          } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+        } })] : []));
+    };
+    pintarOpc();
+    cajaQuePaso = el('div', { class: 'card ficha-quepaso' }, [
+      el('h4', { style: 'margin-top:0', text: `No hay dato de ${nMes}. ¿Qué pasó?` }),
+      el('p', { class: 'ayuda', text: 'Elige una. Cada opción dice qué va a mostrar el informe.' }),
+      lista, zonaMotivo, accion]);
+  }
+
+  // Ya marcado n/c: se muestra el estado, no la pregunta.
+  const cajaNC = (pidNC != null && ncAqui)
     ? el('div', { class: 'card ficha-nc' }, [
-      el('h4', { style: 'margin-top:0', text: ncAqui ? 'No corresponde este mes (n/c)' : '¿Este mes no corresponde?' }),
-      el('p', { class: 'ayuda', text: ncAqui ? ncAqui.motivo
-        : 'Si el equipo no estaba instalado o no estaba en faena, márcalo: la tabla muestra n/c en vez de s/d y no cuenta como pendiente.' }),
-      puedo ? el('button', { class: 'btn chico', text: ncAqui ? 'Ver o cambiar los meses n/c' : 'Marcar como no corresponde (n/c)',
+      el('h4', { style: 'margin-top:0', text: 'No corresponde este mes (n/c)' }),
+      el('p', { class: 'ayuda', text: ncAqui.motivo }),
+      el('p', { class: 'ayuda', text: `Marcado desde ${nombrePeriodo(ncAqui.desde)}`
+        + (ncAqui.hasta ? ` hasta ${nombrePeriodo(ncAqui.hasta)}` : ' en adelante (el punto está dado de baja)') }),
+      puedo ? el('button', { class: 'btn chico', text: 'Ver o cambiar los meses n/c',
         onclick: () => gestionarNC(pidNC, puntoNombre, { mes, alCambiar: ctx.alCambiar }) }) : null])
     : null;
-
-  // ---- 3c · eventos del punto: la explicación que viaja al informe ----
-  const evsAqui = pidNC != null ? eventosDe(pidNC, mes, variable_id) : [];
-  const cajaEventos = pidNC != null ? el('div', { class: 'card ficha-eventos' }, [
-    el('h4', { style: 'margin-top:0', text: evsAqui.length
-      ? `Eventos que afectan este mes (${evsAqui.length})` : 'Eventos del punto' }),
-    ...(evsAqui.length ? evsAqui.map(ev => el('div', { class: 'aviso-linea' }, [
-        el('span', {}, [
-          el('span', { class: 'pill warn', text: EV_TIPO[ev.tipo] || ev.tipo }),
-          el('b', { text: ' ' + ev.titulo })]),
-        el('p', { class: 'ayuda', text:
-          `${nombrePeriodo(ev.desde)} → ${ev.hasta ? nombrePeriodo(ev.hasta) : 'en adelante'}`
-          + ` · ${gente[ev.creado_por] || '—'}` }),
-        el('p', { text: ev.motivo })]))
-      : [el('p', { class: 'ayuda', text:
-          'Si el valor es correcto pero pasó algo que hay que explicar (se cambió el medidor, '
-          + 'los TC estaban invertidos, se intervino el punto), déjalo asentado aquí: sale en el informe.' })]),
-    puedo ? el('button', { class: 'btn chico', text: evsAqui.length ? 'Ver o agregar eventos' : 'Dejar constancia de un evento',
-      onclick: () => gestionarEventos(pidNC, puntoNombre, { mes, variable_id, alCambiar: ctx.alCambiar }) }) : null
-  ]) : null;
 
   // ---- 3d · mes prorrateado: la observación real es el intervalo ----
   const cajaProrrateo = interv ? el('div', { class: 'card ficha-prorrateo' }, [
@@ -3731,27 +3781,46 @@ async function verConsumo({ variable_id, mes }, ctx) {
       + 'lectura atrasada: los dos meses pasan a ser medidos.' })
   ]) : null;
 
-  // ---- 4 · avisos abiertos del punto ----
+  /* ---- 4 · historial del punto ----
+     Eventos y avisos son referencia, no acciones: van juntos y debajo de la decisión,
+     para que no compitan con ella. Antes eran dos cajas más al mismo nivel. */
   const pid = v ? v.punto.id : f.punto_id;
   const suyos = (ctx.avisos || []).filter(a => a.punto_id === pid);
-  const cajaAvisos = suyos.length ? el('div', { class: 'card' }, [
-    el('h4', { style: 'margin-top:0', text: `Avisos abiertos del punto (${suyos.length})` }),
-    ...suyos.map(a => el('div', { class: 'fila entre aviso-linea' }, [
-      el('span', {}, [
-        el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn' }[a.severidad] || 'neutro'), text: a.severidad }),
-        el('span', { text: ` ${a.categoria?.categoria || ''} · ${a.descripcion || ''}` })]),
-      el('button', { class: 'btn chico', text: 'Abrir aviso', onclick: async () => {
-        const { data, error: e2 } = await sb.from('v_avisos').select('*').eq('id', a.id).single();
-        if (e2) return toast(e2.message, true);
-        verDetalleAviso(data, () => ctx.alCambiar());
-      } })
-    ]))]) : null;
+  const lineaEv = ev => el('div', { class: 'aviso-linea' }, [
+    el('span', {}, [
+      el('span', { class: 'pill warn', text: EV_TIPO[ev.tipo] || ev.tipo }),
+      el('b', { text: ' ' + ev.titulo })]),
+    el('p', { class: 'ayuda', text:
+      `${nombrePeriodo(ev.desde)} → ${ev.hasta ? nombrePeriodo(ev.hasta) : 'en adelante'}`
+      + ` · ${gente[ev.creado_por] || '—'}` }),
+    el('p', { text: ev.motivo })]);
+  const lineaAv = a => el('div', { class: 'fila entre aviso-linea' }, [
+    el('span', {}, [
+      el('span', { class: 'pill ' + ({ alta: 'bad', media: 'warn' }[a.severidad] || 'neutro'), text: a.severidad }),
+      el('span', { text: ` ${a.categoria?.categoria || ''} · ${a.descripcion || ''}` })]),
+    el('button', { class: 'btn chico', text: 'Abrir aviso', onclick: async () => {
+      const { data, error: e2 } = await sb.from('v_avisos').select('*').eq('id', a.id).single();
+      if (e2) return toast(e2.message, true);
+      verDetalleAviso(data, () => ctx.alCambiar());
+    } })]);
+  const cajaHistorial = pidNC != null ? el('div', { class: 'card ficha-historial' }, [
+    el('h4', { style: 'margin-top:0', text: 'Historial del punto' }),
+    evsAqui.length ? el('div', { class: 'hist-bloque' }, [
+      el('h5', { text: `Eventos que afectan este mes (${evsAqui.length})` }), ...evsAqui.map(lineaEv)]) : null,
+    suyos.length ? el('div', { class: 'hist-bloque' }, [
+      el('h5', { text: `Avisos abiertos (${suyos.length})` }), ...suyos.map(lineaAv)]) : null,
+    !evsAqui.length && !suyos.length ? el('p', { class: 'ayuda', text:
+      'Sin eventos ni avisos en este mes. Si el valor es correcto pero pasó algo que hay que explicar '
+      + '(se cambió el medidor, los TC estaban invertidos, se intervino el punto), déjalo asentado: sale en el informe.' }) : null,
+    puedo ? el('button', { class: 'btn chico', text: evsAqui.length ? 'Ver o agregar eventos' : 'Dejar constancia de un evento',
+      onclick: () => gestionarEventos(pidNC, puntoNombre, { mes, variable_id, alCambiar: ctx.alCambiar }) }) : null
+  ]) : null;
 
   /* ---- armado: datos a la izquierda, foto grande a la derecha, barra fija abajo ----
      En el computador las tres zonas caben sin scroll; en el celular se apilan. */
   const datos = el('div', { class: 'fv-datos' }, [
     errLect, resultado, colEste, colAnterior,
-    caja.childNodes.length ? caja : null, cajaProrrateo, cajaNC, cajaEventos, cajaAvisos
+    caja.childNodes.length ? caja : null, cajaProrrateo, cajaNC, cajaQuePaso, cajaHistorial
   ]);
   const panelFotos = el('div', { class: 'fv-fotos' }, [
     el('div', { class: 'fv-cab' }, [

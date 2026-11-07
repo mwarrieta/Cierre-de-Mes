@@ -1455,6 +1455,41 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .ficha-eventos .aviso-linea:last-child{border-bottom:none}
 .ficha-eventos p{margin:4px 0}
 
+/* ---- "¿Qué pasó con este mes?" ----
+   Una pregunta con sus respuestas, en vez de tres cajas en paralelo. Cada opción
+   explica su efecto en el informe, así que la fila es alta a propósito: se lee. */
+.ficha-quepaso{margin-top:12px;border-left:3px solid var(--acento)}
+.opc-lista{display:grid;gap:8px;margin:10px 0}
+.opc-fila{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;font:inherit;color:inherit;
+  cursor:pointer;background:var(--surface);border:1px solid var(--line-2);border-radius:10px;padding:11px 13px;
+  transition:border-color .14s ease,background .14s ease}
+.opc-fila:hover{border-color:var(--acento)}
+.opc-fila:focus-visible{outline:2px solid var(--acento);outline-offset:2px}
+.opc-fila.sel{border-color:var(--acento);background:var(--acento-suave);box-shadow:inset 0 0 0 1px var(--acento)}
+.opc-fila > span:last-child{display:grid;gap:3px;min-width:0}
+.opc-fila b{font-size:14.5px;line-height:1.3}
+.opc-fila .ayuda{margin:0;font-size:12.5px;line-height:1.45}
+.opc-marca{flex:0 0 auto;width:17px;height:17px;margin-top:2px;border-radius:50%;
+  border:2px solid var(--ink-3);background:var(--surface);position:relative}
+.opc-fila.sel .opc-marca{border-color:var(--acento)}
+.opc-fila.sel .opc-marca::after{content:'';position:absolute;inset:3px;border-radius:50%;background:var(--acento)}
+.opc-motivo{margin-top:4px}
+.opc-motivo[hidden]{display:none}
+/* .card es flex con align-items:flex-start, así que los hijos se encogen al
+   contenido: el textarea quedaba de 20 caracteres de ancho. */
+.ficha-quepaso > *,.ficha-historial > *{align-self:stretch}
+.ficha-quepaso > .btn,.ficha-historial > .btn{align-self:flex-start}
+.opc-motivo textarea{width:100%;min-height:76px;box-sizing:border-box;margin-top:0}
+.opc-accion:empty{display:none}
+.opc-accion{margin-top:8px}
+
+/* ---- historial del punto: referencia, no acción ---- */
+.ficha-historial{margin-top:12px;background:var(--surface-2)}
+.ficha-historial h5{margin:10px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+.ficha-historial .hist-bloque:first-of-type h5{margin-top:0}
+.ficha-historial .aviso-linea:last-child{border-bottom:none}
+.ficha-historial p{margin:4px 0}
+
 /* Barra de avance del respaldo */
 .progreso-fila{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px}
 .barra-prog{height:10px;border-radius:99px;background:var(--surface);border:1px solid var(--line-2);overflow:hidden}

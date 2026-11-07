@@ -3127,7 +3127,12 @@ async function verConsumo({ variable_id, mes }, ctx) {
     el('div', { class: 'fila' }, [
       j ? el('span', { class: 'pill ' + j.nivel, text: j.texto }) : (f ? el('span', { class: 'pill ok', text: 'dentro de rango' }) : null),
       f ? el('span', { class: 'pill ' + (f.completo ? 'ok' : 'warn'), text: f.completo ? 'cerrado' : 'provisional' }) : null,
-      f ? el('span', { class: 'pill neutro', text: f.metodo }) : null,
+      // 'prorrateado' no es un detalle: ese mes no se midió, se repartió entre dos.
+      f ? el('span', { class: 'pill ' + (f.metodo === 'prorrateado' ? 'warn' : 'neutro'), text: f.metodo,
+            title: ({ prorrateado: 'Falta una toma: el consumo del intervalo se repartió por días entre este mes y el vecino. No es una medición de este mes.',
+                      estimado: 'El consumo sale de dos lecturas del mes, pero la fecha de la toma es aproximada.',
+                      directo: 'Las dos lecturas caen justo en este mes.',
+                      lectura: 'Valor leído directamente del equipo (no es un totalizador).' })[f.metodo] || '' }) : null,
       rev ? el('span', { class: 'pill ok', text: tipoTxt[rev.tipo] }) : null
     ]),
     el('p', { class: 'ayuda', text: f ? rango

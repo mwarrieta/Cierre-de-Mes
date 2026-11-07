@@ -371,6 +371,7 @@ async function arrancar() {
   // Las bandas esperadas se refrescan solas, sin que nadie las espere.
   DB.refrescarBandas();
   await cargarNC();
+  await cargarEventos();
 
   await refrescarDatos();
   await actualizarConexion();
@@ -3509,6 +3510,26 @@ async function verConsumo({ variable_id, mes }, ctx) {
         onclick: () => gestionarNC(pidNC, puntoNombre, { mes, alCambiar: ctx.alCambiar }) }) : null])
     : null;
 
+  // ---- 3c · eventos del punto: la explicación que viaja al informe ----
+  const evsAqui = pidNC != null ? eventosDe(pidNC, mes, variable_id) : [];
+  const cajaEventos = pidNC != null ? el('div', { class: 'card ficha-eventos' }, [
+    el('h4', { style: 'margin-top:0', text: evsAqui.length
+      ? `Eventos que afectan este mes (${evsAqui.length})` : 'Eventos del punto' }),
+    ...(evsAqui.length ? evsAqui.map(ev => el('div', { class: 'aviso-linea' }, [
+        el('span', {}, [
+          el('span', { class: 'pill warn', text: EV_TIPO[ev.tipo] || ev.tipo }),
+          el('b', { text: ' ' + ev.titulo })]),
+        el('p', { class: 'ayuda', text:
+          `${nombrePeriodo(ev.desde)} → ${ev.hasta ? nombrePeriodo(ev.hasta) : 'en adelante'}`
+          + ` · ${gente[ev.creado_por] || '—'}` }),
+        el('p', { text: ev.motivo })]))
+      : [el('p', { class: 'ayuda', text:
+          'Si el valor es correcto pero pasó algo que hay que explicar (se cambió el medidor, '
+          + 'los TC estaban invertidos, se intervino el punto), déjalo asentado aquí: sale en el informe.' })]),
+    puedo ? el('button', { class: 'btn chico', text: evsAqui.length ? 'Ver o agregar eventos' : 'Dejar constancia de un evento',
+      onclick: () => gestionarEventos(pidNC, puntoNombre, { mes, variable_id, alCambiar: ctx.alCambiar }) }) : null
+  ]) : null;
+
   // ---- 4 · avisos abiertos del punto ----
   const pid = v ? v.punto.id : f.punto_id;
   const suyos = (ctx.avisos || []).filter(a => a.punto_id === pid);
@@ -3529,7 +3550,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
      En el computador las tres zonas caben sin scroll; en el celular se apilan. */
   const datos = el('div', { class: 'fv-datos' }, [
     errLect, resultado, colEste, colAnterior,
-    caja.childNodes.length ? caja : null, cajaNC, cajaAvisos
+    caja.childNodes.length ? caja : null, cajaNC, cajaEventos, cajaAvisos
   ]);
   const panelFotos = el('div', { class: 'fv-fotos' }, [
     el('div', { class: 'fv-cab' }, [
@@ -3587,6 +3608,20 @@ async function imprimirInforme() {
     (grupos.get(g) || grupos.set(g, []).get(g)).push(x);
   }
 
+  /* Eventos que caen dentro de lo que se está imprimiendo. Se numeran (E1, E2…),
+     se marcan junto al punto y se explican al pie: es lo que mira una auditoría. */
+  const evInforme = [];
+  const evVistos = new Set();
+  for (const f of filas) for (const m of meses)
+    for (const ev of eventosDe(f.punto_id, m, f.variable_id))
+      if (!evVistos.has(ev.id)) { evVistos.add(ev.id); evInforme.push({ ev, punto: f.punto }); }
+  const evNum = new Map(evInforme.map((x, i) => [x.ev.id, i + 1]));
+  const marcaEv = (punto_id, variable_id) => {
+    const ns = [...new Set(meses.flatMap(m => eventosDe(punto_id, m, variable_id))
+      .map(ev => evNum.get(ev.id)).filter(Boolean))].sort((a, b) => a - b);
+    return ns.length ? ' (E' + ns.join(',E') + ')' : '';
+  };
+
   const fueraDeRango = ({ f, m }) => meses.some(x =>
     juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas)?.nivel === 'bad');
   const marcados = orden.filter(fueraDeRango).length;
@@ -3610,7 +3645,7 @@ async function imprimirInforme() {
       const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
       const marca = fueraDeRango({ f, m }) ? ' *' : '';
       return el('tr', {}, [
-        el('td', { text: f.punto }), el('td', { text: f.tag || '' }), el('td', { text: f.variable }),
+        el('td', { text: f.punto + marcaEv(f.punto_id, f.variable_id) }), el('td', { text: f.tag || '' }), el('td', { text: f.variable }),
         el('td', { text: UNIDAD[f.unidad_reporte] || f.unidad_reporte }),
         ...meses.map((x, i) => el('td', { class: 'num', text: (m[x] === undefined ? vacioTxt(f.punto_id, x) : num(m[x])) + (!conTotal && i === 0 ? marca : '') })),
         conTotal ? el('td', { class: 'num total', text: num(total) + marca }) : null
@@ -3651,7 +3686,7 @@ async function imprimirInforme() {
       const total = meses.reduce((s2, x) => s2 + (m[x] || 0), 0);
       const marca = fueraDeRango({ f, m }) ? ' *' : '';
       const nombre = k > 0 ? null : el('td', { class: 'd-nom', rowspan: String(altoPunto) }, [
-        el('b', { text: f.punto }),
+        el('b', { text: f.punto + marcaEv(f.punto_id, null) }),
         f.tag ? el('span', { text: f.tag }) : null]);
       const lectura = el('td', { class: 'd-var', rowspan: esInst(f) ? '1' : '3' }, [
         el('b', { text: siglaDe(f.variable, f.unidad_reporte) }),
@@ -3705,7 +3740,15 @@ async function imprimirInforme() {
     el('div', { class: 'pie-informe' }, [
       el('p', { text: 'Consumo del mes = lectura de cierre − lectura de apertura, ajustado a días calendario. Solo meses cerrados.' +
         (detalle ? ' Totalizador = lectura del día 1 del mes siguiente.' : ' Las sumas por grupo son referenciales: no son un total de energía.') }),
-      marcados ? el('p', { text: `(*) ${marcados} lectura(s) con algún mes fuera de rango: revisar.` }) : null
+      marcados ? el('p', { text: `(*) ${marcados} lectura(s) con algún mes fuera de rango: revisar.` }) : null,
+      evInforme.length ? el('div', { class: 'pie-eventos' }, [
+        el('p', { text: 'Eventos registrados en el periodo (explican los valores marcados):' }),
+        ...evInforme.map(({ ev, punto }) => el('p', { class: 'pie-ev', text:
+          `(E${evNum.get(ev.id)}) ${punto} · ${EV_TIPO[ev.tipo] || ev.tipo} · `
+          + `${nombrePeriodo(ev.desde)} → ${ev.hasta ? nombrePeriodo(ev.hasta) : 'en adelante'}`
+          + ` · ${ev.titulo}. ${ev.motivo}`
+          + ` (registrado por ${(S.catalogo?.gente || {})[ev.creado_por] || '—'} el ${fechaCorta(ev.creado_en)})` }))
+      ]) : null
     ])
   ]);
 
@@ -3771,6 +3814,113 @@ async function cargarNC() {
 const ncDe = (punto_id, mes) => (S.nc || []).find(r =>
   r.punto_id === punto_id && mes >= r.desde && (!r.hasta || mes <= r.hasta)) || null;
 const vacioTxt = (punto_id, mes) => ncDe(punto_id, mes) ? 'n/c' : 's/d';
+
+/* ---------- Eventos del punto ----------
+   Lo que le pasó al punto y explica por qué un número es el que es: se cambió el
+   medidor, los TC quedaron invertidos y el consumo se fue a la exportada, se
+   intervino el tablero. NO corrige ninguna lectura: es la constancia que viaja al
+   informe para que una auditoría entienda qué pasó sin tener que preguntar.
+   Se anula con motivo, nunca se borra. */
+const EV_TIPO = {
+  cambio_equipo: 'Cambio de medidor',
+  error_configuracion: 'Error de configuración',
+  intervencion: 'Intervención en el punto',
+  observacion: 'Observación'
+};
+async function cargarEventos() {
+  try {
+    const { data, error } = await sb.from('eventos_punto').select('*')
+      .eq('estado', 'vigente').order('desde');
+    if (!error) S.eventos = data || [];
+  } catch { /* sin conexión: se usa lo último que se tenía */ }
+  S.eventos = S.eventos || [];
+}
+/* Los eventos de todo el punto (variable_id null) aplican a cualquiera de sus
+   variables; los de una variable, solo a esa. */
+const eventosDe = (punto_id, mes, variable_id = null) => (S.eventos || []).filter(e =>
+  e.punto_id === punto_id && mes >= e.desde && (!e.hasta || mes <= e.hasta)
+  && (e.variable_id == null || variable_id == null || e.variable_id === variable_id));
+
+function gestionarEventos(punto_id, nombre, { mes = null, variable_id = null, alCambiar = null } = {}) {
+  const puedo = ['admin', 'supervisor'].includes(S.usuario.rol);
+  const gente = S.catalogo?.gente || {};
+  const hoy = new Date();
+  const meses = [];
+  for (let i = 0; i < 60; i++) meses.push(primerDiaDelMes(new Date(hoy.getFullYear(), hoy.getMonth() - i, 1)));
+  const ini = mes || meses[0];
+  if (!meses.includes(ini)) meses.push(ini);
+  const vars = (S.catalogo.variables || []).filter(x => x.punto.id === punto_id);
+
+  const selTipo = el('select', {}, Object.entries(EV_TIPO).map(([k, t]) =>
+    el('option', { value: k, text: t })));
+  const selVar = el('select', {}, [
+    el('option', { value: '', text: 'Todo el punto' }),
+    ...vars.map(v => el('option', { value: String(v.id), selected: (variable_id && v.id === variable_id) || null, text: v.nombre }))]);
+  const selDesde = el('select', {}, meses.map(m => el('option', { value: m, selected: m === ini || null, text: nombrePeriodo(m) })));
+  const selHasta = el('select', {}, [
+    el('option', { value: '', text: 'Sin fecha de término (sigue vigente)' }),
+    ...meses.map(m => el('option', { value: m, selected: m === ini || null, text: nombrePeriodo(m) }))]);
+  const titulo = el('input', { type: 'text', maxlength: '80',
+    placeholder: 'Ej.: TC invertidos, el consumo se registró en exportada' });
+  const motivo = el('textarea', {
+    placeholder: 'Qué pasó, cómo se detectó y qué se hizo. Esto es lo que lee una auditoría.' });
+
+  const existentes = (S.eventos || []).filter(e => e.punto_id === punto_id);
+  const linea = e => el('div', { class: 'aviso-linea' }, [
+    el('div', { class: 'fila entre' }, [
+      el('span', {}, [
+        el('span', { class: 'pill neutro', text: EV_TIPO[e.tipo] || e.tipo }),
+        el('b', { text: ' ' + e.titulo })]),
+      puedo ? el('button', { class: 'btn chico peligro', text: 'Anular', onclick: async () => {
+        const porque = prompt('¿Por qué se anula esta constancia? (queda registrada, no se borra)');
+        if (porque === null) return;
+        if (porque.trim().length < 10) return toast('Escribe al menos 10 caracteres', true);
+        const { error } = await sb.rpc('anular_evento_punto', { p_id: e.id, p_motivo: porque.trim() });
+        if (error) return toast(error.message, true);
+        await cargarEventos(); cerrarModal(); toast('Constancia anulada');
+        if (alCambiar) await alCambiar();
+      } }) : null]),
+    el('p', { class: 'ayuda', text:
+      `${nombrePeriodo(e.desde)} → ${e.hasta ? nombrePeriodo(e.hasta) : 'en adelante'}`
+      + ` · ${e.variable_id ? (vars.find(v => v.id === e.variable_id)?.nombre || 'una variable') : 'todo el punto'}`
+      + ` · ${gente[e.creado_por] || '—'} el ${fechaCorta(e.creado_en)}` }),
+    el('p', { text: e.motivo })
+  ]);
+
+  const cuerpo = el('div', {}, [
+    el('p', { class: 'ayuda', text:
+      'Deja constancia de algo que le pasó a este punto y que explica sus números: un cambio de medidor, '
+      + 'un error de configuración, una intervención. No modifica ninguna lectura. Los meses marcados salen '
+      + 'señalados en el informe, con este motivo al pie.' }),
+    existentes.length ? el('div', { class: 'seccion' }, [
+      el('h4', { text: `Ya registrado (${existentes.length})` }), ...existentes.map(linea)]) : null,
+    puedo ? el('div', { class: 'seccion' }, [
+      el('h4', { text: 'Agregar constancia' }),
+      el('div', { class: 'fila' }, [
+        el('label', { class: 'crece', text: 'Qué pasó' }, [selTipo]),
+        el('label', { class: 'crece', text: 'Afecta a' }, [selVar])]),
+      el('div', { class: 'fila' }, [
+        el('label', { class: 'crece', text: 'Desde' }, [selDesde]),
+        el('label', { class: 'crece', text: 'Hasta' }, [selHasta])]),
+      el('label', { text: 'Título corto (sale en el informe)' }, [titulo]),
+      el('label', { text: 'Explicación (obligatoria, mínimo 15 caracteres)' }, [motivo]),
+      el('button', { class: 'btn primario', text: 'Dejar constancia', onclick: async e2 => {
+        if (titulo.value.trim().length < 3) return toast('Escribe un título', true);
+        if (motivo.value.trim().length < 15) return toast('La explicación es muy corta', true);
+        const hasta = selHasta.value || null;
+        if (hasta && hasta < selDesde.value) return toast('"Hasta" no puede ser anterior a "Desde"', true);
+        e2.target.disabled = true;
+        const { error } = await sb.rpc('registrar_evento_punto', {
+          p_punto_id: punto_id, p_tipo: selTipo.value, p_desde: selDesde.value,
+          p_titulo: titulo.value.trim(), p_motivo: motivo.value.trim(),
+          p_hasta: hasta, p_variable_id: selVar.value ? Number(selVar.value) : null });
+        if (error) { e2.target.disabled = false; return toast(error.message, true); }
+        await cargarEventos(); cerrarModal(); toast('Constancia registrada');
+        if (alCambiar) await alCambiar();
+      } })]) : null
+  ]);
+  modal('Eventos del punto · ' + nombre, cuerpo, { subtitulo: 'Constancia de lo que pasó, para el informe y la auditoría' });
+}
 
 function gestionarNC(punto_id, nombre, { mes = null, alCambiar = null } = {}) {
   const hoy = new Date();

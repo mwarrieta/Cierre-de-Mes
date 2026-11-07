@@ -3210,29 +3210,44 @@ async function verConsumo({ variable_id, mes }, ctx) {
   };
 
   const pintarPanel = () => {
-    if (!galeria.length) {
+    /* Sin comparar se mira SOLO el mes que se está revisando. Las del mes anterior
+       siguen cargadas pero quedan detrás del check: verlas sin haberlas pedido hace
+       creer que el registro ya tiene foto cuando en realidad le falta. */
+    const delMes = galeria.filter(x => x.periodo === sig);
+    const delAnterior = galeria.filter(x => x.periodo !== sig);
+    const vis = comparar ? galeria : delMes;
+    const ancha = window.matchMedia('(min-width:1400px)').matches;
+    // El check se ofrece si hay algo del mes anterior que mirar: su lectura o su foto.
+    chkComparar.hidden = !(hayAnterior || delAnterior.length);
+
+    if (!vis.length) {
+      const soloAnterior = delAnterior.length > 0;
       fvMarco.replaceChildren(el('div', { class: 'fv-vacio' }, [
-        el('p', { text: 'Este registro no tiene foto' }),
-        el('p', { class: 'ayuda', text: lectEditable
-          ? 'Puedes agregar la del medidor para dejar respaldo de la lectura.'
-          : 'Todavía no hay lectura de cierre a la cual colgarla.' })]));
+        el('p', { text: soloAnterior ? `Sin foto del cierre de ${nMes}` : 'Este registro no tiene foto' }),
+        el('p', { class: 'ayuda', text: soloAnterior
+          ? `Hay ${delAnterior.length === 1 ? 'una foto' : delAnterior.length + ' fotos'} del mes anterior: marca «Comparar con el mes anterior» para verla.`
+          : lectEditable
+            ? 'Puedes agregar la del medidor para dejar respaldo de la lectura.'
+            : 'Todavía no hay lectura de cierre a la cual colgarla.' })]));
       fvTira.replaceChildren();
-      fvPie.replaceChildren(el('span', { class: 'ayuda', text: 'Sin respaldo fotográfico' }),
+      fvPie.replaceChildren(
+        el('span', { class: 'ayuda', text: soloAnterior ? `Sin respaldo fotográfico de ${nMes}` : 'Sin respaldo fotográfico' }),
         lectEditable && puedo ? el('div', { class: 'fila' }, [btnFoto, inputFoto]) : null);
       return;
     }
+    // sel indexa la galería completa; si lo elegido quedó fuera de lo visible, se reencuadra.
+    if (!vis.includes(galeria[sel])) sel = galeria.indexOf(vis[0]);
     const g = galeria[sel];
+    const iVis = vis.indexOf(g);
     // Las fotos de medidor suelen ser verticales y sobra ancho: en pantalla grande se
     // muestra al lado la del otro mes, así los dos totalizadores se comparan de una mirada.
-    const hayDeAmbos = galeria.some(x => x.periodo === sig) && galeria.some(x => x.periodo === mes);
-    const ancha = window.matchMedia('(min-width:1400px)').matches;
-    const otra = (comparar && ancha && hayDeAmbos) ? galeria.find(x => x.periodo !== g.periodo) : null;
+    const otra = (comparar && ancha) ? vis.find(x => x.periodo !== g.periodo) || null : null;
     // El rótulo va SIEMPRE, no solo al comparar: mirando la foto grande hay que
     // saber de qué mes es sin tener que bajar la vista a las miniaturas.
     const marco = x => el('figure', { class: 'fv-foto' + (x === g ? ' elegida' : '') }, [
       el('span', { class: 'fv-rotulo' + (x.periodo === sig ? ' este' : ' previo'), text: x.rotulo }),
       el('img', { src: x.url, alt: 'Foto del medidor', title: 'Clic para ampliar y hacer zoom',
-        onclick: () => abrirVisorFoto(galeria, galeria.indexOf(x)) }),
+        onclick: () => abrirVisorFoto(vis, vis.indexOf(x)) }),
       el('figcaption', { text: x.titulo })
     ]);
     fvMarco.className = 'fv-marco' + (otra ? ' comparando' : '');
@@ -3240,16 +3255,15 @@ async function verConsumo({ variable_id, mes }, ctx) {
     fvMarco.replaceChildren(...(otra
       ? [g, otra].sort((a, b) => String(a.periodo).localeCompare(String(b.periodo))).map(marco)
       : [marco(g)]));
-    chkComparar.hidden = !(hayAnterior || (ancha && hayDeAmbos));
-    fvTira.replaceChildren(...galeria.map((x, i) => el('button', {
-      type: 'button', class: 'fv-thumb' + (i === sel ? ' sel' : ''), title: x.titulo,
-      onclick: () => { sel = i; pintarPanel(); } }, [
+    fvTira.replaceChildren(...vis.map(x => el('button', {
+      type: 'button', class: 'fv-thumb' + (x === g ? ' sel' : ''), title: x.titulo,
+      onclick: () => { sel = galeria.indexOf(x); pintarPanel(); } }, [
         el('img', { src: x.url, alt: '' }),
         el('span', { class: 'et', text: x.etiqueta })])));
     fvPie.replaceChildren(
-      el('span', { class: 'ayuda', text: g.titulo + (galeria.length > 1 ? ` · ${sel + 1} de ${galeria.length}` : '') }),
+      el('span', { class: 'ayuda', text: g.titulo + (vis.length > 1 ? ` · ${iVis + 1} de ${vis.length}` : '') }),
       el('div', { class: 'fila' }, [
-        el('button', { class: 'btn chico', text: 'Ampliar', onclick: () => abrirVisorFoto(galeria, sel) }),
+        el('button', { class: 'btn chico', text: 'Ampliar', onclick: () => abrirVisorFoto(vis, iVis) }),
         // Quitar solo la que cuelga de la lectura que se está revisando.
         (g.propia && g.periodo === sig && puedo)
           ? el('button', { class: 'btn chico peligro', text: 'Quitar esta foto',

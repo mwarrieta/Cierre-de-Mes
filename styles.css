@@ -1475,6 +1475,8 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 .opc-fila.sel .opc-marca::after{content:'';position:absolute;inset:3px;border-radius:50%;background:var(--acento)}
 .opc-motivo{margin-top:4px}
 .opc-motivo[hidden]{display:none}
+.cuenta-motivo{margin:4px 0 0;font-size:12px;font-variant-numeric:tabular-nums}
+.cuenta-motivo.largo{color:var(--warn)}
 /* .card es flex con align-items:flex-start, así que los hijos se encogen al
    contenido: el textarea quedaba de 20 caracteres de ancho. */
 .ficha-quepaso > *,.ficha-historial > *{align-self:stretch}

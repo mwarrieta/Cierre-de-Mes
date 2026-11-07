@@ -4183,8 +4183,20 @@ function gestionarEventos(punto_id, nombre, { mes = null, variable_id = null, al
     ...meses.map(m => el('option', { value: m, selected: m === ini || null, text: nombrePeriodo(m) }))]);
   const titulo = el('input', { type: 'text', maxlength: '80',
     placeholder: 'Ej.: TC invertidos, el consumo se registró en exportada' });
+  /* El motivo viaja entero al pie del informe: pasado cierto largo deja de leerse.
+     El contador no bloquea, solo avisa: a veces hace falta explicar más. */
+  const LARGO_SUGERIDO = 300;
   const motivo = el('textarea', {
     placeholder: 'Qué pasó, cómo se detectó y qué se hizo. Esto es lo que lee una auditoría.' });
+  const cuenta = el('p', { class: 'ayuda cuenta-motivo' });
+  const pintarCuenta = () => {
+    const n = motivo.value.trim().length;
+    cuenta.textContent = n < 15 ? `${n} / 15 caracteres mínimo`
+      : n <= LARGO_SUGERIDO ? `${n} caracteres`
+      : `${n} caracteres · va entero al informe, conviene dejarlo en ${LARGO_SUGERIDO} o menos`;
+    cuenta.classList.toggle('largo', n > LARGO_SUGERIDO);
+  };
+  motivo.addEventListener('input', pintarCuenta); pintarCuenta();
 
   const existentes = (S.eventos || []).filter(e => e.punto_id === punto_id);
   const linea = e => el('div', { class: 'aviso-linea' }, [
@@ -4225,6 +4237,7 @@ function gestionarEventos(punto_id, nombre, { mes = null, variable_id = null, al
         el('label', { class: 'crece', text: 'Hasta' }, [selHasta])]),
       el('label', { text: 'Título corto (sale en el informe)' }, [titulo]),
       el('label', { text: 'Explicación (obligatoria, mínimo 15 caracteres)' }, [motivo]),
+      cuenta,
       el('button', { class: 'btn primario', text: 'Dejar constancia', onclick: async e2 => {
         if (titulo.value.trim().length < 3) return toast('Escribe un título', true);
         if (motivo.value.trim().length < 15) return toast('La explicación es muy corta', true);

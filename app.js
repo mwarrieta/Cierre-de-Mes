@@ -3148,10 +3148,17 @@ async function verConsumo({ variable_id, mes }, ctx) {
   const fvMarco = el('div', { class: 'fv-marco' });
   const fvTira = el('div', { class: 'fv-tira' });
   const fvPie = el('div', { class: 'fv-pie' });
-  let galeria = [], sel = 0, comparar = true;
+  /* Por defecto se mira SOLO el mes que se está revisando: la columna del mes
+     anterior y su foto aparecen recién al marcar "Comparar". Así la columna de
+     datos no se llena de contenido que casi nunca se usa y entra sin scroll. */
+  let galeria = [], sel = 0, comparar = false, refColAnterior = null, hayAnterior = false;
+  const aplicarComparar = () => {
+    if (refColAnterior) refColAnterior.hidden = !comparar && hayAnterior;
+  };
   const chkComparar = el('label', { class: 'check-linea chico', hidden: '' }, [
-    el('input', { type: 'checkbox', checked: '', onchange: e => { comparar = e.target.checked; pintarPanel(); } }),
-    el('span', { text: 'Comparar con el otro mes' })
+    el('input', { type: 'checkbox',
+      onchange: e => { comparar = e.target.checked; aplicarComparar(); pintarPanel(); } }),
+    el('span', { text: 'Comparar con el mes anterior' })
   ]);
 
   // Subir fotos al cierre de este mes (es la lectura que se está revisando).
@@ -3220,7 +3227,10 @@ async function verConsumo({ variable_id, mes }, ctx) {
     const hayDeAmbos = galeria.some(x => x.periodo === sig) && galeria.some(x => x.periodo === mes);
     const ancha = window.matchMedia('(min-width:1400px)').matches;
     const otra = (comparar && ancha && hayDeAmbos) ? galeria.find(x => x.periodo !== g.periodo) : null;
+    // El rótulo va SIEMPRE, no solo al comparar: mirando la foto grande hay que
+    // saber de qué mes es sin tener que bajar la vista a las miniaturas.
     const marco = x => el('figure', { class: 'fv-foto' + (x === g ? ' elegida' : '') }, [
+      el('span', { class: 'fv-rotulo' + (x.periodo === sig ? ' este' : ' previo'), text: x.rotulo }),
       el('img', { src: x.url, alt: 'Foto del medidor', title: 'Clic para ampliar y hacer zoom',
         onclick: () => abrirVisorFoto(galeria, galeria.indexOf(x)) }),
       el('figcaption', { text: x.titulo })
@@ -3230,7 +3240,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
     fvMarco.replaceChildren(...(otra
       ? [g, otra].sort((a, b) => String(a.periodo).localeCompare(String(b.periodo))).map(marco)
       : [marco(g)]));
-    chkComparar.hidden = !(ancha && hayDeAmbos);
+    chkComparar.hidden = !(hayAnterior || (ancha && hayDeAmbos));
     fvTira.replaceChildren(...galeria.map((x, i) => el('button', {
       type: 'button', class: 'fv-thumb' + (i === sel ? ' sel' : ''), title: x.titulo,
       onclick: () => { sel = i; pintarPanel(); } }, [
@@ -3275,6 +3285,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
         galeria.push({ url: data.signedUrl, id: ft.id, storage_path: ft.storage_path,
           lectura_id: ft.lectura_id, periodo: m.periodo, propia: m.propia, variable_id: m.variable_id,
           etiqueta: cierra.split(' ')[0] + (m.propia ? '' : ' · ' + siglaDe(nombreVar(m.variable_id), (v || f).unidad_reporte)),
+          rotulo: (m.periodo === sig ? cierra + ' · este mes' : cierra + ' · mes anterior')
+                  + (m.propia ? '' : ' · ' + siglaDe(nombreVar(m.variable_id), (v || f).unidad_reporte)),
           titulo: `Cierre de ${cierra}` + (m.propia ? '' : ` · cargada en ${nombreVar(m.variable_id)}`) });
       }
     }
@@ -3448,6 +3460,10 @@ async function verConsumo({ variable_id, mes }, ctx) {
       : [el('p', { class: 'banda warn', text: `No hay lectura de cierre de ${nAnt}.` })]),
     el('button', { class: 'btn chico', text: `Ir al registro de ${nAnt}`, onclick: irAlAnterior })
   ]);
+  // Si no hay lectura anterior la columna se deja a la vista: ese aviso hay que leerlo.
+  hayAnterior = deAnt.length > 0;
+  refColAnterior = colAnterior;
+  aplicarComparar();
 
   // ---- 3 · la alerta de este registro ----
   const pidNC = v ? v.punto.id : f?.punto_id;

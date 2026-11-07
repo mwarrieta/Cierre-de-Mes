@@ -1587,7 +1587,7 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
    En pantalla angosta (celular) se apila y se lee de arriba abajo.
    =================================================================== */
 .ficha-validar{display:flex;flex-direction:column;gap:12px}
-.fv-datos{display:grid;gap:12px;align-content:start;min-width:0}
+.fv-datos{display:grid;gap:12px;align-content:start;min-width:0;scrollbar-gutter:stable}
 .fv-fotos{display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
 .fv-cab{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .fv-cab h4{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
@@ -1597,13 +1597,22 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
   min-height:240px;max-height:52vh}
 .fv-foto{margin:0;height:100%;min-width:0;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:6px}
-.fv-foto img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;
+.fv-foto img{max-width:100%;max-height:calc(100% - 28px);width:auto;height:auto;object-fit:contain;
   border-radius:6px;cursor:zoom-in;display:block}
+/* Rótulo del mes: se lee sin bajar la vista a las miniaturas. El del mes que se
+   está revisando va en color; el del anterior, apagado. */
+.fv-rotulo{flex:none;max-width:100%;font-size:11.5px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;padding:3px 11px;border-radius:999px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.fv-rotulo.este{background:var(--acento-suave);color:var(--acento-ink);
+  box-shadow:inset 0 0 0 1px var(--acento)}
+.fv-rotulo.previo{background:var(--surface);color:var(--ink-3);
+  box-shadow:inset 0 0 0 1px var(--line-2)}
 .fv-foto figcaption{display:none;font-size:12px;color:var(--ink-3);text-align:center;
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* los pies y el marcado del elegido solo tienen sentido cuando hay dos fotos al lado */
 .fv-marco.comparando .fv-foto figcaption{display:block}
-.fv-marco.comparando .fv-foto img{max-height:calc(100% - 24px)}
+.fv-marco.comparando .fv-foto img{max-height:calc(100% - 52px)}
 .fv-marco.comparando .fv-foto.elegida img{outline:2px solid var(--acento);outline-offset:2px}
 .fv-marco.comparando .fv-foto.elegida figcaption{color:var(--acento-ink);font-weight:600}
 .fv-vacio{text-align:center;color:var(--ink-3);padding:24px 16px}
@@ -1635,7 +1644,7 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
     grid-template-columns:minmax(380px,30%) minmax(0,1fr);
     grid-template-rows:minmax(0,1fr) auto;
     grid-template-areas:"datos fotos" "barra barra"}
-  .ficha-validar .fv-datos{grid-area:datos;overflow:auto;padding:14px 16px 18px;
+  .ficha-validar .fv-datos{grid-area:datos;overflow:auto;padding:14px 16px 28px;
     border-right:1px solid var(--line)}
   .ficha-validar .fv-fotos{grid-area:fotos;padding:14px 16px;overflow:hidden}
   .ficha-validar .fv-marco{flex:1;max-height:none}

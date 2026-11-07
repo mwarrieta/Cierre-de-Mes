@@ -3176,6 +3176,10 @@ async function verConsumo({ variable_id, mes }, ctx) {
             + `(promedio ${num(e2.media)})`
             + (e2.obs ? ` · sobre ${e2.obs} intervalo${e2.obs === 1 ? '' : 's'} medido${e2.obs === 1 ? '' : 's'}`
                         + (e2.obs < 6 ? ', todavía pocos' : '') : '')
+            // la serie se reancló sola: el punto cambió de nivel y lo anterior ya no compara
+            + (b.cambio_nivel && b.desde
+                 ? `. El punto cambió de nivel en ${nombrePeriodo(String(b.desde).slice(0, 7) + '-01')}: `
+                   + 'la referencia se recalculó desde ahí y no incluye lo anterior.' : '')
           : 'Todavía no hay historia suficiente para un rango habitual.';
       })()
     : 'Todavía no hay historia suficiente para un rango habitual (hacen falta 4 meses).';

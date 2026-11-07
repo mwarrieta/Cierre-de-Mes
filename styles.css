@@ -1434,6 +1434,10 @@ tr.fila-rev .rev-cont strong{color:var(--acento-ink)}
 /* Eventos del punto: la constancia de lo que pasó. Amarillo tenue, como los avisos:
    no es un error que haya que arreglar, es información que hay que leer. */
 .ficha-eventos{margin-top:12px;border-left:3px solid var(--warn,#c90)}
+/* Mes prorrateado: no es un error, es un dato de menor calidad. Mismo amarillo
+   que los eventos, porque los dos dicen "leé esto antes de validar". */
+.ficha-prorrateo{margin-top:12px;border-left:3px solid var(--warn,#c90)}
+.ficha-prorrateo p{margin:4px 0}
 .ficha-eventos .aviso-linea:last-child{border-bottom:none}
 .ficha-eventos p{margin:4px 0}
 

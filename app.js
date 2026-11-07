@@ -1315,7 +1315,9 @@ async function abrirCaptura(entrada) {
     const bd = bandas[c.v.id];
     if (bd && c.anterior && val >= Number(c.anterior.valor)) {
       const cons = val - Number(c.anterior.valor);
-      const j = juzgarConsumo({ consumo: cons, media: bd.media, sigma: bd.sigma }, bd);
+      // Se pasaba la banda donde se espera el MAPA de bandas, así que bandas[variable_id]
+      // daba undefined y esta alerta no saltaba nunca. Va el mapa y el id de la variable.
+      const j = juzgarConsumo({ consumo: cons, variable_id: c.v.id }, bandas);
       if (j) alertas.push([j.nivel, j.texto]);
     }
     if (!alertas.length) { b.hidden = true; return; }
@@ -2637,15 +2639,35 @@ const revAbiertas = new Set();
 const ICONO_FOTO = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>';
 
 /* ---------- armado del informe (se reutiliza en pantalla y al imprimir) ---------- */
-// Fuera de rango: se compara contra la banda EWMA que ya está en el dispositivo.
-// Devuelve null si no hay banda (menos de 4 meses de historia) o si está dentro.
+/* ---- Banda esperada ----
+   La banda viene en unidades por DÍA (media_dia / sigma_dia): lo esperado de un mes
+   es esa tasa por los días que tiene. Antes la banda era un total mensual fijo, y
+   febrero (28 d) salía 9,7% bajo contra enero (31 d) sin que pasara nada en planta. */
+const DIAS_MES_MEDIO = 30.4375;
+// Días del mes a partir de 'AAAA-MM-01'. El día 0 del mes siguiente es el último de este.
+const diasDelMes = m => (typeof m === 'string' && m.length >= 7)
+  ? new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate() : null;
+
+// Lo que se espera de ESTE mes, en el total del mes. Acepta bandas viejas (sin
+// media_dia) para que un dispositivo con caché anterior siga funcionando.
+function esperadoDelMes(b, f = {}) {
+  if (!b) return null;
+  const dias = Number(f.dias_asignados) || diasDelMes(f.mes) || DIAS_MES_MEDIO;
+  if (b.media_dia != null && b.sigma_dia != null && Number(b.sigma_dia) > 0)
+    return { media: Number(b.media_dia) * dias, sigma: Number(b.sigma_dia) * dias, dias, obs: b.obs };
+  if (!b.sigma) return null;
+  return { media: Number(b.media), sigma: Number(b.sigma), dias, obs: b.obs ?? b.meses };
+}
+
+// Fuera de rango: se compara contra la banda que ya está en el dispositivo.
+// Devuelve null si no hay banda (menos de 4 intervalos medidos) o si está dentro.
 function juzgarConsumo(f, bandas) {
   const v = Number(f.consumo);
   if (v < 0) return { nivel: 'bad', texto: 'negativo' };
   if (v === 0) return { nivel: 'warn', texto: 'en cero' };
-  const b = bandas[f.variable_id];
-  if (!b || !b.sigma) return null;
-  const z = (v - b.media) / b.sigma;
+  const esp = esperadoDelMes(bandas?.[f.variable_id], f);
+  if (!esp) return null;
+  const z = (v - esp.media) / esp.sigma;
   if (Math.abs(z) > 3) return { nivel: 'bad', texto: (z > 0 ? 'muy alto' : 'muy bajo') };
   if (Math.abs(z) > 1.5) return { nivel: 'warn', texto: (z > 0 ? 'alto' : 'bajo') };
   return null;
@@ -3074,6 +3096,35 @@ async function verConsumo({ variable_id, mes }, ctx) {
   }
   const j = f ? juzgarConsumo(f, ctx.bandas) : null;
 
+  /* Si falta una toma, este mes no es una observación: es la mitad de un intervalo
+     repartida por días. Juzgar el mes no dice nada (por construcción se parece al
+     promedio). Lo que sí se puede juzgar es el intervalo completo. */
+  let interv = null;
+  if (f && f.metodo === 'prorrateado') {
+    try {
+      const r = await sb.from('v_intervalos')
+        .select('fecha_ant, fecha_dia, dias_intervalo, consumo_intervalo')
+        .eq('variable_id', variable_id)
+        .lt('fecha_ant', mesSiguiente(sig)).gt('fecha_dia', mes)
+        .not('consumo_intervalo', 'is', null)
+        .order('fecha_dia').limit(1).maybeSingle();
+      if (r.data && r.data.dias_intervalo > 0) {
+        const b2 = ctx.bandas[variable_id];
+        const tasa = Number(r.data.consumo_intervalo) / Number(r.data.dias_intervalo);
+        let juicio = null;
+        if (b2 && b2.media_dia != null && Number(b2.sigma_dia) > 0) {
+          const z = (tasa - Number(b2.media_dia)) / Number(b2.sigma_dia);
+          juicio = Math.abs(z) > 3 ? { nivel: 'bad', texto: z > 0 ? 'muy alto' : 'muy bajo' }
+                 : Math.abs(z) > 1.5 ? { nivel: 'warn', texto: z > 0 ? 'alto' : 'bajo' }
+                 : { nivel: 'ok', texto: 'dentro de lo habitual' };
+        }
+        interv = { ...r.data, tasa, juicio,
+                   esperado: b2 && b2.media_dia != null
+                     ? Number(b2.media_dia) * Number(r.data.dias_intervalo) : null };
+      }
+    } catch { /* sin esto, el mes se muestra igual, solo sin el detalle del intervalo */ }
+  }
+
   const registrar = async (tipo, motivo) => {
     const { error } = await sb.from('revisiones_consumo').upsert(
       { variable_id, mes, tipo, motivo, por: S.usuario.id, en: new Date().toISOString() },
@@ -3117,7 +3168,16 @@ async function verConsumo({ variable_id, mes }, ctx) {
 
   // ---- 1 · el resultado, lo primero que se ve ----
   const rango = b && b.sigma
-    ? `Rango habitual: ${num(Math.max(0, b.media - 1.5 * b.sigma))} – ${num(b.media + 1.5 * b.sigma)} ${uRep} (promedio ${num(b.media)})`
+    ? (() => {
+        const e2 = esperadoDelMes(b, f || { mes });
+        return e2
+          ? `Rango habitual de un mes de ${Math.round(e2.dias)} días: `
+            + `${num(Math.max(0, e2.media - 1.5 * e2.sigma))} – ${num(e2.media + 1.5 * e2.sigma)} ${uRep} `
+            + `(promedio ${num(e2.media)})`
+            + (e2.obs ? ` · sobre ${e2.obs} intervalo${e2.obs === 1 ? '' : 's'} medido${e2.obs === 1 ? '' : 's'}`
+                        + (e2.obs < 6 ? ', todavía pocos' : '') : '')
+          : 'Todavía no hay historia suficiente para un rango habitual.';
+      })()
     : 'Todavía no hay historia suficiente para un rango habitual (hacen falta 4 meses).';
   const resultado = el('div', { class: 'ficha-resultado' + (j ? ' ' + j.nivel : '') }, [
     el('div', { class: 'res-et', text: 'Total del mes calculado' }),
@@ -3587,6 +3647,25 @@ async function verConsumo({ variable_id, mes }, ctx) {
       onclick: () => gestionarEventos(pidNC, puntoNombre, { mes, variable_id, alCambiar: ctx.alCambiar }) }) : null
   ]) : null;
 
+  // ---- 3d · mes prorrateado: la observación real es el intervalo ----
+  const cajaProrrateo = interv ? el('div', { class: 'card ficha-prorrateo' }, [
+    el('h4', { style: 'margin-top:0', text: 'Este mes no se midió solo' }),
+    el('p', { class: 'ayuda', text:
+      `Falta la toma intermedia. El consumo del intervalo se repartió por días entre `
+      + `${nAnt === nMes ? 'los meses vecinos' : 'este mes y el vecino'}, asumiendo consumo parejo.` }),
+    el('p', { text: `Intervalo medido: ${fechaCorta(interv.fecha_ant)} → ${fechaCorta(interv.fecha_dia)}`
+      + ` · ${interv.dias_intervalo} días · ${num(Number(interv.consumo_intervalo))} ${uRep}` }),
+    el('p', { text: `Tasa: ${num(interv.tasa, 1)} ${uRep}/día` }),
+    interv.juicio ? el('div', { class: 'fila' }, [
+      el('span', { class: 'pill ' + interv.juicio.nivel, text: 'El intervalo está ' + interv.juicio.texto }),
+      interv.esperado ? el('span', { class: 'ayuda',
+        text: `esperado ${num(interv.esperado)} ${uRep} para ${interv.dias_intervalo} días` }) : null
+    ]) : el('p', { class: 'ayuda', text: 'Todavía no hay banda para juzgar el intervalo.' }),
+    el('p', { class: 'ayuda', text:
+      'Si la lectura que falta aparece en papel, en el opto o en el PLC, cárgala como '
+      + 'lectura atrasada: los dos meses pasan a ser medidos.' })
+  ]) : null;
+
   // ---- 4 · avisos abiertos del punto ----
   const pid = v ? v.punto.id : f.punto_id;
   const suyos = (ctx.avisos || []).filter(a => a.punto_id === pid);
@@ -3607,7 +3686,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
      En el computador las tres zonas caben sin scroll; en el celular se apilan. */
   const datos = el('div', { class: 'fv-datos' }, [
     errLect, resultado, colEste, colAnterior,
-    caja.childNodes.length ? caja : null, cajaNC, cajaEventos, cajaAvisos
+    caja.childNodes.length ? caja : null, cajaProrrateo, cajaNC, cajaEventos, cajaAvisos
   ]);
   const panelFotos = el('div', { class: 'fv-fotos' }, [
     el('div', { class: 'fv-cab' }, [
@@ -3731,7 +3810,7 @@ async function imprimirInforme() {
   };
 
   const fueraDeRango = ({ f, m }) => meses.some(x =>
-    juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id }, bandas)?.nivel === 'bad');
+    juzgarConsumo({ consumo: m[x] ?? 0, variable_id: f.variable_id, mes: x }, bandas)?.nivel === 'bad');
   const marcados = orden.filter(fueraDeRango).length;
 
   const cabecera = () => el('table', { class: 'cab-informe' }, [el('tbody', {}, [el('tr', {}, [

@@ -1651,6 +1651,35 @@ function tabla(cabeceras, filas, opciones = {}) {
    las curvas chicas quedarían pegadas al suelo. Por eso la primera medida va en barras
    contra el eje izquierdo y las demás en líneas contra un eje derecho propio.
    datos: [{ etiqueta, valores: { clave: número|null } }] */
+/* Barra con las esquinas redondeadas SOLO del lado del valor: el pie se apoya en la
+   base, que es donde el ojo lee el cero. Redondear las cuatro esquinas despega la
+   barra del eje y se ve descuidado. 'abajo' es para las barras negativas. */
+function barraD(x, y, w, h, r = 6, abajo = false) {
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  if (!rr) return `M${x},${y}h${w}v${h}h${-w}Z`;
+  return abajo
+    ? `M${x},${y}v${h - rr}a${rr},${rr} 0 0 0 ${rr},${rr}h${w - 2 * rr}a${rr},${rr} 0 0 0 ${rr},${-rr}V${y}Z`
+    : `M${x},${y + h}V${y + rr}a${rr},${rr} 0 0 1 ${rr},${-rr}h${w - 2 * rr}a${rr},${rr} 0 0 1 ${rr},${rr}V${y + h}Z`;
+}
+
+/* Curva suave entre puntos (Catmull-Rom llevado a Bézier) con los controles acotados
+   al tramo: así la línea nunca dibuja un pico o un valle que los datos no tienen.
+   Un gráfico que inventa valores por quedar lindo deja de ser un dato. */
+function trazoSuave(pts, t = 0.2) {
+  if (!pts.length) return '';
+  if (pts.length < 3) return 'M' + pts.map(p => `${p[0]},${p[1]}`).join('L');
+  const lim = (v, a, b) => Math.min(Math.max(v, Math.min(a, b)), Math.max(a, b));
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const dx = (p2[0] - p1[0]) * t;
+    const c1y = lim(p1[1] + (p2[1] - p0[1]) * t, p1[1], p2[1]);
+    const c2y = lim(p2[1] - (p3[1] - p1[1]) * t, p1[1], p2[1]);
+    d += `C${p1[0] + dx},${c1y} ${p2[0] - dx},${c2y} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
 function graficoCombinado(datos, { titulo, series, alto = 230 } = {}) {
   if (!datos.length || !series.length) return null;
   const W = 760, H = alto, mIzq = 74, mDer = 64, mArr = 22, mAba = 46;
@@ -1696,8 +1725,8 @@ function graficoCombinado(datos, { titulo, series, alto = 230 } = {}) {
     const v = d.valores[se.clave];
     if (v == null) return;
     const g = ns('g', { class: 'barra' });
-    g.append(ns('rect', { x: cx(i) - anchoBarra / 2, y: yI(v), width: anchoBarra,
-      height: Math.max(altoUtil - (yI(v) - mArr), v > 0 ? 2 : 0), rx: 4, class: 'marca' }));
+    g.append(ns('path', { d: barraD(cx(i) - anchoBarra / 2, yI(v), anchoBarra,
+      Math.max(altoUtil - (yI(v) - mArr), v > 0 ? 2 : 0), 5), class: 'marca' }));
     g.append(ns('title', {}, `${d.etiqueta} · ${se.nombre}: ${num(v)} ${se.unidad}`));
     svg.append(g);
   });
@@ -1707,8 +1736,7 @@ function graficoCombinado(datos, { titulo, series, alto = 230 } = {}) {
     const pts = datos.map((d, i) => ({ i, v: d.valores[se.clave] })).filter(p => p.v != null);
     if (!pts.length) return;
     const clase = 'linea-' + (k % 2 === 0 ? 'a' : 'b');
-    for (let j = 1; j < pts.length; j++)
-      svg.append(ns('line', { x1: cx(pts[j - 1].i), y1: yD(pts[j - 1].v), x2: cx(pts[j].i), y2: yD(pts[j].v), class: 'traza ' + clase }));
+    svg.append(ns('path', { d: trazoSuave(pts.map(p => [cx(p.i), yD(p.v)])), class: 'traza ' + clase }));
     for (const p of pts) {
       const c = ns('circle', { cx: cx(p.i), cy: yD(p.v), r: 3.5, class: 'punto ' + clase });
       c.append(ns('title', {}, `${datos[p.i].etiqueta} · ${se.nombre}: ${num(p.v)} ${se.unidad}`));
@@ -1724,7 +1752,7 @@ function graficoCombinado(datos, { titulo, series, alto = 230 } = {}) {
     const clase = se.tipo === 'linea' ? ('linea-' + ((k - barras.length) % 2 === 0 ? 'a' : 'b')) : '';
     svg.append(se.tipo === 'linea'
       ? ns('line', { x1: lx, x2: lx + 16, y1: H - 8, y2: H - 8, class: 'traza ' + clase })
-      : ns('rect', { x: lx, y: H - 13, width: 14, height: 10, rx: 2, class: 'marca' }));
+      : ns('rect', { x: lx, y: H - 13, width: 14, height: 10, rx: 3, class: 'marca' }));
     svg.append(ns('text', { x: lx + 21, y: H - 4, class: 'leyenda' }, `${se.nombre} (${se.unidad})`));
     lx += 30 + `${se.nombre} (${se.unidad})`.length * 5.4;
   });
@@ -1769,7 +1797,7 @@ function graficoBarras(datos, { titulo, unidad, alto = 200 } = {}) {
     const x = mIzq + i * paso + (paso - anchoBarra) / 2;
     const h = Math.max((d.valor / tope) * altoUtil, d.valor > 0 ? 2 : 0);
     const g = ns('g', { class: 'barra' });
-    g.append(ns('rect', { x, y: y(d.valor), width: anchoBarra, height: h, rx: 4, class: 'marca' }));
+    g.append(ns('path', { d: barraD(x, y(d.valor), anchoBarra, h, 6), class: 'marca' }));
     g.append(ns('rect', { x: mIzq + i * paso, y: mArr, width: paso, height: altoUtil, class: 'zona' }));
     g.append(ns('title', {}, `${d.etiqueta}: ${num(d.valor)} ${unidad}`));
     svg.append(g);
@@ -2100,15 +2128,18 @@ function graficoSerie(serie, { titulo, unidad, tipo = 'barras', capas = {}, est,
     serie.forEach((p, i) => {
       if (p.v === null) return;
       const y0 = y(Math.max(0, lo)), y1 = y(p.v);
-      svg.append(ns('rect', { x: cx(i) - anchoB / 2, y: Math.min(y0, y1), width: anchoB,
-        height: Math.max(Math.abs(y0 - y1), p.v ? 2 : 0), rx: 3, class: 'marca' + (p.v < 0 ? ' neg' : '') }));
+      svg.append(ns('path', { d: barraD(cx(i) - anchoB / 2, Math.min(y0, y1), anchoB,
+        Math.max(Math.abs(y0 - y1), p.v ? 2 : 0), 5, p.v < 0), class: 'marca' + (p.v < 0 ? ' neg' : '') }));
     });
   } else {
-    let d = '', abierto = false;
+    // Un mes sin dato corta la curva: unir por encima del hueco inventaría una medición.
+    const tramos = [];
     serie.forEach((p, i) => {
-      if (p.v === null) { abierto = false; return; }
-      d += (abierto ? 'L' : 'M') + cx(i) + ',' + y(p.v) + ' '; abierto = true;
+      if (p.v === null) { tramos.push([]); return; }
+      if (!tramos.length) tramos.push([]);
+      tramos[tramos.length - 1].push([cx(i), y(p.v)]);
     });
+    const d = tramos.filter(t => t.length).map(t => trazoSuave(t)).join(' ');
     svg.append(ns('path', { d: d.trim(), class: 'linea-serie' }));
     serie.forEach((p, i) => { if (p.v !== null) svg.append(ns('circle', { cx: cx(i), cy: y(p.v), r: 4.5, class: 'punto-serie' })); });
   }
@@ -2685,6 +2716,10 @@ const CAJAS_REP = {
                ayuda: 'Consumos negativos o muy lejos de lo habitual del punto. Siguen aquí hasta que se corrijan o desestimen.' },
   revisar:   { titulo: 'Para revisar', clase: 'aviso',
                ayuda: 'Consumos en cero, altos o bajos, meses sin dato y puntos con aviso abierto. Siguen aquí hasta que se corrijan o desestimen.' },
+  prorrateados: { titulo: 'Repartidos', clase: 'aviso',
+               ayuda: 'Meses que no son una medición de ese mes: prorrateado (faltó una toma y el consumo del intervalo se repartió por días entre dos meses) o estimado (la fecha de alguna toma es aproximada). Son los primeros que mira una auditoría.' },
+  sinfoto:   { titulo: 'Sin respaldo foto', clase: 'aviso',
+               ayuda: 'Puntos y meses con consumo calculado pero sin foto del medidor. La foto cuelga de la lectura de cierre (la del mes siguiente): si falta, el valor no tiene respaldo gráfico.' },
   revisados: { titulo: 'Revisados', clase: 'ok',
                ayuda: 'Valores que ya se corrigieron o desestimaron, con su motivo.' }
 };
@@ -2762,11 +2797,23 @@ function armarInforme(data, desde, hasta, extra = {}) {
   const fuera = pend.filter(k => juicios.get(k).nivel === 'bad');
   const revisar = pend.filter(k => juicios.get(k).nivel === 'warn');
   const revisados = [...revisiones.keys()].filter(k => idsAlcance.has(idDeClave(k)));
+  // Un mes repartido o estimado no es una medición de ese mes: va aparte para auditoría.
+  const repartidos = data.filter(f => f.metodo === 'prorrateado' || f.metodo === 'estimado');
+  // La foto es del PUNTO y cuelga de la lectura de cierre (periodo del mes siguiente).
+  const mesesPunto = new Map();
+  for (const f of data) {
+    const k = f.punto_id + '|' + f.mes;
+    if (!mesesPunto.has(k)) mesesPunto.set(k, { punto_id: f.punto_id, mes: f.mes, variable_id: f.variable_id, n: 0 });
+    mesesPunto.get(k).n++;
+  }
+  const sinFoto = [...mesesPunto.values()].filter(x => !conFoto.has(x.punto_id + '|' + mesSiguiente(x.mes)));
   const cuenta = {
     puntos: new Set([...idsAlcance].map(id => info(id).punto_id).filter(x => x != null)).size,
     noleidos: noLeidos.length,
     fuera: fuera.length,
     revisar: revisar.length + avisosDe.size,
+    prorrateados: repartidos.length,
+    sinfoto: sinFoto.length,
     revisados: revisados.length
   };
 
@@ -2824,6 +2871,17 @@ function armarInforme(data, desde, hasta, extra = {}) {
         return [x.i.grupo, x.i.punto, x.i.variable, nombrePeriodo(x.mes), f ? num(f.consumo) : '—', x.i.unidad,
                 el('span', { class: 'pill ' + j.nivel, text: j.texto }), ver(x.id, x.mes)];
       });
+    } else if (caja === 'prorrateados') {
+      cab = ['Grupo', 'Punto', 'Variable', 'Mes', 'Consumo', 'Unidad', 'Método', 'Días', ''];
+      filas = repartidos.map(f => ({ f, id: f.variable_id, mes: f.mes, i: info(f.variable_id) })).sort(ordenar)
+        .map(x => [x.i.grupo, x.i.punto, x.i.variable, nombrePeriodo(x.mes), num(x.f.consumo), x.i.unidad,
+                   el('span', { class: 'pill ' + (x.f.metodo === 'prorrateado' ? 'warn' : 'neutro'), text: x.f.metodo }),
+                   x.f.dias_asignados != null ? String(x.f.dias_asignados) : '—', ver(x.id, x.mes)]);
+    } else if (caja === 'sinfoto') {
+      cab = ['Grupo', 'Punto', 'Mes', 'Lecturas del punto', 'Respaldo', ''];
+      filas = sinFoto.map(x => ({ ...x, id: x.variable_id, i: info(x.variable_id) })).sort(ordenar)
+        .map(x => [x.i.grupo, x.i.punto, nombrePeriodo(x.mes), String(x.n),
+                   el('span', { class: 'pill warn', text: 'sin foto' }), ver(x.id, x.mes, 'cargar foto')]);
     } else if (caja === 'revisados') {
       cab = ['Grupo', 'Punto', 'Variable', 'Mes', 'Consumo', 'Revisión', 'Motivo', ''];
       filas = revisados.map(k => ({ k, id: idDeClave(k), mes: mesDeClave(k), i: info(idDeClave(k)) })).sort(ordenar).map(x => {

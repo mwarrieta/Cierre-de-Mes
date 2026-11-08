@@ -1213,10 +1213,26 @@ async function abrirCaptura(entrada) {
   for (const input of [inputCamara, inputGaleria]) {
     input.addEventListener('change', e => { const l = [...e.target.files]; e.target.value = ''; agregarFotos(l); });
   }
+  /* ---- excepción cuando la foto es obligatoria y no se puede sacar ----
+     Bloquear el guardado sin salida empuja al peor error: marcar "no se pudo
+     leer" sobre una lectura que SÍ se tomó, o anotarla en papel y cargarla de
+     memoria días después. Acá la lectura entra, pero el hueco de respaldo queda
+     escrito como aviso y el punto aparece en «Sin respaldo foto» del informe. */
+  const MOTIVO_SINFOTO_MIN = 15;
+  const txtSinFoto = el('textarea', { placeholder:
+    'Por qué no hay foto: cámara sin funcionar, pantalla tras vidrio empañado, teléfono sin espacio… (mínimo 15 caracteres)' });
+  const cajaSinFoto = punto.foto_obligatoria ? el('details', { class: 'plegable sin-foto' }, [
+    el('summary', {}, [el('span', { text: 'No puedo sacar la foto' })]),
+    el('p', { class: 'ayuda', text:
+      'Solo si de verdad no se pudo. La lectura se guarda igual y queda marcada como sin respaldo fotográfico.' }),
+    txtSinFoto
+  ]) : null;
+  const motivoSinFoto = () => (punto.foto_obligatoria ? txtSinFoto.value.trim() : '');
+
   // Cámara (lo normal en terreno) ancha; galería al lado, más chica. El texto de ayuda, abajo y en una línea.
   cajaFoto.append(
     el('div', { class: 'foto-botones' }, [btnCamara, btnGaleria]),
-    inputCamara, inputGaleria, galeriaFotos, pesoFoto);
+    inputCamara, inputGaleria, galeriaFotos, pesoFoto, cajaSinFoto);
 
   /* ---- un bloque de campos por cada lectura del punto ---- */
   const campos = [];        // { v, doble, valor, mwh, kwh, banda, yaHay, valorActual() }
@@ -1476,8 +1492,20 @@ async function abrirCaptura(entrada) {
       return toast(`Falta ${obligatoriasVacias.map(c => c.v.nombre).join(' y ')}`, true);
     }
     const algunDato = conValor.some(c => !c.sinDato.checked);
+    let avisoSinFoto = null;
     if (punto.foto_obligatoria && !nuevasFotos.length && !conFoto.length && algunDato) {
-      return toast('Este punto exige foto', true);
+      const m = motivoSinFoto();
+      if (m.length < MOTIVO_SINFOTO_MIN) {
+        if (cajaSinFoto) cajaSinFoto.open = true;
+        return toast(m
+          ? `Explica en al menos ${MOTIVO_SINFOTO_MIN} caracteres por qué no hay foto`
+          : 'Este punto exige foto. Si de verdad no se pudo, abre "No puedo sacar la foto" y explica por qué', true);
+      }
+      const otra = S.catalogo.catalogoAvisos.find(a => /^Otro/i.test(a.categoria));
+      avisoSinFoto = { categoria_id: otra ? otra.id : null,
+                       categoriaTexto: 'Sin respaldo fotográfico',
+                       descripcion: 'Lectura sin foto. ' + m };
+      avisos.push(avisoSinFoto);
     }
 
     // Las que ya existen y cambiaron se corrigen aparte: corregir_lectura pide
@@ -5616,7 +5644,8 @@ async function fichaPunto(c, puntoLista) {
   const f = {
     nombre: el('input', { value: punto?.nombre || '', placeholder: 'Ej.: Agua Mar 1' }),
     tipo:   el('select'),
-    foto:   el('input', { type: 'checkbox', checked: punto?.foto_obligatoria || null }),
+    // Un punto nuevo nace exigiendo foto; la excepción (combustibles) se destilda a mano.
+    foto:   el('input', { type: 'checkbox', checked: (punto ? punto.foto_obligatoria : true) || null }),
     calidad: el('select'),
     instruccion: el('textarea', { rows: 2, value: punto?.instruccion_lectura || '',
       placeholder: 'Horas de marcha: menú 730 · Energía: menú 732' })

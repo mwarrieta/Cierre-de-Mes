@@ -699,6 +699,12 @@ body.con-modal{overflow:hidden}
 .plegable .contador{background:var(--acento);color:#fff;border-radius:999px;font-size:12px;
   font-weight:700;padding:1px 8px}
 
+/* La salida de emergencia de la foto obligatoria: visible, pero no invitante.
+   Sin borde de color ni botón propio, para que no compita con "Tomar foto". */
+.plegable.sin-foto{margin:2px 0 0;background:transparent;border-style:dashed}
+.plegable.sin-foto > summary{min-height:40px;font-weight:500;font-size:14px;color:var(--ink-3)}
+.plegable.sin-foto textarea{width:100%;box-sizing:border-box;min-height:72px}
+
 /* barra de abajo: cancelar + guardar */
 .modal.completo .acciones-fijas{margin:0 -16px;padding:8px 16px;
   padding-bottom:calc(8px + env(safe-area-inset-bottom));

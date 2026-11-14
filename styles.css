@@ -906,6 +906,11 @@ button.pill:hover{filter:brightness(.95);text-decoration:underline}
 #modal-cuerpo .ficha-foto{margin:0;display:grid;gap:6px;justify-items:start}
 #modal-cuerpo .ficha-fotos img{max-width:220px;max-height:220px;border-radius:6px;border:1px solid var(--line);display:block}
 .ficha-form{margin-top:10px;display:grid;gap:8px}
+/* El bloque del valor se oculta entero al marcar "no se pudo leer": con [hidden]
+   solo, display:grid del contenedor lo volvía a mostrar. */
+.ficha-form-valor{display:grid;gap:8px}
+.ficha-form-valor[hidden]{display:none}
+.ficha-form .check-linea{font-weight:500}
 .ficha-revision textarea{width:100%;min-height:70px;margin:8px 0}
 .aviso-linea{padding:8px 0;border-bottom:1px solid var(--line);gap:10px}
 @media print{.celda-cons{border:none;background:none!important;color:inherit!important;padding:0}}

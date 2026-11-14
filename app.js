@@ -3400,7 +3400,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
           ? `Hay ${delAnterior.length === 1 ? 'una foto' : delAnterior.length + ' fotos'} del mes anterior: marca «Comparar con el mes anterior» para verla.`
           : lectEditable
             ? 'Puedes agregar la del medidor para dejar respaldo de la lectura.'
-            : 'Todavía no hay lectura de cierre a la cual colgarla.' })]));
+            : 'Carga la lectura de cierre, o deja constancia si no se pudo leer: en los dos casos la foto se puede subir.' })]));
       fvTira.replaceChildren();
       /* replaceChildren escribe literalmente "null" si se le pasa null: los hijos se
          arman en un array y se filtran. Ese era el "null" suelto bajo el panel. */
@@ -3409,8 +3409,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
         // Sin lectura de cierre no hay de dónde colgar la foto: el atajo es cargarla.
         el('div', { class: 'fila' }, lectEditable
           ? [puedo ? btnFoto : null, inputFoto]
-          : [puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura atrasada',
-                title: `La foto se cuelga de la lectura de cierre de ${nMes}: primero hay que cargarla`,
+          : [puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura o dejar constancia',
+                title: `La foto se cuelga de la lectura de cierre de ${nMes}. Si no se pudo leer, marca «No se pudo leer el medidor» y súbela igual`,
                 onclick: () => { formularioAtrasada(sig, zonaNueva); zonaNueva.scrollIntoView({ block: 'center', behavior: 'smooth' }); } }) : null])
       ].filter(Boolean));
       return;
@@ -3591,42 +3591,89 @@ async function verConsumo({ variable_id, mes }, ctx) {
     ]);
   };
 
-  const formularioAtrasada = (periodo, zona) => {
+  /* ---- un solo formulario para los dos finales posibles de un mes sin dato ----
+     Un mes sin lectura no es lo mismo que un mes sin constancia: el medidor pudo
+     estar apagado y la foto del display muerto ES el respaldo de que se fue a
+     leer. Antes la foto solo se podía colgar de una lectura con valor, así que
+     para subirla había que inventar un número. Acá el valor es opcional.
+
+     Con «No se pudo leer» se hacen las DOS cosas que el mes necesita:
+       1. una lectura s/d  → el registro de terreno (quién fue, cuándo, qué foto)
+       2. una revisión desestimada → lo que lo saca de pendientes en el informe
+     Sin la segunda el mes quedaría colgado para siempre; sin la primera no hay
+     dónde colgar la foto. */
+  const formularioAtrasada = (periodo, zona, opts = {}) => {
     const c = campoValor();
     const fecha = el('input', { type: 'date', value: periodo, max: new Date().toISOString().slice(0, 10) });
-    const obs = el('input', { type: 'text', placeholder: 'Por qué se carga ahora (queda en la auditoría)' });
+    const obs = el('input', { type: 'text' });
     const foto = el('input', { type: 'file', accept: 'image/*' });
+    const sinDato = el('input', { type: 'checkbox', checked: opts.sinDato ? '' : null });
+    const zonaValor = el('div', { class: 'ficha-form-valor' }, nodosValor(c));
+    const lblFoto = el('span', {});
+    const nota = el('p', { class: 'ayuda' });
+    const btnOk = el('button', { class: 'btn ok' });
+    const pintarModo = () => {
+      const sd = sinDato.checked;
+      zonaValor.hidden = sd;
+      btnOk.textContent = sd ? 'Dejar constancia' : 'Guardar lectura';
+      obs.placeholder = sd ? 'Qué impidió tomar la lectura (queda en el informe)'
+                           : 'Por qué se carga ahora (queda en la auditoría)';
+      lblFoto.textContent = sd ? 'Foto de constancia (opcional)' : 'Foto (opcional)';
+      nota.textContent = sd
+        ? `${nMes} queda como s/d con tu motivo y deja de contar como pendiente. `
+          + 'La foto del display apagado queda como respaldo de que se fue a leer.'
+        : `${nMes} pasa a ser un mes medido con este valor.`;
+    };
+    sinDato.addEventListener('change', pintarModo);
+    pintarModo();
+
+    btnOk.addEventListener('click', async e => {
+      const sd = sinDato.checked;
+      const nv = sd ? null : leerValor(c);
+      if (!sd && !nv) return toast('Escribe el valor, o marca «No se pudo leer el medidor»', true);
+      if (!obs.value.trim()) return toast(sd ? 'Escribe qué impidió la lectura' : 'Escribe el motivo', true);
+      if (!fecha.value) return toast('Indica la fecha', true);
+      e.target.disabled = true;
+      try {
+        const iso = new Date(fecha.value + 'T12:00:00').toISOString();
+        // Si la lectura del cierre ya existe no se crea otra: solo se le cuelga la foto.
+        const yaEsta = delPeriodo(periodo)[0] || null;
+        let idLect = yaEsta ? yaEsta.id : null;
+        if (!yaEsta) {
+          const r = await sb.rpc('guardar_captura', {
+            p_punto_id: v.punto.id, p_periodo: periodo, p_fecha_lectura: iso,
+            p_lecturas: [{ variable_id, valor_display: null, valor_mwh: null, valor_kwh: null,
+                           ...(nv || {}), sin_dato: sd }],
+            p_avisos: [], p_observacion: obs.value.trim(),
+            p_dispositivo: 'Consumos e informes · ' + (sd ? 'constancia sin lectura' : 'lectura atrasada') });
+          if (r.error) throw r.error;
+          idLect = (r.data?.lecturas || []).find(x => x.variable_id === variable_id)?.lectura_id || null;
+        }
+        if (foto.files[0] && idLect) {
+          const blob = await DB.comprimirFoto(foto.files[0], v.punto.foto_calidad || 'normal');
+          await DB.subirFotoALectura({ lectura_id: idLect, periodo, variable_id, blob, tomada_en: iso });
+        }
+        if (sd) {
+          await registrar('desestimado', obs.value.trim());
+          await terminar('Constancia registrada');
+        } else {
+          await registrar('corregido', `Lectura atrasada de la toma de ${nombrePeriodo(periodo)} cargada: ` +
+            `${doble ? `${nv.valor_mwh} MWh + ${nv.valor_kwh} kWh` : `${nv.valor_display} ${uDisp}`}. ${obs.value.trim()}`);
+          await terminar('Lectura cargada');
+        }
+      } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
+    });
+
     zona.replaceChildren(el('div', { class: 'ficha-form' }, [
-      ...nodosValor(c),
-      el('label', { text: 'Fecha en que se tomó' }, [fecha]),
-      el('label', { text: 'Foto (opcional)' }, [foto]),
+      el('label', { class: 'check-linea' }, [sinDato,
+        el('span', { text: 'No se pudo leer el medidor (display apagado, tablero cerrado…)' })]),
+      zonaValor,
+      el('label', { text: 'Fecha en que se fue a leer' }, [fecha]),
+      el('label', {}, [lblFoto, foto]),
       el('label', { text: 'Motivo' }, [obs]),
-      el('div', { class: 'fila' }, [
-        el('button', { class: 'btn ok', text: 'Guardar lectura', onclick: async e => {
-          const nv = leerValor(c);
-          if (!nv) return toast('Escribe el valor', true);
-          if (!obs.value.trim()) return toast('Escribe el motivo', true);
-          if (!fecha.value) return toast('Indica la fecha', true);
-          e.target.disabled = true;
-          try {
-            const iso = new Date(fecha.value + 'T12:00:00').toISOString();
-            const r = await sb.rpc('guardar_captura', {
-              p_punto_id: v.punto.id, p_periodo: periodo, p_fecha_lectura: iso,
-              p_lecturas: [{ variable_id, ...nv, sin_dato: false }], p_avisos: [],
-              p_observacion: obs.value.trim(), p_dispositivo: 'Consumos e informes · lectura atrasada' });
-            if (r.error) throw r.error;
-            const nueva = (r.data?.lecturas || []).find(x => x.variable_id === variable_id);
-            if (foto.files[0] && nueva) {
-              const blob = await DB.comprimirFoto(foto.files[0], v.punto.foto_calidad || 'normal');
-              await DB.subirFotoALectura({ lectura_id: nueva.lectura_id, periodo, variable_id, blob, tomada_en: iso });
-            }
-            await registrar('corregido', `Lectura atrasada de la toma de ${nombrePeriodo(periodo)} cargada: ` +
-              `${doble ? `${nv.valor_mwh} MWh + ${nv.valor_kwh} kWh` : `${nv.valor_display} ${uDisp}`}. ${obs.value.trim()}`);
-            await terminar('Lectura cargada');
-          } catch (err) { e.target.disabled = false; toast(err.message || String(err), true); }
-        } }),
-        el('button', { class: 'btn', text: 'Cancelar', onclick: () => zona.replaceChildren() })
-      ])
+      nota,
+      el('div', { class: 'fila' }, [btnOk,
+        el('button', { class: 'btn', text: 'Cancelar', onclick: () => zona.replaceChildren() })])
     ]));
   };
 
@@ -3641,7 +3688,7 @@ async function verConsumo({ variable_id, mes }, ctx) {
     el('p', { class: 'ayuda', text: `Totalizador al cierre de ${nMes} · se toma el ${diaToma}` }),
     ...(deEste.length ? deEste.map(l => tarjetaLectura(l, true)) : [
       el('p', { class: 'banda warn', text: `Todavía no hay lectura de cierre de ${nMes}.` }),
-      puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura atrasada',
+      puedo && v ? el('button', { class: 'btn chico', text: 'Cargar lectura o dejar constancia',
         onclick: () => formularioAtrasada(sig, zonaNueva) }) : null,
       zonaNueva])
   ]);
@@ -3719,8 +3766,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
   if (!rev && puedo && !f && !ncAqui && pidNC != null) {
     const OPC = [
       { k: 'nodato', t: 'Se fue a leer y no se pudo',
-        d: 'Display apagado, tablero cerrado, no había llave de acceso. El mes queda como s/d con tu motivo y deja de contar como pendiente.',
-        btn: 'Dejar constancia', ph: 'Qué impidió tomar la lectura (obligatorio)', min: 1 },
+        d: 'Display apagado, tablero cerrado, no había llave de acceso. El mes queda como s/d con tu motivo y deja de contar como pendiente. Puedes adjuntar la foto del display como constancia.',
+        btn: null, form: true, sinDato: true },
       { k: 'nc', t: 'El punto no correspondía este mes',
         d: 'El equipo no estaba instalado o no estaba en faena. En las tablas aparece n/c en vez de s/d y no cuenta como pendiente.',
         btn: 'Marcar n/c solo este mes', ph: 'Por qué no correspondía (obligatorio)', min: 1 },
@@ -3728,8 +3775,8 @@ async function verConsumo({ variable_id, mes }, ctx) {
         d: 'Se retiró el medidor, o el consumo pasó a medirse en otro punto. Queda n/c de este mes EN ADELANTE, y se registra un evento que lo explica en el informe. No hay que volver a marcarlo cada mes.',
         btn: 'Dar de baja desde este mes', ph: 'Qué pasó, quién lo hizo y si el consumo se mide en otro lado (mínimo 15 caracteres)', min: 15 },
       { k: 'atrasada', t: 'La lectura existe, falta cargarla',
-        d: 'Está anotada en papel, en el opto o en el PLC. Cárgala con «Cargar lectura atrasada», arriba: el mes pasa a ser medido y no hace falta justificar nada.',
-        btn: null }
+        d: 'Está anotada en papel, en el opto o en el PLC. Al elegirla se abre el formulario para cargarla: el mes pasa a ser medido.',
+        btn: null, form: true, sinDato: false }
     ];
     let elegida = null;
     const motivo = el('textarea', { placeholder: '' });
@@ -3747,6 +3794,9 @@ async function verConsumo({ variable_id, mes }, ctx) {
       const o = OPC.find(x => x.k === elegida);
       zonaMotivo.hidden = !(o && o.btn);
       if (o && o.btn) motivo.placeholder = o.ph;
+      // Las opciones con formulario reusan el de «lectura atrasada»: un solo lugar
+      // donde se escribe el valor (o se declara que no lo hubo) y se sube la foto.
+      if (o && o.form) { formularioAtrasada(sig, accion, { sinDato: !!o.sinDato }); return; }
       accion.replaceChildren(...(o && o.btn ? [el('button', { class: 'btn primario', text: o.btn,
         onclick: async e => {
           const txt = motivo.value.trim();
